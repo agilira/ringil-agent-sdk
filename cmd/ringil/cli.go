@@ -1,0 +1,123 @@
+// cli.go: commands, flags and the agent they build
+//
+// Copyright (c) 2026 AGILira - A. Giordano
+// SPDX-License-Identifier: MPL-2.0
+
+package main
+
+import (
+	"context"
+	stderrors "errors"
+	"io"
+	"os"
+	"os/signal"
+
+	"github.com/agilira/go-errors"
+	"github.com/agilira/orpheus/pkg/orpheus"
+
+	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/provider/openai"
+	"github.com/agilira/ringil-agent-sdk/provider/retry"
+)
+
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
+// cli holds everything a command touches outside the process, so tests can
+// replace it.
+type cli struct {
+	in          io.Reader
+	out, errOut io.Writer
+	getenv      func(string) string
+	// newProvider builds the model client; tests swap in a fake.
+	newProvider func(openai.Config) (agent.Provider, error)
+	// turnContext scopes one user turn, so Ctrl-C stops the answer, not the
+	// chat.
+	turnContext func(context.Context) (context.Context, context.CancelFunc)
+}
+
+func newCLI(in io.Reader, out, errOut io.Writer) *cli {
+	return &cli{
+		in: in, out: out, errOut: errOut, getenv: os.Getenv,
+		newProvider: openai.New,
+		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+			return signal.NotifyContext(ctx, os.Interrupt)
+		},
+	}
+}
+
+func (c *cli) app() *orpheus.App {
+	app := orpheus.New("ringil").
+		SetDescription("Run an AI agent from the terminal").
+		SetVersion(version).
+		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
+		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
+		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "environment variable holding the API key").
+		AddGlobalFlag("system", "s", "", "system prompt (default: the SDK's)").
+		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
+		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
+		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools")
+	app.AddCommand(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.cmdChat))
+	app.AddCommand(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
+		SetUsage("run <prompt...>"))
+	app.SetDefaultCommand("chat")
+	return app
+}
+
+// ErrUsage marks a mistake in how the command was invoked.
+const ErrUsage errors.ErrorCode = "USAGE"
+
+func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
+	p, err := c.provider(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var tools agent.Registry
+	if !ctx.GetGlobalFlagBool("no-tools") {
+		if tools, err = builtinTools(); err != nil {
+			return nil, err
+		}
+	}
+	return agent.New(agent.Config{
+		Provider: retry.Wrap(p, retry.Config{}),
+		Tools:    tools,
+		System:   ctx.GetGlobalFlagString("system"),
+		MaxTurns: ctx.GetGlobalFlagInt("max-turns"),
+	})
+}
+
+func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
+	base := firstSet(ctx.GetGlobalFlagString("base"), c.getenv("RINGIL_BASE_URL"))
+	model := firstSet(ctx.GetGlobalFlagString("model"), c.getenv("RINGIL_MODEL"))
+	if base == "" || model == "" {
+		return nil, errors.New(ErrUsage, "set --base and --model, or RINGIL_BASE_URL and RINGIL_MODEL")
+	}
+	return c.newProvider(openai.Config{
+		BaseURL:   base,
+		Model:     model,
+		APIKey:    c.getenv(ctx.GetGlobalFlagString("key-env")),
+		AllowHTTP: ctx.GetGlobalFlagBool("allow-http"),
+	})
+}
+
+func firstSet(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// describe turns an error into one line for the terminal.
+func describe(err error) string {
+	switch {
+	case stderrors.Is(err, context.Canceled):
+		return "interrupted"
+	case errors.HasCode(err, agent.ErrProviderAuth):
+		return "the API key was refused or is missing"
+	case errors.HasCode(err, agent.ErrProviderConfig):
+		return "provider configuration: " + err.Error()
+	}
+	return err.Error()
+}

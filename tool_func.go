@@ -1,0 +1,137 @@
+// tool_func.go: tools built from typed Go functions
+//
+// Copyright (c) 2026 AGILira - A. Giordano
+// SPDX-License-Identifier: MPL-2.0
+
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"reflect"
+	"strings"
+
+	"github.com/agilira/go-errors"
+
+	"github.com/agilira/ringil-agent-sdk/internal/schema"
+)
+
+// NewTool builds a tool from a typed function. The input schema is derived
+// from In, which must be a struct:
+//
+//	type WeatherIn struct {
+//	    City string `json:"city" desc:"City name"`
+//	    Unit string `json:"unit,omitempty" enum:"c,f"`
+//	}
+//	weather := agent.NewTool("weather", "Current temperature in a city",
+//	    func(ctx context.Context, in WeatherIn) (string, error) { ... },
+//	    agent.ReadOnly())
+//
+// Tags: json (name, omitempty, omitzero), desc, enum (strings), min and max
+// (value of numbers, length of strings, items of arrays). A field is
+// required unless it is a pointer or tagged omitempty/omitzero.
+//
+// Before fn runs, the arguments are checked against the schema: unknown
+// fields (including case variants), wrong types, out-of-range numbers and
+// missing required fields are refused, and the model is told which fields
+// are wrong without its values being repeated back.
+//
+// A string result is returned as is, a [ToolOutput] as given, anything else
+// as JSON. NewTool never panics: a type it cannot describe makes the tool
+// invalid, and [NewRegistry] reports it.
+func NewTool[In, Out any](name, description string, fn func(context.Context, In) (Out, error), opts ...ToolOption) Tool {
+	t := &funcTool[In, Out]{fn: fn, spec: ToolSpec{Name: name, Description: description}}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&t.spec)
+		}
+	}
+	t.err = t.compile()
+	return t
+}
+
+type funcTool[In, Out any] struct {
+	spec ToolSpec
+	node *schema.Node
+	fn   func(context.Context, In) (Out, error)
+	err  error
+}
+
+// invalidTool is implemented by tools that may have been built badly, so
+// the registry can refuse them before the model ever sees them.
+type invalidTool interface {
+	configError() error
+}
+
+func (t *funcTool[In, Out]) configError() error { return t.err }
+
+func (t *funcTool[In, Out]) compile() error {
+	if t.fn == nil {
+		return errors.New(ErrToolConfig, "tool "+t.spec.Name+": nil function")
+	}
+	node, err := schema.For(reflect.TypeFor[In]())
+	if err != nil {
+		return errors.Wrap(err, ErrToolConfig, "tool "+t.spec.Name+": input type")
+	}
+	doc, err := node.JSON()
+	if err != nil {
+		return errors.Wrap(err, ErrToolConfig, "tool "+t.spec.Name+": schema")
+	}
+	t.node, t.spec.InputSchema = node, doc
+	return nil
+}
+
+func (t *funcTool[In, Out]) Spec() ToolSpec {
+	spec := t.spec
+	spec.InputSchema = bytes.Clone(t.spec.InputSchema)
+	return spec
+}
+
+func (t *funcTool[In, Out]) Call(ctx context.Context, input json.RawMessage) (ToolOutput, error) {
+	if t.err != nil {
+		return ToolOutput{}, t.err
+	}
+	in, err := t.decode(input)
+	if err != nil {
+		return ToolOutput{}, err
+	}
+	out, err := t.fn(ctx, in)
+	if err != nil {
+		return ToolOutput{}, err
+	}
+	return encodeOutput(out)
+}
+
+func (t *funcTool[In, Out]) decode(input json.RawMessage) (In, error) {
+	var in In
+	canonical, problems := t.node.Validate(input)
+	if len(problems) > 0 {
+		parts := make([]string, len(problems))
+		for i, p := range problems {
+			parts[i] = p.String()
+		}
+		return in, ToolError(ErrToolInput, "Invalid arguments: "+strings.Join(parts, "; ")+".")
+	}
+	// Decode what was validated, not the original bytes: see Validate.
+	if err := json.Unmarshal(canonical, &in); err != nil {
+		// Validation guarantees this does not happen; if it ever does, the
+		// model is told its input was refused, not why.
+		return in, errors.Wrap(err, ErrToolInput, "validated input did not decode")
+	}
+	return in, nil
+}
+
+func encodeOutput(out any) (ToolOutput, error) {
+	switch v := out.(type) {
+	case string:
+		return ToolOutput{Content: v}, nil
+	case ToolOutput:
+		return v, nil
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return ToolOutput{}, errors.Wrap(err, ErrToolFailed, "tool result does not encode as JSON")
+	}
+	return ToolOutput{Content: string(data)}, nil
+}

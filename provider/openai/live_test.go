@@ -5,8 +5,8 @@
 
 //go:build live
 
-// Live tests run only with `make live`, which loads AGENT_LIVE_BASE_URL,
-// AGENT_LIVE_API_KEY and AGENT_LIVE_MODEL from the git-ignored .env file.
+// Live tests run only with `make live`, which loads RINGIL_BASE_URL,
+// RINGIL_API_KEY and RINGIL_MODEL from the git-ignored .env file.
 // They use real models: they check behaviour the SDK guarantees (streaming,
 // tool call assembly, result round trip), never the wording of an answer.
 
@@ -37,11 +37,11 @@ var weather = agent.ToolSpec{
 // host would, with a small budget so a misbehaving test cannot spend much.
 func live(t *testing.T) (agent.Provider, budget.Budget) {
 	t.Helper()
-	base, model := os.Getenv("AGENT_LIVE_BASE_URL"), os.Getenv("AGENT_LIVE_MODEL")
+	base, model := os.Getenv("RINGIL_BASE_URL"), os.Getenv("RINGIL_MODEL")
 	if base == "" || model == "" {
-		t.Skip("AGENT_LIVE_BASE_URL and AGENT_LIVE_MODEL not set")
+		t.Skip("RINGIL_BASE_URL and RINGIL_MODEL not set")
 	}
-	p, err := New(Config{BaseURL: base, Model: model, APIKey: os.Getenv("AGENT_LIVE_API_KEY")})
+	p, err := New(Config{BaseURL: base, Model: model, APIKey: os.Getenv("RINGIL_API_KEY")})
 	if err != nil {
 		t.Fatal(err)
 	}

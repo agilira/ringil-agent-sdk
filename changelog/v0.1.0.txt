@@ -1,6 +1,7 @@
 v0.1.0 — unreleased
 
-First increment (N1) of the SDK core: data model and providers.
+First increments of the SDK core: data model and providers (N1), tool API
+(N2).
 
 FEATURES
 
@@ -28,6 +29,15 @@ FEATURES
     refused requests, bad keys and cancelled calls do not count.
   - provider/fake: scripted provider for tests.
 
+  - NewTool: tools from typed Go functions. JSON schema generated from the
+    input struct (json, desc, enum, min, max tags); the same compiled schema
+    drives validation, so what the model is told and what is enforced
+    cannot drift. Output: string, ToolOutput, or JSON for anything else.
+  - Tool interface for tools with runtime schemas (MCP, generated tools).
+  - Registry: immutable, sorted specs, With and Select for worker subsets,
+    Execute returning the model-facing result and the full host error.
+  - ToolError and ModelMessage: a tool decides what the model may read.
+
 SECURITY
 
   - HTTPS required except towards loopback; AllowHTTP for LAN and pods.
@@ -37,4 +47,14 @@ SECURITY
     overridden; control characters refused in keys and headers.
   - Bounds on every untrusted byte stream (lines, events, bodies, number of
     tool calls), far above real use; stalled streams are cut.
-  - Fuzz targets for the SSE decoder and the response parser.
+  - Tool arguments validated before the function runs: unknown fields
+    (including case variants encoding/json would accept), wrong types,
+    integer overflow, non-finite numbers, enums, ranges, required fields.
+  - Validation feedback names schema fields only: values sent by the
+    model, unknown field names and unknown tool names are never echoed.
+  - Undescribed tool errors reach the model as a code only; panics in
+    tools are recovered and their value goes to the host only.
+  - Registered specs are frozen copies; tools receive a copy of their
+    input; Select can only narrow a registry.
+  - Fuzz targets for the SSE decoder, the response parser, the argument
+    validator and typed tool calls.
