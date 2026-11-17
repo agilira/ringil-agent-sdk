@@ -21,6 +21,12 @@
 // Streaming is explicit: pass a [TextSink] to receive text as it arrives.
 // Tool calls are never streamed; the adapter returns them complete.
 //
+// # Tools
+//
+// [NewTool] turns a typed Go function into a [Tool]; its input schema is
+// generated from the input struct and enforced before the function runs.
+// A [Registry] holds the tools granted to an agent and executes calls.
+//
 // # Errors
 //
 // Adapters classify every failure with the codes in this package

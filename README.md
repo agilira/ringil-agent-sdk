@@ -42,6 +42,45 @@ go run ./examples/chat -tool "che tempo fa a Roma?"
 
 Per un server HTTP non locale (LAN, pod) impostare `AllowHTTP: true`.
 
+## Tool
+
+Un tool è una funzione Go tipizzata; lo schema JSON viene generato dalla struct:
+
+```go
+type MeteoIn struct {
+    Citta string `json:"citta" desc:"Nome della città" min:"1"`
+    Unita string `json:"unita,omitempty" enum:"c,f"`
+}
+
+meteo := agent.NewTool("meteo", "Temperatura attuale di una città",
+    func(ctx context.Context, in MeteoIn) (string, error) {
+        if in.Citta == "Atlantide" {
+            return "", agent.ToolError("NOT_FOUND", "Città sconosciuta.")
+        }
+        return "21 gradi", nil
+    },
+    agent.ReadOnly())
+
+tools, err := agent.NewRegistry(meteo)
+req.Tools = tools.Specs()
+// per ogni tool call del modello:
+result, err := tools.Execute(ctx, call)
+```
+
+Tag: `json`, `desc`, `enum` (stringhe), `min`/`max` (valore dei numeri,
+lunghezza delle stringhe, elementi degli array). Un campo è obbligatorio se non
+è un puntatore e non ha `omitempty`/`omitzero`.
+
+Prima che la funzione parta, gli argomenti sono controllati contro lo schema:
+campi sconosciuti (anche con maiuscole diverse), tipi sbagliati, numeri fuori
+range e campi mancanti sono rifiutati. Il modello riceve i nomi dei campi da
+correggere, mai i valori che ha mandato. Un errore normale arriva al modello solo
+come codice; il testo lo vede solo se il tool usa `agent.ToolError`. Un panic in
+un tool diventa un errore e non ferma l'agente.
+
+Per tool con schema noto solo a runtime (MCP, tool generati) si implementa
+direttamente l'interfaccia `agent.Tool`.
+
 ## Decoratori
 
 Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,
@@ -66,6 +105,7 @@ model := retry.Wrap(guard.Wrap(pace.Wrap(spend.Wrap(p))), retry.Config{})
 make check          # fmt, vet, lint, sicurezza, test
 make race
 make fuzz FUZZTIME=5m
+make live           # prove reali con l'endpoint in .env (AGENT_LIVE_*)
 ```
 
 ## Licenza
