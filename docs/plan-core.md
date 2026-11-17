@@ -349,7 +349,7 @@ Ogni fase finisce con release, changelog, CI verde sui tre OS.
 
 | Fase | Contenuto | Fatto quando |
 |---|---|---|
-| **N1** | modello dati, `Provider`, `provider/fake`, `provider/openai`, decoratori | chat in streaming contro Ollama ed Eos/vLLM; fuzz SSE 10 min pulito |
+| **N1** | modello dati, `Provider`, `provider/fake`, `provider/openai`, decoratori | chat in streaming contro Ollama; fuzz SSE 10 min pulito |
 | **N2** | `NewTool`, schema, decodifica stretta, registry, `ToolError` | fuzz decodifica pulito; nessun valore dell'input nei messaggi d'errore (test) |
 | **N3** | ciclo, `Run`/`Stream`, hook, loop detector, parallelo ReadOnly | i difetti di §7.3 coperti da test scritti prima |
 | **N4** | sessioni JSONL, lease, ripresa, `session/mem` | `kill -9` a metà tool → ripresa senza replay; 10k messaggi senza rallentare |
@@ -371,7 +371,7 @@ di un free tier.
   eseguito dallo **stesso motore** dei workflow statici (DAG + journal di studio), non da un
   secondo sistema. L'host può chiedere conferma prima dell'avvio con l'hook `Approve`.
 
-Dopo il nucleo, nell'ordine già concordato: segreti (keyring, Vault, env file — il
+Dopo il nucleo, nell'ordine già concordato (il provider SystemOne per Eos è un adapter come gli altri, fuori dal nucleo): segreti (keyring, Vault, env file — il
 `# commento` inline va tolto dal valore), MCP, tool nativi (bash/git/fs con le note
 delle review del 16-17/11), memoria con `VectorStore` (Chroma primo adapter), delega e
 workflow, scheduler, controllo HTTP, A2A.

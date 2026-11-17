@@ -18,6 +18,14 @@ FEATURES
   - provider/retry: retries rate limits, server errors and cut streams with
     jittered backoff; honours Retry-After; never repeats text already shown
     unless the host handles OnRestart.
+  - provider/budget: call and token caps shared by several providers; a
+    call is counted before it is sent, the call that crosses the token cap
+    is delivered and the next is refused.
+  - provider/ratelimit: requests per minute with burst, and a cap on calls
+    in flight; shared across providers on the same quota.
+  - provider/circuit: opens after consecutive server failures, fails fast
+    with a retryable CIRCUIT_OPEN carrying the wait, one probe at a time;
+    refused requests, bad keys and cancelled calls do not count.
   - provider/fake: scripted provider for tests.
 
 SECURITY

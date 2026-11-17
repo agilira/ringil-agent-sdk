@@ -1,7 +1,7 @@
 # Go Makefile - AGILira Standard
 # Usage: make help
 
-.PHONY: help test race coverage fmt vet staticcheck errcheck gosec govulcheck gocyclo lint security check check-race deps clean tools fuzz bench
+.PHONY: help test race coverage fmt vet staticcheck errcheck gosec govulcheck gocyclo lint security check check-race deps clean tools fuzz bench live
 .DEFAULT_GOAL := help
 
 # Variables
@@ -93,6 +93,10 @@ fuzz: ## Run every fuzz target (FUZZTIME, default 30s each)
 		for f in $$(grep -ho '^func Fuzz[A-Za-z0-9]*' $$dir/*_test.go 2>/dev/null | cut -d' ' -f2); do \
 			go test -run='^$$$$' -fuzz="^$$f$$$$" -fuzztime=$(FUZZTIME) $$pkg || exit 1; done; done
 	@echo "$(GREEN)Fuzz tests completed.$(NC)"
+
+live: ## Run live tests against the endpoint in .env (real calls, may cost)
+	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
+	@set -a && . ./.env && set +a && go test -tags live -run '^TestLive' -count=1 -v ./...
 
 check: fmt vet lint security test ## Run all checks (format, vet, lint, security, test)
 	@echo "$(GREEN)All checks passed!$(NC)"

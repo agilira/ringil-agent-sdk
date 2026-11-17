@@ -15,7 +15,8 @@
 //   - provider/openai: any OpenAI-compatible server (OpenAI, vLLM, Ollama,
 //     llama.cpp, OpenRouter, Groq, DeepSeek and most free tiers);
 //   - provider/fake: a scripted provider for tests;
-//   - provider/retry: a decorator that retries transient failures.
+//   - provider/retry, provider/budget, provider/ratelimit, provider/circuit:
+//     optional decorators for retries, spending caps, pacing and fail-fast.
 //
 // Streaming is explicit: pass a [TextSink] to receive text as it arrives.
 // Tool calls are never streamed; the adapter returns them complete.
