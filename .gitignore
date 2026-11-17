@@ -1,0 +1,6 @@
+coverage.out
+coverage.html
+
+# Workspaces are local, never committed
+go.work
+go.work.sum

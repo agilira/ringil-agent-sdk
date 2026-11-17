@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Three first-class platforms: Harness must run on Windows.
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        check-latest: true
+        cache: true
+    - name: Verify dependencies
+      run: go mod verify
+    - name: Vet
+      run: go vet ./...
+    - name: Test with race detector
+      run: go test -race -timeout 5m ./...
+
+  lint:
+    name: Lint and security
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        check-latest: true
+        cache: true
+    - name: Install tools
+      run: |
+        go install honnef.co/go/tools/cmd/staticcheck@latest
+        go install github.com/kisielk/errcheck@latest
+        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+    - name: Format
+      run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+    - name: Checks
+      run: make lint security
+    - name: Fuzz (short)
+      run: make fuzz FUZZTIME=20s

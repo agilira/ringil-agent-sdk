@@ -1,0 +1,32 @@
+v0.1.0 — unreleased
+
+First increment (N1) of the SDK core: data model and providers.
+
+FEATURES
+
+  - Data model owned by the SDK: Message with parts, ToolCall, ToolResult,
+    Usage, StopReason, ToolSpec with annotations. No vendor wire type
+    crosses the provider boundary.
+  - Provider contract: one Generate method with an explicit TextSink for
+    streaming; tool calls are assembled by the adapter and returned whole.
+  - Error codes for every provider failure (auth, rate, unavailable,
+    context, input, response, interrupted) with Retry-After support.
+  - provider/openai: any OpenAI-compatible server. Streaming and plain
+    calls, tool calls (indexed or not), usage with cached tokens, broken
+    model JSON reported as BadInput instead of failing the call, missing
+    call IDs generated.
+  - provider/retry: retries rate limits, server errors and cut streams with
+    jittered backoff; honours Retry-After; never repeats text already shown
+    unless the host handles OnRestart.
+  - provider/fake: scripted provider for tests.
+
+SECURITY
+
+  - HTTPS required except towards loopback; AllowHTTP for LAN and pods.
+  - Redirects never followed, so the key and the prompt cannot be sent to
+    a host nobody configured.
+  - Upstream error bodies never returned; reserved headers cannot be
+    overridden; control characters refused in keys and headers.
+  - Bounds on every untrusted byte stream (lines, events, bodies, number of
+    tool calls), far above real use; stalled streams are cut.
+  - Fuzz targets for the SSE decoder and the response parser.
