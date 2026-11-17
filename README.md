@@ -42,6 +42,24 @@ go run ./examples/chat -tool "che tempo fa a Roma?"
 
 Per un server HTTP non locale (LAN, pod) impostare `AllowHTTP: true`.
 
+## Decoratori
+
+Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,
+dall'esterno all'interno:
+
+```go
+spend, _ := budget.New(budget.Limits{Calls: 500, Tokens: 2_000_000})
+pace, _ := ratelimit.New(ratelimit.Config{RequestsPerMinute: 60, MaxConcurrent: 4})
+guard, _ := circuit.New(circuit.Config{})
+
+model := retry.Wrap(guard.Wrap(pace.Wrap(spend.Wrap(p))), retry.Config{})
+```
+
+- `retry` fuori da tutto: riprova anche il circuito aperto, aspettando la sonda.
+- `circuit` vede ogni tentativo; `ratelimit` li distanzia; `budget` li conta tutti.
+- Lo stesso `budget` o `ratelimit` può avvolgere più provider (agente, worker,
+  riassuntore) che pescano dalla stessa quota.
+
 ## Sviluppo
 
 ```sh

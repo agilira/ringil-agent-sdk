@@ -122,7 +122,9 @@ func TestGenerateBodyBound(t *testing.T) {
 		reply(t, w, `{"choices":[{"message":{"content":"`)
 		chunk := strings.Repeat("a", 1<<20)
 		for range maxBody>>20 + 1 {
-			reply(t, w, chunk)
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return // the client stopped reading at the bound, which is the point
+			}
 		}
 	})
 	if _, err := ask(p, nil); !errors.HasCode(err, agent.ErrProviderResponse) {
