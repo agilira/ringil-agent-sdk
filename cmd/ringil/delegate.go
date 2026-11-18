@@ -37,7 +37,7 @@ func (c *cli) delegateTool(ctx *orpheus.Context, p agent.Provider, parentTools a
 	if err != nil {
 		return nil, err
 	}
-	return delegate.Tool(delegate.Team{
+	crew, err := delegate.NewCrew(delegate.Team{
 		Provider: p,
 		Approve:  c.approve,
 		MaxTurns: ctx.GetGlobalFlagInt("max-turns"),
@@ -47,6 +47,12 @@ func (c *cli) delegateTool(ctx *orpheus.Context, p agent.Provider, parentTools a
 			{Name: "general", Description: "does a self-contained task with the same tools as you, except delegating and your own notes, task list and memory", System: generalSystem, Tools: general, Prepare: c.prepareWorker},
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	c.crew = crew
+	c.closers = append(c.closers, func() error { crew.Close(); return nil })
+	return crew.Tool(), nil
 }
 
 // personal are the parent's own: its notebooks, task list and memory. A

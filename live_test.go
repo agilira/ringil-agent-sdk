@@ -9,6 +9,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/todo"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
+	"github.com/agilira/ringil-agent-sdk/workflow"
 )
 
 type convertIn struct {
@@ -400,5 +402,33 @@ func TestLiveDelegation(t *testing.T) {
 	}
 	if !strings.Contains(strings.ReplaceAll(res.Text, ".", ""), "314") {
 		t.Fatalf("answer %q", res.Text)
+	}
+}
+
+// TestLiveWorkflowAndBackground: a real model as workers of a two-step
+// plan, then a background task whose report arrives later.
+func TestLiveWorkflowAndBackground(t *testing.T) {
+	model := liveModel(t)
+	crew, err := delegate.NewCrew(delegate.Team{Provider: model, Workers: []delegate.Worker{{Name: "writer", Description: "writes short texts", System: "Answer in one short sentence."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crew.Close()
+	r := &workflow.Runner{Crew: crew}
+	plan := workflow.Plan{Steps: []workflow.Step{
+		{Name: "number", Worker: "writer", Task: "Write only the number 314."},
+		{Name: "sentence", Worker: "writer", Task: "Write one sentence that contains the number from the report you received.", Needs: []string{"number"}},
+	}, Output: "sentence"}
+	res, err := r.Run(context.Background(), "live", plan, "", false)
+	if err != nil || !strings.Contains(res.Output, "314") {
+		t.Fatalf("workflow %v %v", res, err)
+	}
+	raw := json.RawMessage(`{"worker":"writer","task":"Write the word ciao.","background":true}`)
+	if _, err := crew.Tool().Call(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+	f, ok := crew.Next(context.Background())
+	if !ok || f.Err != nil || !strings.Contains(strings.ToLower(f.Report), "ciao") {
+		t.Fatalf("background %+v %v", f, ok)
 	}
 }

@@ -33,6 +33,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/todo"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
+	"github.com/agilira/ringil-agent-sdk/workflow"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -57,6 +58,8 @@ type cli struct {
 	closers []func() error
 	// notes are the session's notebooks, when there are any.
 	notes *notes.Notes
+	// crew runs the agent's sub-agents, background ones included.
+	crew *delegate.Crew
 	// projectNotes is the project notes folder, for workers to read.
 	projectNotes string
 	// readTools are the file reading tools, for read-only workers.
@@ -123,6 +126,9 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("memory", "List what the agent remembers").SetHandler(c.cmdMemory).
 		AddSubcommand(orpheus.NewCommand("search", "Search what the agent remembers").SetHandler(c.cmdMemory).SetUsage("memory search <words...>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.cmdMemoryRemove).SetUsage("memory rm <id...>")))
+	app.AddCommand(orpheus.NewCommand("workflow", "List the workflows the agent ran").SetHandler(c.cmdWorkflows).
+		AddSubcommand(orpheus.NewCommand("resume", "Continue an interrupted workflow").SetHandler(c.cmdWorkflowResume).SetUsage("workflow resume <id>")).
+		AddSubcommand(orpheus.NewCommand("resolve", "Record the checked outcome of an uncertain step, from standard input").SetHandler(c.cmdWorkflowResolve).SetUsage("workflow resolve <id> <step>")))
 	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.cmdRules))
 	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.cmdSkills).
 		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.cmdSkillInstall).SetUsage("skill install <dir>")).
@@ -253,7 +259,11 @@ func (c *cli) withDelegate(ctx *orpheus.Context, model agent.Provider, tools age
 	if err != nil {
 		return nil, err
 	}
-	return tools.With(dt)
+	wt, err := c.workflowTool()
+	if err != nil {
+		return nil, err
+	}
+	return tools.With(dt, wt)
 }
 
 // runContext adds to every run the project's rules (AGENTS.md and the
@@ -364,6 +374,9 @@ func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 	}
 	if !c.mustAsk(ctx, call, spec) || c.allowed[key] {
 		return true, nil
+	}
+	if call.Name == workflow.ToolName {
+		c.showPlan(call)
 	}
 	answer, err := c.ask("\n  ? " + who + " wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
 	if answer == "a" || answer == "always" || answer == "sempre" {

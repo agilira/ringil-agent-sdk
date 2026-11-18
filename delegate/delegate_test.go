@@ -40,11 +40,11 @@ func (s slow) Generate(ctx context.Context, req *agent.Request, sink agent.TextS
 
 func parent(t *testing.T, team Team, steps ...fake.Step) (*agent.Result, fake.Script) {
 	t.Helper()
-	tool, err := Tool(team)
+	crew, err := NewCrew(team)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := agent.NewRegistry(tool)
+	reg, err := agent.NewRegistry(crew.Tool())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +57,7 @@ func parent(t *testing.T, team Team, steps ...fake.Step) (*agent.Result, fake.Sc
 	if err != nil {
 		t.Fatal(err)
 	}
+	crew.Close() // finished tasks release their resources here
 	return res, p
 }
 
@@ -72,7 +73,7 @@ func TestWorkerReportsBack(t *testing.T) {
 		OnEvent: func(int, string, agent.Event) { events.Add(1) }}
 	res, p := parent(t, team, fake.Call(ToolName, `{"worker":"research","task":"Find the answer"}`), fake.Reply("It is 42."))
 	report := p.Requests()[1].Messages[2].Result.Content
-	if !strings.HasPrefix(report, "Found: 42.") || !strings.Contains(report, "[worker: 2 model calls") || calls.Load() != 1 || events.Load() == 0 {
+	if !strings.HasPrefix(report, "Task 1 (research):\nFound: 42.") || !strings.Contains(report, "[worker: 2 model calls") || calls.Load() != 1 || events.Load() == 0 {
 		t.Fatalf("report %q calls %d events %d", report, calls.Load(), events.Load())
 	}
 	checkCleanContext(t, worker.Requests()[0])
