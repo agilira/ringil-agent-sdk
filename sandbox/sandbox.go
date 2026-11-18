@@ -62,7 +62,8 @@ const (
 	ProxiedNetwork
 )
 
-// ProxyAddr is where a program under ProxiedNetwork finds its proxy.
+// ProxyAddr is where a program under ProxiedNetwork finds its proxy on
+// Linux; on macOS it is another loopback port, in HTTP_PROXY as always.
 const ProxyAddr = "127.0.0.1:3128"
 
 // Mount grants a host directory to the sandbox.
@@ -320,7 +321,7 @@ func isProxyEnv(k string) bool {
 }
 
 // fixedEnv is the environment the sandbox sets itself.
-func fixedEnv(spec Spec, tmp string) map[string]string {
+func fixedEnv(spec Spec, tmp, proxy string) map[string]string {
 	env := map[string]string{"PATH": "/usr/bin:/bin", "HOME": tmp, "TMPDIR": tmp, "LANG": "C.UTF-8"}
 	if len(spec.Path) > 0 {
 		env["PATH"] = strings.Join(spec.Path, ":")
@@ -330,7 +331,7 @@ func fixedEnv(spec Spec, tmp string) map[string]string {
 	}
 	if spec.Network == ProxiedNetwork {
 		for _, k := range proxyEnv {
-			env[k] = "http://" + ProxyAddr
+			env[k] = "http://" + proxy
 		}
 		env["NO_PROXY"], env["no_proxy"] = "", ""
 	}

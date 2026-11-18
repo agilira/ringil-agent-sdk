@@ -316,7 +316,7 @@ func (t *tool) result(ctx context.Context, out *capture, err error, timeout time
 // blindly.
 func hints(out string, failed bool, blocked []string) string {
 	var h []string
-	if failed && strings.Contains(out, "Read-only file system") {
+	if failed && (strings.Contains(out, "Read-only file system") || strings.Contains(out, "Operation not permitted")) {
 		h = append(h, "a protected file or a path outside the working directory is read-only here; "+
 			"change protected files with edit_file or write_file, which ask the user")
 	}
