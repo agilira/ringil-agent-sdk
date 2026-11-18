@@ -12,6 +12,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -249,5 +250,34 @@ func TestLoopbackEndpointNeedsLoopbackRemote(t *testing.T) {
 	card := &proto.AgentCard{SupportedInterfaces: []*proto.AgentInterface{proto.NewAgentInterface("http://127.0.0.1:6379", proto.TransportProtocolJSONRPC)}}
 	if err := checkEndpoints(r, card); !errors.HasCode(err, ErrConnect) {
 		t.Fatalf("loopback endpoint accepted: %v", err)
+	}
+}
+
+// 18/11: Qwen 3B invented a context_id and stalled on the refusal. IDs the
+// remote never gave are dropped, with a note; real ones are kept.
+func TestInventedIDsAreDropped(t *testing.T) {
+	var auth atomic.Int32
+	a := connectTest(t, Remote{Name: "reports", URL: remoteServer(t, "", &auth).URL, Poll: 20 * time.Millisecond})
+	call := func(in askIn) string {
+		raw, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := a.Tool().Call(bg, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.Content
+	}
+	first := call(askIn{Message: "task", ContextID: "conv-123"})
+	if !strings.Contains(first, "[context_id ignored") {
+		t.Fatalf("%q", first)
+	}
+	m := regexp.MustCompile(`context_id: ([^,\]]+)`).FindStringSubmatch(first)
+	if m == nil {
+		t.Fatalf("no context_id in %q", first)
+	}
+	if again := call(askIn{Message: "task", ContextID: m[1]}); strings.Contains(again, "ignored") {
+		t.Fatalf("a real context_id was dropped: %q", again)
 	}
 }

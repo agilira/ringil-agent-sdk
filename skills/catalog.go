@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,7 +114,12 @@ func (c *Catalog) Instructions() string {
 	var b strings.Builder
 	b.WriteString("\n\n<skills>\nSkills are procedures installed by the user. When a task matches a skill's description, call load_skill with its name before acting, then follow its instructions; read_skill_file reads the files it mentions, and run_skill_script, when offered, runs its scripts.\n")
 	for _, info := range c.List() {
-		line, err := json.Marshal(info)
+		// The scripts are named here: small models otherwise guess a
+		// script name instead of loading the skill first.
+		line, err := json.Marshal(struct {
+			Info
+			Scripts []string `json:"scripts,omitempty"`
+		}{info, c.scripts(info.Name)})
 		if err != nil {
 			continue
 		}
@@ -122,6 +128,18 @@ func (c *Catalog) Instructions() string {
 	}
 	b.WriteString("</skills>")
 	return b.String()
+}
+
+// scripts lists up to 10 files under scripts/ of a skill.
+func (c *Catalog) scripts(name string) []string {
+	files, _ := c.Files(name)
+	var out []string
+	for _, f := range files {
+		if strings.HasPrefix(f, "scripts/") && len(out) < 10 {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // Load returns the instructions of a skill: the body of its SKILL.md.
@@ -148,6 +166,37 @@ func (c *Catalog) Files(name string) ([]string, error) {
 	return out, nil
 }
 
+// resolve returns the path of file in skill name: the path itself, or the
+// only file with that last component.
+func (c *Catalog) resolve(name, file string) string {
+	m, ok := c.skills[name]
+	if !ok {
+		return file
+	}
+	if _, ok := m.Files[file]; ok {
+		return file
+	}
+	found, _, _ := byBase(m.Files, file)
+	return found
+}
+
+// byBase finds the only file whose last component is name.
+func byBase(files map[string]string, name string) (string, string, bool) {
+	if strings.Contains(name, "/") {
+		return name, "", false
+	}
+	found, sum, n := name, "", 0
+	for p, h := range files {
+		if path.Base(p) == name {
+			found, sum, n = p, h, n+1
+		}
+	}
+	if n != 1 {
+		return name, "", false
+	}
+	return found, sum, true
+}
+
 // listFiles names up to 20 files.
 func listFiles(files []string) string {
 	if len(files) > 20 {
@@ -164,6 +213,11 @@ func (c *Catalog) ReadFile(name, file string) ([]byte, error) {
 		return nil, notFound(name)
 	}
 	want, ok := m.Files[file]
+	if !ok {
+		// "stats.py" for scripts/stats.py: one file of that name is the
+		// one meant.
+		file, want, ok = byBase(m.Files, file)
+	}
 	if !ok {
 		// Its files are named: a model that guessed a script name can
 		// pick the real one instead of guessing again.

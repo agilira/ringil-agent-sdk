@@ -142,7 +142,7 @@ func (v *validator) object(n *Node, value any, path string) {
 	known := make(map[string]bool, len(n.Fields))
 	for _, f := range n.Fields {
 		known[f.Name] = true
-		child, present := obj[f.Name]
+		child, present := given(obj, f)
 		switch {
 		case present:
 			v.check(f.Node, child, join(path, f.Name))
@@ -156,6 +156,18 @@ func (v *validator) object(n *Node, value any, path string) {
 			v.ignored++
 		}
 	}
+}
+
+// given returns a field's value; null for an optional field means "not
+// given" (small models and OpenAI's strict mode send it for every optional
+// field) and is removed.
+func given(obj map[string]any, f Field) (any, bool) {
+	child, present := obj[f.Name]
+	if present && child == nil && !f.Required && !f.Node.Nullable {
+		delete(obj, f.Name)
+		return nil, false
+	}
+	return child, present
 }
 
 func join(path, name string) string {

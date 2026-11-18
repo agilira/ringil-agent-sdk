@@ -56,7 +56,40 @@ func liveModel(t *testing.T) agent.Provider {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return retry.Wrap(spend.Wrap(p), retry.Config{})
+	var wrapped agent.Provider = retry.Wrap(spend.Wrap(p), retry.Config{})
+	if os.Getenv("RINGIL_LIVE_TRACE") == "1" {
+		wrapped = traced{wrapped, t}
+	}
+	return wrapped
+}
+
+// traced logs what the model did, for telling our faults from the
+// model's: RINGIL_LIVE_TRACE=1 (live tests only; test data, no secrets).
+type traced struct {
+	agent.Provider
+	t *testing.T
+}
+
+func (p traced) Generate(ctx context.Context, req *agent.Request, sink agent.TextSink) (*agent.Response, error) {
+	first := len(req.Messages)
+	for first > 0 && req.Messages[first-1].Result != nil {
+		first--
+	}
+	for _, m := range req.Messages[first:] {
+		p.t.Logf("  <- %.200q", m.Result.Content)
+	}
+	resp, err := p.Provider.Generate(ctx, req, sink)
+	if err != nil {
+		p.t.Logf("  !! %v", err)
+		return resp, err
+	}
+	for _, c := range resp.Message.Calls {
+		p.t.Logf("  -> %s %.200s", c.Name, c.Input)
+	}
+	if txt := resp.Message.Text(); txt != "" {
+		p.t.Logf("  .. %.200q", txt)
+	}
+	return resp, nil
 }
 
 // TestLiveTypedTool lets a real model call a NewTool through the registry:
@@ -179,7 +212,8 @@ func TestLiveFileTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.ReplaceAll(res.Text, ".", ""), "4200") {
+	// 4.200, 4,200, 4200, 4 200: any way of writing it.
+	if !strings.Contains(strings.NewReplacer(".", "", ",", "", " ", "", "\u00a0", "").Replace(res.Text), "4200") {
 		t.Fatalf("answer %q", res.Text)
 	}
 }
@@ -398,7 +432,7 @@ func TestLiveDelegation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := a.Run(context.Background(), nil, agent.UserText("Quante unità di AX-7 abbiamo? Chiedi al worker warehouse."))
+	res, err := crew.Converse(context.Background(), a, nil, agent.UserText("Quante unità di AX-7 abbiamo? Chiedi al worker warehouse."))
 	if err != nil {
 		t.Fatal(err)
 	}

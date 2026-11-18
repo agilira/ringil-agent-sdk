@@ -48,6 +48,11 @@ func (n *Notes) run(ctx context.Context, in input) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	if in.Path == "" && in.NewPath != "" && in.Command != "rename" {
+		// new_path matters only to rename; models given a create often
+		// put the note's path there (three runs of three on Qwen 3B).
+		in.Path, in.NewPath = in.NewPath, ""
+	}
 	s, rel, err := n.resolve(in.Path)
 	if err != nil {
 		return "", err
@@ -66,6 +71,9 @@ var part = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$`)
 // resolve splits /<scope>/<rel> and checks every component: no hidden
 // names, no traversal, nothing but plain names.
 func (n *Notes) resolve(p string) (Scope, string, error) {
+	if strings.TrimSpace(p) == "" {
+		return Scope{}, "", agent.ToolError(ErrInput, "path is missing: give the note's path, starting with one of: "+n.describeScopes()+".")
+	}
 	clean := strings.Trim(p, "/")
 	name, rel, _ := strings.Cut(clean, "/")
 	s, ok := n.scopes[name]
@@ -201,13 +209,22 @@ func change(ctx context.Context, s Scope, rel string, in input, n *Notes) (strin
 	case "str_replace":
 		return edit(root, s, rel, func(t string) (string, error) { return replaceOnce(t, in.OldStr, in.NewStr) })
 	case "insert":
-		return edit(root, s, rel, func(t string) (string, error) { return insertAt(t, in.InsertLine, in.InsertText) })
+		return insert(root, s, rel, in)
 	case "delete":
 		return remove(root, s, rel)
 	case "rename":
 		return rename(root, s, rel, in.NewPath, n)
 	}
 	return "", agent.ToolError(ErrInput, "Unknown command.")
+}
+
+// insert at the top of a note that does not exist yet creates it: models
+// often start an INDEX.md this way.
+func insert(root *os.Root, s Scope, rel string, in input) (string, error) {
+	if _, err := root.Lstat(rel); os.IsNotExist(err) && in.InsertLine == 0 && rel != "." {
+		return create(root, s, rel, in.InsertText)
+	}
+	return edit(root, s, rel, func(t string) (string, error) { return insertAt(t, in.InsertLine, in.InsertText) })
 }
 
 func create(root *os.Root, s Scope, rel, text string) (string, error) {
@@ -232,6 +249,9 @@ func create(root *os.Root, s Scope, rel, text string) (string, error) {
 }
 
 func edit(root *os.Root, s Scope, rel string, fn func(string) (string, error)) (string, error) {
+	if _, err := root.Lstat(rel); os.IsNotExist(err) {
+		return "", agent.ToolError(ErrInput, "/"+s.Name+"/"+rel+" does not exist yet; to start it, use command create with file_text.")
+	}
 	text, err := readFile(s, rel)
 	if err != nil {
 		return "", err

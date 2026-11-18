@@ -89,3 +89,35 @@ func TestFoldersCount(t *testing.T) {
 		t.Fatal("limit ignored folders")
 	}
 }
+
+// 18/11: Nemotron 4B inserted at line 0 of an INDEX.md that did not exist
+// and gave up; that insert creates the note, other edits say to create.
+func TestInsertCreatesAMissingNote(t *testing.T) {
+	n, scratch, _ := newNotes(t)
+	if out := must(t, n, input{Command: "insert", Path: "/scratchpad/INDEX.md", InsertLine: 0, InsertText: "PostgreSQL 17"}); !strings.Contains(out, "Saved") {
+		t.Fatalf("%q", out)
+	}
+	if data, err := os.ReadFile(filepath.Join(scratch, "INDEX.md")); err != nil || string(data) != "PostgreSQL 17" {
+		t.Fatalf("%q %v", data, err)
+	}
+	_, err := call(t, n, input{Command: "str_replace", Path: "/scratchpad/other.md", OldStr: "a", NewStr: "b"})
+	if !strings.Contains(agent.ModelMessage(err), "does not exist yet; to start it, use command create") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// 18/11: Qwen 3B sent new_path instead of path for create, every run; it
+// is the path when the command is not rename. No path at all is named.
+func TestMissingPathIsNamed(t *testing.T) {
+	n, scratch, _ := newNotes(t)
+	if out := must(t, n, input{Command: "create", NewPath: "/scratchpad/INDEX.md", FileText: "x"}); !strings.Contains(out, "Saved") {
+		t.Fatalf("%q", out)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "INDEX.md")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := call(t, n, input{Command: "create", FileText: "x"})
+	if !strings.Contains(agent.ModelMessage(err), "path is missing") {
+		t.Fatalf("%v", err)
+	}
+}

@@ -107,7 +107,7 @@ func TestInstallLoadRead(t *testing.T) {
 	if err != nil || !strings.HasPrefix(body, "# Review") {
 		t.Fatalf("load %q %v", body, err)
 	}
-	if !strings.Contains(c.Instructions(), `{"name":"review","description":"Review files`) {
+	if !strings.Contains(c.Instructions(), `{"name":"review","description":"Review files`) || !strings.Contains(c.Instructions(), `"scripts":["scripts/stats.py"]}`) {
 		t.Fatalf("instructions %q", c.Instructions())
 	}
 }
@@ -171,5 +171,17 @@ func TestMissingFileNamesTheFiles(t *testing.T) {
 	var e *errors.Error
 	if !errors.HasCode(err, ErrNotFound) || !stderrors.As(err, &e) || !strings.Contains(e.UserMessage(), "its files: SKILL.md, reference/style.md, scripts/stats.py.") {
 		t.Fatalf("%v", err)
+	}
+}
+
+// 18/11: Qwen 3B asked for "stats.py"; the only file of that name is the
+// one meant. A name shared by two files still needs the full path.
+func TestFileByItsName(t *testing.T) {
+	cat, _ := installed(t)
+	if data, err := cat.ReadFile("review", "stats.py"); err != nil || !strings.Contains(string(data), "words") {
+		t.Fatalf("%q %v", data, err)
+	}
+	if _, err := cat.ReadFile("review", "config"); err == nil {
+		t.Fatal("a hidden file was reached by name")
 	}
 }

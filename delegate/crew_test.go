@@ -177,3 +177,49 @@ func TestWorkerTools(t *testing.T) {
 		t.Fatalf("call %q %v", out.Content, err)
 	}
 }
+
+// 18/11: a small model started its worker in the background and ended
+// its turn; the report was lost. Converse waits and runs again on it.
+func TestRunTakesBackgroundReports(t *testing.T) {
+	slowWorker := slow{fake.New(fake.Reply("314 units")), 100 * time.Millisecond}
+	crew, err := NewCrew(Team{Workers: []Worker{{Name: "w", Description: "w", Provider: slowWorker}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crew.Close()
+	parent := fake.New(fake.Call("w", `{"task":"stock?","background":true}`), fake.Reply("waiting"), fake.Reply("AX-7: 314"))
+	reg, err := agent.NewRegistry(crew.WorkerTools()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: parent, Tools: reg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := crew.Converse(bg, a, nil, agent.UserText("stock of AX-7?"))
+	if err != nil || res.Text != "AX-7: 314" {
+		t.Fatalf("%v %v", res, err)
+	}
+	if last := parent.Requests()[2].Messages; !strings.Contains(last[len(last)-1].Text(), "314 units") {
+		t.Fatal("the report did not reach the parent")
+	}
+}
+
+// 18/11: a workflow passed "[worker: 1 model calls, ...]" to the next
+// step, and Qwen 3B summarized the cost line as the result. RunCounted
+// returns the report alone; the delegating model still sees the cost.
+func TestCostLineOnlyForTheDelegatingModel(t *testing.T) {
+	crew, err := NewCrew(Team{Workers: []Worker{{Name: "w", Description: "w", Provider: fake.New(fake.Reply("314"), fake.Reply("314"))}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crew.Close()
+	report, spent, err := crew.RunCounted(bg, "w", "x")
+	if err != nil || report != "314" || spent.Calls != 1 {
+		t.Fatalf("%q %+v %v", report, spent, err)
+	}
+	out, err := callTool(t, crew.Tool(), taskIn{Worker: "w", Task: "x"})
+	if err != nil || !strings.Contains(out, "[worker: 1 model calls") {
+		t.Fatalf("%q %v", out, err)
+	}
+}

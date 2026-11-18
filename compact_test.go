@@ -7,7 +7,10 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/agilira/go-errors"
@@ -225,5 +228,40 @@ func TestLookalikeStubIsStillShortened(t *testing.T) {
 		if m.Result != nil && len(m.Result.Content) > 1000 {
 			t.Fatalf("a lookalike result was kept whole (%d bytes)", len(m.Result.Content))
 		}
+	}
+}
+
+// 18/11: Qwen 3B called read_page six times in one turn; all but one of
+// the results became stubs before the model ever saw them. Unseen results
+// now share the room, each keeping its beginning.
+func TestParallelResultsAreClippedNotStubbed(t *testing.T) {
+	page := 0
+	var mu sync.Mutex
+	read := agent.NewTool("read_page", "Read the next page", func(context.Context, struct{}) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		page++
+		return "KEY-" + strconv.Itoa(page) + " " + strings.Repeat("filler ", 600), nil
+	}, agent.ReadOnly())
+	calls := make([]agent.ToolCall, 4)
+	for i := range calls {
+		calls[i] = agent.ToolCall{Name: "read_page", Input: json.RawMessage(`{}`)}
+	}
+	p := fake.New(fake.Step{Calls: calls}, fake.Reply("done"))
+	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, read), ContextWindow: 3000})
+	if _, err := a.Run(context.Background(), nil, agent.UserText("read all pages")); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	for _, m := range p.Requests()[1].Messages {
+		if m.Result != nil {
+			if strings.HasPrefix(m.Result.Content, "[Tool result omitted") {
+				t.Fatalf("an unseen result was stubbed: %.80q", m.Result.Content)
+			}
+			seen = append(seen, m.Result.Content[:5])
+		}
+	}
+	if len(seen) != 4 {
+		t.Fatalf("results %v", seen)
 	}
 }

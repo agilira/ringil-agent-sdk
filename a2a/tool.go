@@ -38,6 +38,10 @@ func (a *Agent) ask(ctx context.Context, in askIn) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout())
 	defer cancel()
 	msg := proto.NewMessage(proto.MessageRoleUser, proto.NewTextPart(in.Message))
+	// Only IDs the remote gave: a model that invents one (or copies a
+	// placeholder) would get a refusal and stall; a new conversation
+	// starts instead, and the model is told.
+	note := a.vet(&in)
 	msg.ContextID = in.ContextID
 	msg.TaskID = proto.TaskID(in.TaskID)
 	// Return at once with the task, then follow it: the wait is ours to
@@ -52,9 +56,10 @@ func (a *Agent) ask(ctx context.Context, in askIn) (string, error) {
 	}
 	switch v := res.(type) {
 	case *proto.Message:
-		return a.cap(orEmpty(messageText(v)) + footer(v.ContextID, string(v.TaskID), "")), nil
+		return a.cap(orEmpty(messageText(v)) + a.footer(v.ContextID, string(v.TaskID), "") + note), nil
 	case *proto.Task:
-		return a.finish(ctx, v)
+		out, err := a.finish(ctx, v)
+		return out + note, err
 	}
 	return "", agent.ToolError(ErrCall, "The remote agent sent an answer of an unknown kind.")
 }
@@ -79,7 +84,7 @@ func (a *Agent) finish(ctx context.Context, task *proto.Task) (string, error) {
 		}
 		task = next
 	}
-	text := a.cap(orEmpty(taskText(task)) + footer(task.ContextID, string(task.ID), string(task.Status.State)))
+	text := a.cap(orEmpty(taskText(task)) + a.footer(task.ContextID, string(task.ID), string(task.Status.State)))
 	switch task.Status.State {
 	case proto.TaskStateFailed, proto.TaskStateRejected, proto.TaskStateCanceled:
 		return "", agent.ToolError(ErrCall, text)
@@ -148,6 +153,39 @@ func orEmpty(s string) string {
 // form: they are written into the answer the model reads, so they must
 // not carry lines or brackets of their own.
 var safeID = regexp.MustCompile(`^[A-Za-z0-9._:@/-]{1,128}$`)
+
+// footer shows the IDs to the model and remembers them as the remote's.
+func (a *Agent) footer(contextID, taskID, state string) string {
+	a.mu.Lock()
+	if a.seen == nil || len(a.seen) > 10000 {
+		a.seen = map[string]bool{}
+	}
+	for _, id := range []string{contextID, taskID} {
+		if safeID.MatchString(id) {
+			a.seen[id] = true
+		}
+	}
+	a.mu.Unlock()
+	return footer(contextID, taskID, state)
+}
+
+// vet drops the IDs the remote never gave and says so.
+func (a *Agent) vet(in *askIn) string {
+	note := ""
+	if in.ContextID != "" && !a.known(in.ContextID) {
+		in.ContextID, note = "", "\n[context_id ignored: it does not come from an earlier answer; this is a new conversation]"
+	}
+	if in.TaskID != "" && !a.known(in.TaskID) {
+		in.TaskID, note = "", note+"\n[task_id ignored: it does not come from an earlier answer]"
+	}
+	return note
+}
+
+func (a *Agent) known(id string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.seen[id]
+}
 
 func footer(contextID, taskID, state string) string {
 	var f []string

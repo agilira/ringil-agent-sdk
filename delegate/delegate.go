@@ -185,14 +185,25 @@ func (c *Crew) RunCounted(ctx context.Context, worker, taskText string) (report 
 			err = errors.New(agent.ErrToolPanic, "the worker panicked")
 		}
 	}()
-	report, err = c.countInto(ctx, t, taskText, &spent) // spent survives a panic
-	return report, spent, err
+	res, err := c.countInto(ctx, t, taskText, &spent) // spent survives a panic
+	if err != nil {
+		return "", spent, err
+	}
+	// The report alone: what it cost is in spent. A workflow passes the
+	// report to the next step, whose model must not read the cost line as
+	// part of the result.
+	return c.body(res), spent, nil
 }
 
-// work runs one message of a task on its worker and returns the report.
+// work runs one message of a task on its worker and returns the report
+// with what it cost, for the model that delegated.
 func (c *Crew) work(ctx context.Context, t *task, message string) (string, error) {
-	report, _, err := c.counted(ctx, t, message)
-	return report, err
+	var spent Spend
+	res, err := c.countInto(ctx, t, message, &spent)
+	if err != nil {
+		return "", err
+	}
+	return c.body(res) + costLine(res), nil
 }
 
 // Spend is what a task cost: model calls and tokens, counted as they
@@ -207,25 +218,18 @@ func (s Spend) Add(o Spend) Spend {
 	return Spend{Calls: s.Calls + o.Calls, Usage: s.Usage.Add(o.Usage)}
 }
 
-// counted runs one message of a task and reports what it cost.
-func (c *Crew) counted(ctx context.Context, t *task, message string) (string, Spend, error) {
-	var spent Spend
-	report, err := c.countInto(ctx, t, message, &spent)
-	return report, spent, err
-}
-
 // countInto runs one message of a task, adding what it costs to *spent
 // as calls happen, so a caller that recovers a panic keeps the count.
-func (c *Crew) countInto(ctx context.Context, t *task, message string, spent *Spend) (string, error) {
+func (c *Crew) countInto(ctx context.Context, t *task, message string, spent *Spend) (*agent.Result, error) {
 	ctx = context.WithValue(ctx, infoKey{}, Info{Task: t.id, Worker: t.worker.Name})
 	a, err := c.agentFor(t.worker, t.setup)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var res *agent.Result
 	for ev, err := range a.Stream(ctx, t.conv, agent.UserText(message)) {
 		if err != nil {
-			return "", errors.Wrap(err, agent.ErrToolFailed, "the worker stopped").WithUserMessage("The worker stopped before finishing: " + agent.ModelMessage(err))
+			return nil, errors.Wrap(err, agent.ErrToolFailed, "the worker stopped").WithUserMessage("The worker stopped before finishing: " + agent.ModelMessage(err))
 		}
 		switch ev.Kind {
 		case agent.EventModel:
@@ -242,9 +246,9 @@ func (c *Crew) countInto(ctx context.Context, t *task, message string, spent *Sp
 		}
 	}
 	if res == nil {
-		return "", agent.ToolError(agent.ErrToolFailed, "The worker ended without a report.")
+		return nil, agent.ToolError(agent.ErrToolFailed, "The worker ended without a report.")
 	}
-	return c.report(res), nil
+	return res, nil
 }
 
 func (c *Crew) agentFor(w Worker, setup Setup) (agent.Agent, error) {
@@ -270,8 +274,8 @@ func (c *Crew) agentFor(w Worker, setup Setup) (agent.Agent, error) {
 	})
 }
 
-// report is the worker's final text, bounded, with what it cost.
-func (c *Crew) report(res *agent.Result) string {
+// body is the worker's final text, bounded.
+func (c *Crew) body(res *agent.Result) string {
 	text := strings.TrimSpace(res.Text)
 	if text == "" {
 		text = "(the worker gave no final text)"
@@ -284,7 +288,12 @@ func (c *Crew) report(res *agent.Result) string {
 		}
 		text = text[:cut] + "\n[report cut]"
 	}
-	return text + "\n[worker: " + strconv.Itoa(res.Turns) + " model calls, " + strconv.Itoa(res.Usage.Input) + " in / " + strconv.Itoa(res.Usage.Output) + " out tokens; stop: " + string(res.Stop) + "]"
+	return text
+}
+
+// costLine says what a worker's turn cost.
+func costLine(res *agent.Result) string {
+	return "\n[worker: " + strconv.Itoa(res.Turns) + " model calls, " + strconv.Itoa(res.Usage.Input) + " in / " + strconv.Itoa(res.Usage.Output) + " out tokens; stop: " + string(res.Stop) + "]"
 }
 
 func firstPositive(vs ...int) int {
