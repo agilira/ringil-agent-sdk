@@ -160,8 +160,22 @@ func validHide(rel string) bool {
 // mount may use (/, /usr, /proc, /tmp and the like).
 func Reserved(target string) bool { return reserved(target) }
 
+// MaxHidden bounds the hidden paths of one sandbox, all mounts together:
+// each costs a few arguments to the Linux sandbox, which accepts 9000.
+const MaxHidden = 1500
+
+func validateHide(hide []string) error {
+	for _, h := range hide {
+		if !validHide(h) {
+			return configError("hidden paths are relative paths inside the mount")
+		}
+	}
+	return nil
+}
+
 func validateMounts(mounts []Mount) error {
 	seen := map[string]bool{}
+	hidden := 0
 	for _, m := range mounts {
 		m.Target = targetOf(m)
 		target := path.Clean(m.Target)
@@ -171,10 +185,11 @@ func validateMounts(mounts []Mount) error {
 		if reserved(target) {
 			return configError("mount target " + target + " is reserved")
 		}
-		for _, h := range m.Hide {
-			if !validHide(h) {
-				return configError("hidden paths are relative paths inside the mount")
-			}
+		if err := validateHide(m.Hide); err != nil {
+			return err
+		}
+		if hidden += len(m.Hide); hidden > MaxHidden {
+			return configError("too many hidden paths across the mounts")
 		}
 		seen[target] = true
 	}

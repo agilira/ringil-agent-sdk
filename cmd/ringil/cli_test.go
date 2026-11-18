@@ -656,14 +656,33 @@ func TestStartMountForScripts(t *testing.T) {
 	}
 }
 
-func TestScriptOutputGoesToStartDir(t *testing.T) {
+// Audit 18/11: delivered files reached .git in the start directory.
+func TestScriptOutputOutsideProjects(t *testing.T) {
 	h := newHarness(t, "")
-	work := t.TempDir()
-	cases := map[string]string{work: work, "/": "", "/usr/lib": "", h.dir: "", filepath.Join(h.dir, "ringil", "x"): ""}
-	for cwd, want := range cases {
-		h.c.cwd = func() (string, error) { return cwd, nil }
-		if got := h.c.outputDir(filepath.Join(h.dir, "ringil")); got != want {
-			t.Errorf("cwd %s: output %q, want %q", cwd, got, want)
+	home := t.TempDir()
+	if got := h.c.outputDir(home); got != filepath.Join(home, "ringil-output") {
+		t.Fatalf("output %q", got)
+	}
+	if got := h.c.outputDir(""); got != "" {
+		t.Fatalf("no home, output %q", got)
+	}
+}
+
+// Audit 18/11: runtime prefixes exposed ~/.local or the whole home.
+func TestRuntimePrefixes(t *testing.T) {
+	home := "/home/u"
+	cases := map[string]bool{
+		"/home/u/.nvm/versions/node/v22": true,
+		"/opt/node":                      true,
+		"/home/u":                        false,
+		"/home":                          false,
+		"/home/u/.local":                 false,
+		"/home/u/.cargo":                 false,
+		"/home/u/tools/node":             true,
+	}
+	for prefix, want := range cases {
+		if got := allowedPrefix(prefix, home); got != want {
+			t.Errorf("%s: %v", prefix, got)
 		}
 	}
 }

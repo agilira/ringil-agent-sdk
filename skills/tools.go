@@ -32,10 +32,23 @@ type Options struct {
 	Mounts []sandbox.Mount
 	// Output, when set, is the host directory that receives the files a
 	// script creates. Scripts run in an empty working directory (/work,
-	// also $OUTPUT_DIR); afterwards its files are copied into Output,
-	// never over an existing file: a name already taken gets a numbered
-	// one. Without Output the working directory is discarded.
+	// also $OUTPUT_DIR); afterwards its files are copied into a new folder
+	// of their own under Output (skill-date-time), never mixed into
+	// existing files; hidden names are left behind. Output is created
+	// when first needed. Without Output the
+	// working directory is discarded.
 	Output string
+	// MaxFiles and MaxBytes bound one hand-over; defaults 1000 files and
+	// 1 GiB.
+	MaxFiles int
+	MaxBytes int64
+	// OutputQuota, when set, bounds what Output may hold in total across
+	// runs; once full, new files are refused until it is emptied.
+	OutputQuota int64
+	// MountsFunc, when set, is called before every script for mounts
+	// that must reflect the moment, such as a start directory whose
+	// hidden paths can change during a session.
+	MountsFunc func() []sandbox.Mount
 	// Runtimes maps an interpreter name to the absolute path to run it
 	// with, for interpreters installed outside /usr (node under ~/.nvm);
 	// their directories must be in Mounts.
@@ -196,7 +209,7 @@ func (r *runner) run(ctx context.Context, in runIn) (string, error) {
 		Argv:      argv,
 		Dir:       workDir,
 		Env:       r.env(),
-		Mounts:    append([]sandbox.Mount{{Source: copyDir, Target: "/skill"}, {Source: work, Target: workDir, Writable: true}}, r.opts.Mounts...),
+		Mounts:    r.mounts(copyDir, work),
 		Network:   r.opts.Network,
 		Limits:    r.opts.Limits,
 		Protected: r.opts.Protected,
@@ -205,10 +218,18 @@ func (r *runner) run(ctx context.Context, in runIn) (string, error) {
 		Stderr:    out,
 	}
 	text, runErr := r.wait(ctx, spec, out)
-	return r.deliver(work, text, runErr)
+	return r.deliver(work, in.Skill, text, runErr)
 }
 
 const workDir = "/work"
+
+func (r *runner) mounts(copyDir, work string) []sandbox.Mount {
+	m := append([]sandbox.Mount{{Source: copyDir, Target: "/skill"}, {Source: work, Target: workDir, Writable: true}}, r.opts.Mounts...)
+	if r.opts.MountsFunc != nil {
+		m = append(m, r.opts.MountsFunc()...)
+	}
+	return m
+}
 
 // command is the interpreter, the script and its arguments.
 func (r *runner) command(in runIn) ([]string, error) {
@@ -235,24 +256,36 @@ func (r *runner) env() map[string]string {
 	return env
 }
 
-// deliver copies what the script created into Output, whether it
+// deliver copies what the script created under Output, whether it
 // succeeded or not, and tells the model where the files are.
-func (r *runner) deliver(work, text string, runErr error) (string, error) {
+func (r *runner) deliver(work, skill, text string, runErr error) (string, error) {
 	if r.opts.Output == "" {
 		return text, runErr
 	}
-	saved, err := deliverFiles(work, r.opts.Output)
-	if len(saved) > 0 {
-		text += "\n[Files saved: " + strings.Join(saved, ", ") + "]"
-	}
+	d, err := deliverFiles(work, r.opts.Output, skill, limits{files: r.opts.maxFiles(), bytes: r.opts.maxBytes(), quota: r.opts.OutputQuota})
+	note := d.summary()
 	var failed *errors.Error
 	switch {
-	case runErr != nil && stderrors.As(runErr, &failed) && len(saved) > 0:
-		return text, failed.WithUserMessage(failed.UserMsg + "\n[Files saved: " + strings.Join(saved, ", ") + "]")
+	case runErr != nil && stderrors.As(runErr, &failed) && note != "":
+		return text, failed.WithUserMessage(failed.UserMsg + note)
 	case err != nil && runErr == nil:
-		return text, errors.Wrap(err, ErrIO, "cannot save the script's files").WithUserMessage(text + "\nSome files could not be saved.")
+		return text, errors.Wrap(err, ErrIO, "cannot save the script's files").WithUserMessage(text + "\nThe files could not be saved.")
 	}
-	return text, runErr
+	return text + note, runErr
+}
+
+func (o Options) maxFiles() int {
+	if o.MaxFiles > 0 {
+		return o.MaxFiles
+	}
+	return defaultMaxFiles
+}
+
+func (o Options) maxBytes() int64 {
+	if o.MaxBytes > 0 {
+		return o.MaxBytes
+	}
+	return defaultMaxBytes
 }
 
 func (r *runner) timeout() time.Duration {
@@ -313,6 +346,7 @@ func (c *Catalog) copyFile(name, file, dir string) error {
 }
 
 func removeQuietly(dir string) {
+	unlockTree(dir)
 	if err := os.RemoveAll(dir); err != nil {
 		return // a temporary copy; the OS cleans its temp directory
 	}

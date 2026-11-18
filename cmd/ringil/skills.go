@@ -6,10 +6,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -53,30 +55,64 @@ func (c *cli) skillOptions() skills.Options {
 	if berr == nil {
 		opts.Protected = []string{filepath.Join(base, "ringil")}
 	}
-	home, herr := c.home()
-	if m, ok := c.startMount(home, base); ok {
-		opts.Mounts = append(opts.Mounts, m)
+	home := c.realHome()
+	opts.MountsFunc = func() []sandbox.Mount {
+		if m, ok := c.startMount(home, base); ok {
+			return []sandbox.Mount{m}
+		}
+		return nil
 	}
-	opts.Output = c.outputDir(base)
+	opts.Output = c.outputDir(home)
+	opts.OutputQuota = 10 << 30
 	c.addRuntimes(&opts, home)
-	if libs := c.pythonLibs(home, herr); len(libs) > 0 {
+	if libs := c.pythonLibs(home); len(libs) > 0 {
 		for _, l := range libs {
-			opts.Mounts = append(opts.Mounts, sandbox.Mount{Source: l})
+			if m, ok := maskedMount(l); ok {
+				opts.Mounts = append(opts.Mounts, m)
+			}
 		}
 		opts.Env = withEnv(opts.Env, "PYTHONPATH", strings.Join(libs, string(os.PathListSeparator)))
 	}
 	return opts
 }
 
-// outputDir: files scripts create land in the start directory, as they
-// would for the user running the script there; never over an existing
-// file. System directories and the agent's configuration receive nothing.
-func (c *cli) outputDir(config string) string {
-	cwd, err := c.cwd()
-	if err != nil || sandbox.Reserved(filepath.ToSlash(cwd)) || (config != "" && (inside(config, cwd) || inside(cwd, config))) {
+// realHome is the home with links resolved, so that comparisons with
+// resolved paths hold; empty when unknown.
+func (c *cli) realHome() string {
+	home, err := c.home()
+	if err != nil || !filepath.IsAbs(home) {
 		return ""
 	}
-	return cwd
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		return real
+	}
+	return home
+}
+
+// maxMasks keeps each mount's hidden paths a share of the sandbox's
+// total (sandbox.MaxHidden); a directory with more secrets than that is
+// not shown at all.
+const maxMasks = sandbox.MaxHidden / 5
+
+// maskedMount is dir read-only with the file tools' secrets hidden.
+func maskedMount(dir string) (sandbox.Mount, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	hide, err := files.Hidden(ctx, dir, nil)
+	if err != nil || len(hide) > maxMasks {
+		return sandbox.Mount{}, false
+	}
+	return sandbox.Mount{Source: dir, Hide: hide}, true
+}
+
+// outputDir: files scripts create are handed over in ~/ringil-output, one
+// folder per run, outside any project: dropped into the start directory
+// they could be picked up by tools that run code (git, test runners).
+func (c *cli) outputDir(home string) string {
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "ringil-output")
 }
 
 // runtimeNames are interpreters often installed per user (nvm, rbenv,
@@ -85,24 +121,22 @@ var runtimeNames = []string{"node", "ruby", "perl", "python3"}
 
 // addRuntimes makes interpreters installed outside /usr usable by
 // scripts: their installation directory is mounted read-only, with the
-// secrets policy applied, and scripts run them by absolute path. A
-// runtime living directly in the home or above it is left out: that would
-// expose the whole home.
+// secrets policy applied, and scripts run them by absolute path.
 func (c *cli) addRuntimes(opts *skills.Options, home string) {
 	for _, name := range runtimeNames {
 		real, prefix, ok := c.userRuntime(name, home)
 		if !ok {
 			continue
 		}
-		hide, err := files.Hidden(prefix, nil)
-		if err != nil {
+		m, ok := maskedMount(prefix)
+		if !ok {
 			continue
 		}
 		if opts.Runtimes == nil {
 			opts.Runtimes = map[string]string{}
 		}
 		opts.Runtimes[name] = real
-		opts.Mounts = append(opts.Mounts, sandbox.Mount{Source: prefix, Hide: hide})
+		opts.Mounts = append(opts.Mounts, m)
 		if name == "node" {
 			opts.Env = withEnv(opts.Env, "NODE_PATH", filepath.Join(prefix, "lib", "node_modules"))
 		}
@@ -110,21 +144,35 @@ func (c *cli) addRuntimes(opts *skills.Options, home string) {
 }
 
 // userRuntime finds name on PATH outside /usr; prefix is the installation
-// directory (the parent of its bin).
+// directory (the parent of its bin). Refused: a binary that is not the
+// interpreter itself (a version manager's shim), and a prefix that is the
+// home, contains it, or is a dot directory right under it (~/.local holds
+// far more than one runtime).
 func (c *cli) userRuntime(name, home string) (string, string, bool) {
 	p, err := exec.LookPath(name)
 	if err != nil {
 		return "", "", false
 	}
 	real, err := filepath.EvalSymlinks(p)
-	if err != nil || strings.HasPrefix(real, "/usr/") {
+	if err != nil || strings.HasPrefix(real, "/usr/") || !strings.HasPrefix(filepath.Base(real), name) {
 		return "", "", false
 	}
 	prefix := filepath.Dir(filepath.Dir(real))
-	if prefix == "/" || (home != "" && inside(home, prefix)) || sandbox.Reserved(filepath.ToSlash(prefix)) {
+	if prefix == "/" || sandbox.Reserved(filepath.ToSlash(prefix)) || !allowedPrefix(prefix, home) {
 		return "", "", false
 	}
 	return real, prefix, true
+}
+
+func allowedPrefix(prefix, home string) bool {
+	if home == "" {
+		return true
+	}
+	if inside(home, prefix) {
+		return false // the home itself, or above it
+	}
+	rel, err := filepath.Rel(home, prefix)
+	return err != nil || !strings.HasPrefix(rel, ".") || strings.Contains(rel, string(filepath.Separator))
 }
 
 func withEnv(env map[string]string, k, v string) map[string]string {
@@ -135,17 +183,22 @@ func withEnv(env map[string]string, k, v string) map[string]string {
 	return env
 }
 
-// startMount is the start directory for scripts, if it can be shown.
+// startMount is the start directory for scripts, read-only with secrets
+// hidden, unless it is the home, a system directory or holds the agent's
+// configuration. Computed before every script, so secrets created during
+// the session are hidden too.
 func (c *cli) startMount(home, config string) (sandbox.Mount, bool) {
 	cwd, err := c.cwd()
-	if err != nil || cwd == home || sandbox.Reserved(filepath.ToSlash(cwd)) || (config != "" && inside(config, cwd)) {
+	if err != nil {
 		return sandbox.Mount{}, false
 	}
-	hide, err := files.Hidden(cwd, nil)
-	if err != nil {
-		return sandbox.Mount{}, false // a tree too large to check stays out
+	if real, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = real
 	}
-	return sandbox.Mount{Source: cwd, Hide: hide}, true
+	if cwd == home || (home != "" && inside(home, cwd)) || sandbox.Reserved(filepath.ToSlash(cwd)) || (config != "" && inside(config, cwd)) {
+		return sandbox.Mount{}, false
+	}
+	return maskedMount(cwd)
 }
 
 // inside reports whether p is dir or below it.
@@ -169,12 +222,12 @@ func pythonVersion() string {
 // pythonLibs are the Python packages the user installed outside the
 // system: the active virtualenv first, then the user site (pip install
 // --user). Scripts see them read-only, as the user's own Python would.
-func (c *cli) pythonLibs(home string, herr error) []string {
+func (c *cli) pythonLibs(home string) []string {
 	var patterns []string
 	if venv := c.getenv("VIRTUAL_ENV"); venv != "" {
 		patterns = append(patterns, filepath.Join(venv, "lib", "python3*", "site-packages"))
 	}
-	if herr == nil && home != "" {
+	if home != "" {
 		patterns = append(patterns, filepath.Join(home, ".local", "lib", pythonVersion(), "site-packages"))
 	}
 	var libs []string
