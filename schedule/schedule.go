@@ -145,15 +145,19 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		return err
 	}
 	defer release()
-	if s.status, err = s.cfg.Store.Status(); err != nil {
-		return err
-	}
+	s.loadStatus()
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	s.load(true)
 	loaded := s.cfg.Clock.Now()
 	for {
 		now := s.cfg.Clock.Now()
+		if s.anyDue(now) {
+			// Edits from another process (a pause) cannot call Reload:
+			// read them before anything starts.
+			s.load(false)
+			loaded = now
+		}
 		for _, due := range s.due(now) {
 			wg.Go(func() { s.fire(ctx, due.job, due.at) })
 		}
@@ -166,6 +170,32 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			loaded = now
 		}
 	}
+}
+
+// loadStatus reads what became of the jobs. A status that cannot be read
+// is reported and started afresh: it is the scheduler's own record, and
+// the jobs must not stop over it.
+func (s *Scheduler) loadStatus() {
+	st, err := s.cfg.Store.Status()
+	if err != nil {
+		s.cfg.OnEvent(Event{Kind: JobInvalid, Err: err})
+		st = map[string]Status{}
+	}
+	s.mu.Lock()
+	s.status = st
+	s.mu.Unlock()
+}
+
+// anyDue reports whether a job's time has come.
+func (s *Scheduler) anyDue(now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.jobs {
+		if !p.next.IsZero() && !p.next.After(now) {
+			return true
+		}
+	}
+	return false
 }
 
 // wait sleeps until the next run, a reload (true) or the end (alive

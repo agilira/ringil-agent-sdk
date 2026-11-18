@@ -131,7 +131,9 @@ func parseCron(spec string, loc *time.Location) (*cron, error) {
 		bits[4] |= 1 // 7 is Sunday
 	}
 	return &cron{minute: bits[0], hour: bits[1], dom: bits[2], month: bits[3], dow: bits[4],
-		domAny: parts[2] == "*", dowAny: parts[4] == "*", loc: loc, text: spec}, nil
+		// "*" and "*/2" leave a day field unrestricted for the either rule,
+		// as in Vixie cron
+		domAny: strings.HasPrefix(parts[2], "*"), dowAny: strings.HasPrefix(parts[4], "*"), loc: loc, text: spec}, nil
 }
 
 // parseField reads a comma list of *, N, A-B, each with an optional /STEP.
@@ -219,29 +221,65 @@ func (c *cron) dayMatches(t time.Time) bool {
 }
 
 // searchYears bounds the search: an expression such as "0 0 30 2 *"
-// never matches, and Next then returns the zero time.
-const searchYears = 5
+// never matches, and Next then returns the zero time. Nine years reach
+// any February 29th, across a century that skips one.
+const searchYears = 9
 
-// Next walks forward a field at a time, in the job's time zone: a local
-// time skipped by a clock change is skipped, and a repeated one runs once
-// (Next is always later than t).
+// Next searches the clock's readings, not instants: candidates are wall
+// times (minute, hour, day, month as a clock in the job's zone shows
+// them), stepped in a calendar without clock changes, so the search
+// always moves forward. A wall time a clock change skips is skipped; one
+// it repeats runs at its first occurrence only.
 func (c *cron) Next(t time.Time) time.Time {
-	t = t.In(c.loc).Truncate(time.Minute).Add(time.Minute)
-	limit := t.AddDate(searchYears, 0, 0)
-	for t.Before(limit) {
-		switch {
-		case !has(c.month, int(t.Month())):
-			t = time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, c.loc)
-		case !c.dayMatches(t):
-			t = time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, c.loc)
-		case !has(c.hour, t.Hour()):
-			// by the clock, not by Truncate: some zones are half an hour off UTC
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, 0, 0, c.loc)
-		case !has(c.minute, t.Minute()):
-			t = t.Add(time.Minute)
-		default:
-			return t
+	t = t.In(c.loc)
+	wall := civil(t).Truncate(time.Minute).Add(time.Minute)
+	limit := wall.AddDate(searchYears, 0, 0)
+	for wall.Before(limit) {
+		next, ok := c.step(wall)
+		if !ok {
+			wall = next
+			continue
 		}
+		if at, exists := c.first(wall); exists && at.After(t) {
+			return at
+		}
+		wall = wall.Add(time.Minute)
 	}
 	return time.Time{}
+}
+
+// civil is t's wall reading as a UTC time: a calendar without clock
+// changes.
+func civil(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
+}
+
+// step returns wall when it matches, or the next wall time that might.
+func (c *cron) step(wall time.Time) (time.Time, bool) {
+	switch {
+	case !has(c.month, int(wall.Month())):
+		return time.Date(wall.Year(), wall.Month()+1, 1, 0, 0, 0, 0, time.UTC), false
+	case !c.dayMatches(wall):
+		return time.Date(wall.Year(), wall.Month(), wall.Day()+1, 0, 0, 0, 0, time.UTC), false
+	case !has(c.hour, wall.Hour()):
+		return wall.Truncate(time.Hour).Add(time.Hour), false
+	case !has(c.minute, wall.Minute()):
+		return wall.Add(time.Minute), false
+	}
+	return wall, true
+}
+
+// first is the earliest instant the job's clock reads wall, if any: none
+// in a gap, the first of two in a repeated hour. Offsets change by at
+// most a couple of hours, in steps of a quarter-hour or more.
+func (c *cron) first(wall time.Time) (time.Time, bool) {
+	guess := time.Date(wall.Year(), wall.Month(), wall.Day(), wall.Hour(), wall.Minute(), 0, 0, c.loc)
+	var best time.Time
+	for k := -12; k <= 12; k++ {
+		at := guess.Add(time.Duration(k) * 15 * time.Minute)
+		if civil(at).Equal(wall) && (best.IsZero() || at.Before(best)) {
+			best = at
+		}
+	}
+	return best, !best.IsZero()
 }
