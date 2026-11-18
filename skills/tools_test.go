@@ -68,7 +68,7 @@ func TestRunScript(t *testing.T) {
 	tools := Tools(c, Options{Sandbox: testSandbox(t)})
 	out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/stats.py", Args: []string{"-v"}, Stdin: "uno due tre"})
 	if err != nil || strings.TrimSpace(out) != "3 words ['-v']" {
-		t.Fatalf("run %q %v", out, err)
+		t.Fatalf("run %q %v: %s", out, err, agent.ModelMessage(err))
 	}
 	// 18/11: by its name alone, as Qwen 3B asked for it.
 	if out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "stats.py", Stdin: "a b"}); err != nil || strings.TrimSpace(out) != "2 words []" {
@@ -146,7 +146,7 @@ func TestShebangScriptAnywhereWithEnv(t *testing.T) {
 	tools := Tools(c, Options{Sandbox: testSandbox(t), Mounts: []sandbox.Mount{{Source: lib}}, Env: map[string]string{"PYTHONPATH": lib}})
 	out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "bin/greet"})
 	if err != nil || strings.TrimSpace(out) != "ciao" {
-		t.Fatalf("greet %q %v", out, err)
+		t.Fatalf("greet %q %v: %s", out, err, agent.ModelMessage(err))
 	}
 }
 
@@ -168,7 +168,7 @@ func TestScriptFilesAreDelivered(t *testing.T) {
 	tools := Tools(c, Options{Sandbox: testSandbox(t), Output: dest, Runtimes: map[string]string{"bash": "/usr/bin/bash"}})
 	out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/out.sh"})
 	if err != nil || !strings.Contains(out, `"out.txt" "sub/b.txt"`) || !strings.Contains(out, "entries not saved") {
-		t.Fatalf("run %q %v", out, err)
+		t.Fatalf("run %q %v: %s", out, err, agent.ModelMessage(err))
 	}
 	checkDelivered(t, dest)
 	// A failing script still hands over what it made, in a new folder.

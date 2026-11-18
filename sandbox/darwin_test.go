@@ -186,3 +186,13 @@ func TestMacCancelKillsTheGroup(t *testing.T) {
 		t.Fatal("cancel did not end the sandbox")
 	}
 }
+
+// Scripts in skills run python3; on macOS /usr/bin/python3 is a shim that
+// starts the developer tools' Python.
+func TestMacPython(t *testing.T) {
+	s := darwinOrSkip(t)
+	out, errOut, err := runMac(t, s, Spec{Argv: []string{"/usr/bin/python3", "-c", "print(1)"}})
+	if err != nil || out != "1\n" {
+		t.Fatalf("python3: %q %v\nstderr:\n%s", out, err, errOut)
+	}
+}

@@ -145,7 +145,8 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(withWorkspace(orpheus.NewCommand("serve", "Answer a local HTTP API (loopback only, bearer token) until Ctrl-C; each run gets its own agent").SetHandler(c.cmdServe).
 		AddFlag("listen", "", "127.0.0.1:8765", "loopback address and port to listen on").
 		AddIntFlag("max-runs", "", 4, "runs going at once").
-		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token")))
+		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token").
+		AddBoolFlag("no-schedule", "", false, "do not run the scheduled jobs (ringil schedule)")))
 	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
 		SetUsage("run <prompt...>")))
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).
@@ -167,6 +168,17 @@ func (c *cli) app() *orpheus.App {
 		AddSubcommand(orpheus.NewCommand("backup", "Save the agent's state to a new archive").SetHandler(c.cmdStateBackup).SetUsage("state backup <file.tar.gz>")).
 		AddSubcommand(orpheus.NewCommand("verify", "Check an archive without extracting it").SetHandler(c.cmdStateVerify).SetUsage("state verify <file.tar.gz>")).
 		AddSubcommand(orpheus.NewCommand("restore", "Restore an archive into a new directory, in quarantine").SetHandler(c.cmdStateRestore).SetUsage("state restore <file.tar.gz> <dir>")))
+	app.AddCommand(orpheus.NewCommand("schedule", "List the jobs `ringil serve` runs on a timetable").SetHandler(c.cmdSchedule).
+		AddSubcommand(orpheus.NewCommand("add", "Add or replace a job: cron (\"0 8 * * 1-5\"), @daily, @hourly or @every 10m").SetHandler(c.cmdScheduleAdd).
+			SetUsage("schedule add <name> --when <spec> <prompt...>").
+			AddFlag("when", "", "", "the timetable: a cron expression, @daily, @hourly, @weekly or @every DURATION").
+			AddFlag("profile", "", "", "the role that runs it (default: the flags and environment of serve)").
+			AddFlag("conversation", "", "", "carry on this conversation across runs (default: a fresh one each time)").
+			AddFlag("time-zone", "", "", "IANA time zone for the timetable, e.g. Europe/Rome (default: local)").
+			AddBoolFlag("catch-up", "", false, "run once at start-up if a run was missed while serve was down")).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete jobs").SetHandler(c.cmdScheduleRemove).SetUsage("schedule rm <name...>")).
+		AddSubcommand(orpheus.NewCommand("pause", "Stop jobs running, keeping them").SetHandler(c.cmdSchedulePause).SetUsage("schedule pause <name...>")).
+		AddSubcommand(orpheus.NewCommand("resume", "Let paused jobs run again").SetHandler(c.cmdScheduleResume).SetUsage("schedule resume <name...>")))
 	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.cmdRules))
 	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.cmdSkills).
 		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.cmdSkillInstall).SetUsage("skill install <dir>")).
