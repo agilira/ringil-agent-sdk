@@ -20,6 +20,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/memory/local"
+	"github.com/agilira/ringil-agent-sdk/memory/vector"
 	"github.com/agilira/ringil-agent-sdk/provider/budget"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
@@ -280,4 +281,38 @@ func TestLiveDiscovery(t *testing.T) {
 	if !called || !strings.Contains(res.Text, "21") {
 		t.Fatalf("called %v, answer %q", called, res.Text)
 	}
+}
+
+// TestLiveEmbeddings: a real embedding model finds a memory by meaning.
+// Cost: a handful of short texts, about $0.00002 with
+// text-embedding-3-small.
+func TestLiveEmbeddings(t *testing.T) {
+	base, model := os.Getenv("RINGIL_BASE_URL"), os.Getenv("RINGIL_EMBED_MODEL")
+	if base == "" || model == "" {
+		t.Skip("RINGIL_EMBED_MODEL not set")
+	}
+	mem := liveVectorMemory(t, base, model)
+	ctx := context.Background()
+	for _, fact := range []string{"Il gatto di Antonio si chiama Lira.", "La riunione settimanale con Acme è il martedì alle 10.", "La fattura 42 va pagata entro venerdì."} {
+		if _, err := mem.Put(ctx, agent.MemoryRecord{Content: fact}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := mem.Search(ctx, "quando ci vediamo con il cliente?", 1)
+	if err != nil || len(got) != 1 || !strings.Contains(got[0].Content, "Acme") {
+		t.Fatalf("by meaning: %v %v", got, err)
+	}
+}
+
+func liveVectorMemory(t *testing.T, base, model string) agent.Memory {
+	t.Helper()
+	emb, err := openai.NewEmbedder(openai.Config{BaseURL: base, Model: model, APIKey: os.Getenv("RINGIL_API_KEY")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, err := vector.New(filepath.Join(t.TempDir(), "mem"), emb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mem
 }

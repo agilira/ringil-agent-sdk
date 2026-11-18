@@ -5,6 +5,6 @@
 
 //go:build !unix
 
-package local
+package atomicfile
 
 const nonBlock = 0

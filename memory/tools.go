@@ -16,6 +16,8 @@ import (
 	"context"
 	"strings"
 
+	"github.com/agilira/go-errors"
+
 	agent "github.com/agilira/ringil-agent-sdk"
 )
 
@@ -50,7 +52,7 @@ func Tools(m agent.Memory) []agent.Tool {
 					limit = 10
 				}
 				recs, err := m.Search(ctx, in.Query, limit)
-				if err != nil {
+				if err != nil && !errors.HasCode(err, agent.ErrMemoryPartial) {
 					return "", err
 				}
 				return format(recs), nil
