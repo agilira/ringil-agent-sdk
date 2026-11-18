@@ -25,6 +25,15 @@ jobs:
         go-version: '1.27.x'
         check-latest: true
         cache: true
+    - name: Sandbox prerequisites
+      if: runner.os == 'Linux'
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor;
+      # the sandbox needs them, as on a developer machine with bubblewrap.
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q bubblewrap slirp4netns
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        echo "RINGIL_REQUIRE_SANDBOX=1" >> "$GITHUB_ENV"
     - name: Library
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
     - name: CLI
@@ -52,5 +61,11 @@ jobs:
       run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
     - name: Checks
       run: make lint security
+    - name: Cross-platform vet
+      # The sandbox has per-architecture and per-OS code paths.
+      run: |
+        GOARCH=arm64 go vet ./...
+        GOOS=windows go vet ./...
+        GOOS=darwin go vet ./...
     - name: Fuzz (short)
       run: make fuzz FUZZTIME=20s
