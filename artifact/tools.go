@@ -30,13 +30,13 @@ type Access struct {
 const maxRead = 64 << 10
 
 type listIn struct {
-	Scope string `json:"scope,omitempty" desc:"Which scope; default your own"`
+	Scope string `json:"scope,omitempty" desc:"Leave empty for your own scope; or the exact name of a scope you can read"`
 }
 
 type readIn struct {
 	Name    string `json:"name"`
 	Version int    `json:"version,omitempty" min:"0" desc:"Version; default the latest"`
-	Scope   string `json:"scope,omitempty" desc:"Which scope; default your own"`
+	Scope   string `json:"scope,omitempty" desc:"Leave empty for your own scope; or the exact name of a scope you can read"`
 	Offset  int    `json:"offset,omitempty" min:"0" desc:"Byte to start from, for long artifacts"`
 }
 
@@ -66,12 +66,27 @@ type tools struct {
 }
 
 func (t *tools) scopes() string {
-	return strings.Join(append([]string{t.a.Scope + " (yours)"}, t.a.Read...), ", ")
+	text := "your own scope is " + strconv.Quote(t.a.Scope)
+	if len(t.a.Read) > 0 {
+		text += "; you can also read " + strings.Join(quoteAll(t.a.Read), ", ")
+	}
+	return text + "; leave scope empty for your own"
 }
+
+func quoteAll(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = strconv.Quote(s)
+	}
+	return out
+}
+
+// own are words a model may use for its own scope.
+var own = map[string]bool{"your": true, "yours": true, "own": true, "mine": true, "my": true, "self": true, "default": true}
 
 // scope resolves a requested scope among those granted.
 func (t *tools) scope(want string) (string, error) {
-	if want == "" || want == t.a.Scope {
+	if want == "" || want == t.a.Scope || own[strings.ToLower(strings.TrimSpace(want))] {
 		return t.a.Scope, nil
 	}
 	for _, s := range t.a.Read {
@@ -79,7 +94,7 @@ func (t *tools) scope(want string) (string, error) {
 			return s, nil
 		}
 	}
-	return "", agent.ToolError(ErrInput, "You cannot read scope "+strconv.Quote(want)+"; yours are: "+t.scopes()+".")
+	return "", agent.ToolError(ErrInput, "You cannot read scope "+strconv.Quote(want)+": "+t.scopes()+".")
 }
 
 func (t *tools) list(ctx context.Context, in listIn) (string, error) {
