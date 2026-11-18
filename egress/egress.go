@@ -84,12 +84,12 @@ type Proxy struct {
 
 	mu      sync.Mutex
 	decided map[string]bool
-	asking  sync.Mutex // one question at a time
+	asking  chan struct{} // one question at a time; waiting ends with the context
 }
 
 // New checks the configuration and returns the proxy.
 func New(cfg Config) (*Proxy, error) {
-	p := &Proxy{cfg: cfg, exact: map[string]bool{}, ports: map[int]bool{}, decided: map[string]bool{}}
+	p := &Proxy{cfg: cfg, exact: map[string]bool{}, ports: map[int]bool{}, decided: map[string]bool{}, asking: make(chan struct{}, 1)}
 	for _, d := range cfg.Allow {
 		if err := p.allow(d); err != nil {
 			return nil, err
@@ -143,8 +143,17 @@ func (p *Proxy) Allowed(ctx context.Context, host string) (bool, error) {
 	if ok, known := p.known(host); known {
 		return ok, nil
 	}
-	p.asking.Lock()
-	defer p.asking.Unlock()
+	return p.ask(ctx, host)
+}
+
+// ask puts one question at a time to the user; waiting ends with ctx.
+func (p *Proxy) ask(ctx context.Context, host string) (bool, error) {
+	select {
+	case p.asking <- struct{}{}:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	defer func() { <-p.asking }()
 	if ok, known := p.known(host); known {
 		return ok, nil // decided while this one waited
 	}

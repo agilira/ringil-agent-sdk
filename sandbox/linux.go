@@ -216,7 +216,10 @@ func (l *launch) innerArgs(m Mount) ([]string, error) {
 		return nil, errors.Wrap(err, ErrGrant, "cannot open "+m.Source)
 	}
 	defer closeQuiet(root)
-	var args []string
+	args, err := l.pinArgs(root, m)
+	if err != nil {
+		return nil, err
+	}
 	for _, rel := range m.ReadOnly {
 		info, err := root.Lstat(rel)
 		if err != nil || !info.IsDir() && !info.Mode().IsRegular() {
@@ -229,6 +232,35 @@ func (l *launch) innerArgs(m Mount) ([]string, error) {
 		args = append(args, "--ro-bind-fd", l.add(f), path.Join(targetOf(m), rel))
 	}
 	return append(args, hideArgs(root, m)...), nil
+}
+
+// pinArgs binds every directory above a read-only path onto itself,
+// writable as before: a mount point cannot be renamed or removed, so the
+// program cannot move .git aside and put a copy it controls in its place.
+// Shallowest first, so that each lands on the one above.
+func (l *launch) pinArgs(root *os.Root, m Mount) ([]string, error) {
+	seen := map[string]bool{}
+	var dirs []string
+	for _, rel := range m.ReadOnly {
+		for d := path.Dir(rel); d != "." && !seen[d]; d = path.Dir(d) {
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	sort.Slice(dirs, func(i, j int) bool { return strings.Count(dirs[i], "/") < strings.Count(dirs[j], "/") })
+	var args []string
+	for _, d := range dirs {
+		info, err := root.Lstat(d)
+		if err != nil || !info.IsDir() {
+			continue // absent, or a link: nothing below it is read-only either
+		}
+		f, err := root.Open(d)
+		if err != nil {
+			return nil, errors.Wrap(err, ErrGrant, "cannot open "+d+" in "+m.Source)
+		}
+		args = append(args, "--bind-fd", l.add(f), path.Join(targetOf(m), d))
+	}
+	return args, nil
 }
 
 // hideArgs covers each hidden path with an empty read-only directory or
@@ -258,7 +290,10 @@ func hideArgs(root *os.Root, m Mount) []string {
 // cannot block) and never through a final symbolic link.
 func openSource(source string) (*os.File, bool, error) {
 	info, err := os.Lstat(source)
-	if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, false, errors.New(ErrGrant, "granted paths must not be symbolic links (resolve them first): "+source)
+	}
+	if err != nil || info.IsDir() {
 		f, err := openDir(source)
 		return f, true, err
 	}

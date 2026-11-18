@@ -70,3 +70,29 @@ func TestDangerous(t *testing.T) {
 		}
 	}
 }
+
+// Audit 18/11: destructive commands that passed unconfirmed.
+func TestDangerousAuditCases(t *testing.T) {
+	for _, c := range []string{
+		"git reset --har", "git commit --amen -m x", "git clean --forc -d", "git checkout --forc main",
+		"rm --rec build", "rm --recur build",
+		`find . -name '*.o' | xargs -d '\n' rm -rf`, "xargs -a list.txt rm -rf",
+		"timeout -s KILL 60 git push origin main", "timeout --signal KILL 60 rm -rf build",
+		"env -u GIT_DIR git push", "env -C sub git push", "env -S 'rm -rf build'", "nice -n 5 rm -rf build",
+		`trap 'rm -rf build' EXIT`, "git submodule foreach 'git reset --hard'",
+		"git submodule foreach --recursive git clean -fdx", "git bisect run sh -c 'git reset --hard'", "watch -n1 'git push'",
+		"git --attr-source HEAD push", "git -c alias.p=push p origin main", "git -c alias.nuke='reset --hard' nuke",
+		"git prune --expire=now", "git worktree remove --force ../wt", "busybox rm -rf build",
+		`$'\x72m' -rf build`, "git checkout HEAD src/main.go",
+	} {
+		if len(Dangerous(c)) == 0 {
+			t.Errorf("not dangerous: %s", c)
+		}
+	}
+	for _, c := range []string{`[ -f go.mod ] && go build ./...`, `[[ -d x ]] || mkdir x`, "watch -n 2 git status",
+		"trap 'echo bye' EXIT", "git submodule update --init", "timeout -s INT 30 go test ./...", "git checkout main"} {
+		if why := Dangerous(c); len(why) > 0 {
+			t.Errorf("flagged %s: %v", c, why)
+		}
+	}
+}

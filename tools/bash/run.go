@@ -92,9 +92,14 @@ func within(p, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// runSandboxed runs command in the sandbox.
+// runSandboxed runs command in the sandbox. One at a time: hidden and
+// read-only paths are found by walking the working directory and then
+// mounted by path, so nothing may change it in between; and the
+// repository checks after a run must see that run's changes alone.
 func (t *tool) runSandboxed(ctx context.Context, command string, out *capture) error {
-	spec, err := t.spec(ctx, command, out)
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+	spec, repos, err := t.spec(ctx, command, out)
 	if err != nil {
 		return err
 	}
@@ -110,13 +115,15 @@ func (t *tool) runSandboxed(ctx context.Context, command string, out *capture) e
 	if err != nil {
 		return err
 	}
-	return p.Wait()
+	err = p.Wait()
+	out.notes = guardRepos(context.WithoutCancel(ctx), t.cfg.Dir, repos)
+	return err
 }
 
-func (t *tool) spec(ctx context.Context, command string, out *capture) (sandbox.Spec, error) {
-	mounts, err := t.mounts(ctx)
+func (t *tool) spec(ctx context.Context, command string, out *capture) (sandbox.Spec, repoState, error) {
+	mounts, repos, err := t.mounts(ctx)
 	if err != nil {
-		return sandbox.Spec{}, err
+		return sandbox.Spec{}, nil, err
 	}
 	env := map[string]string{"TERM": "dumb", "PAGER": "cat", "GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0"}
 	for k, v := range t.cfg.Env {
@@ -133,7 +140,7 @@ func (t *tool) spec(ctx context.Context, command string, out *capture) (sandbox.
 		Protected: t.cfg.Never,
 		Stdout:    out,
 		Stderr:    out,
-	}, nil
+	}, repos, nil
 }
 
 // limits raise the sandbox's defaults for builds: more processes, and CPU
@@ -158,40 +165,65 @@ func (t *tool) limits(ctx context.Context) sandbox.Limits {
 
 // mounts grants the Read paths, then the working directory: deepest last,
 // so that a mount inside another shows over it.
-func (t *tool) mounts(ctx context.Context) ([]sandbox.Mount, error) {
-	work, err := t.workMount(ctx)
+func (t *tool) mounts(ctx context.Context) ([]sandbox.Mount, repoState, error) {
+	work, repos, err := t.workMount(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	mounts := []sandbox.Mount{work}
 	for _, r := range t.cfg.Read {
-		if r == t.cfg.Dir || files.Excluded(r, t.cfg.Exclude) {
-			continue
-		}
-		info, err := os.Stat(r)
+		m, ok, err := t.readMount(ctx, r)
 		if err != nil {
-			continue // gone: nothing to grant
+			return nil, nil, err
 		}
-		m := sandbox.Mount{Source: r}
-		if info.IsDir() {
-			if m.Hide, err = t.hiddenOf(ctx, r); err != nil {
-				return nil, err
-			}
+		if ok {
+			mounts = append(mounts, m)
 		}
-		mounts = append(mounts, m)
 	}
-	sort.SliceStable(mounts, func(i, j int) bool { return depth(mounts[i].Source) < depth(mounts[j].Source) })
-	return mounts, nil
+	sort.SliceStable(mounts, func(i, j int) bool { return depth(target(mounts[i])) < depth(target(mounts[j])) })
+	return mounts, repos, nil
+}
+
+func target(m sandbox.Mount) string {
+	if m.Target != "" {
+		return m.Target
+	}
+	return m.Source
+}
+
+// readMount grants a Read path at its own path. A symbolic link (a
+// dotfile manager's ~/.gitconfig) is resolved here: what it points to is
+// granted, where the link is.
+func (t *tool) readMount(ctx context.Context, r string) (sandbox.Mount, bool, error) {
+	real, err := filepath.EvalSymlinks(r)
+	if err != nil || r == t.cfg.Dir || files.Excluded(r, t.cfg.Exclude) || files.Excluded(real, t.cfg.Exclude) {
+		return sandbox.Mount{}, false, nil // gone, the working directory itself, or a secret
+	}
+	info, err := os.Stat(real)
+	if err != nil {
+		return sandbox.Mount{}, false, nil
+	}
+	m := sandbox.Mount{Source: real}
+	if real != r {
+		m.Target = filepath.ToSlash(r)
+	}
+	if info.IsDir() {
+		if m.Hide, err = t.hiddenOf(ctx, real); err != nil {
+			return sandbox.Mount{}, false, err
+		}
+	}
+	return m, true, nil
 }
 
 func depth(p string) int { return strings.Count(filepath.ToSlash(filepath.Clean(p)), "/") }
 
 // workMount is the working directory, writable, with its secrets hidden
 // (walked each time: they come and go) and its protected paths read-only.
-func (t *tool) workMount(ctx context.Context) (sandbox.Mount, error) {
+// It also returns the repositories found, for the checks after the run.
+func (t *tool) workMount(ctx context.Context) (sandbox.Mount, repoState, error) {
 	hide, err := files.Hidden(ctx, t.cfg.Dir, t.cfg.Exclude)
 	if err != nil {
-		return sandbox.Mount{}, err
+		return sandbox.Mount{}, nil, err
 	}
 	protected := t.cfg.Protected
 	if protected == nil {
@@ -199,17 +231,21 @@ func (t *tool) workMount(ctx context.Context) (sandbox.Mount, error) {
 	}
 	found, err := files.Hidden(ctx, t.cfg.Dir, protected)
 	if err != nil {
-		return sandbox.Mount{}, err
+		return sandbox.Mount{}, nil, err
 	}
 	var ro []string
 	for _, p := range found {
 		ro = append(ro, readOnly(t.cfg.Dir, p)...)
 	}
-	return sandbox.Mount{Source: t.cfg.Dir, Writable: true, Hide: hide, ReadOnly: ro}, nil
+	repos, err := scanRepos(ctx, t.cfg.Dir)
+	if err != nil {
+		return sandbox.Mount{}, nil, err
+	}
+	return sandbox.Mount{Source: t.cfg.Dir, Writable: true, Hide: hide, ReadOnly: ro}, repos, nil
 }
 
 // readOnly maps a protected path to what stays read-only: of a repository
-// only what makes git run code (hooks, configuration, info/) is, so that
+// only what makes git run code or look elsewhere for it, so that
 // committing works.
 func readOnly(dir, rel string) []string {
 	if path.Base(rel) != ".git" {
@@ -219,7 +255,11 @@ func readOnly(dir, rel string) []string {
 	if err != nil || !info.IsDir() {
 		return []string{rel} // a worktree's .git file points elsewhere: kept as it is
 	}
-	return []string{rel + "/hooks", rel + "/config", rel + "/info"}
+	out := make([]string, 0, len(gitGuarded))
+	for _, g := range gitGuarded {
+		out = append(out, rel+"/"+g)
+	}
+	return out
 }
 
 // hiddenOf walks a Read directory once for the tool's life: toolchains

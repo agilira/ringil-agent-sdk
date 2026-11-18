@@ -26,7 +26,7 @@ var DefaultExclude = []string{
 	"id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
 	// cloud, cluster and package registry credentials
 	".aws", ".azure", ".kube", ".docker", ".config/gcloud", ".config/gh", ".config/hub",
-	".git-credentials", ".npmrc", "etc/npmrc", ".pypirc", ".gem/credentials", ".cargo/credentials*",
+	".git-credentials", ".config/git/credentials", ".npmrc", "etc/npmrc", ".pypirc", ".gem/credentials", ".cargo/credentials*",
 	".terraform.d/credentials*", ".m2/settings*.xml",
 	// password stores, keyrings and browser profiles
 	".password-store", ".local/share/keyrings", "Keychains",

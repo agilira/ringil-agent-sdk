@@ -228,3 +228,25 @@ func TestStopEndsOpenTunnels(t *testing.T) {
 		t.Fatal("tunnel still open after stop")
 	}
 }
+
+// Audit 18/11: a call whose run had ended waited on another call's open
+// question, past its own timeout.
+func TestWaitingForAQuestionEndsWithTheContext(t *testing.T) {
+	release := make(chan struct{})
+	p, _ := New(Config{Ask: func(ctx context.Context, host string) (bool, error) {
+		<-release
+		return true, nil
+	}})
+	go func() { _, _ = p.Allowed(context.Background(), "a.test") }()
+	time.Sleep(50 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if ok, err := p.Allowed(ctx, "b.test"); ok || err == nil {
+		t.Fatalf("%v %v", ok, err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("waited past the context")
+	}
+	close(release)
+}
