@@ -90,7 +90,7 @@ func New(cfg Config) (Agent, error) {
 	if window == 0 {
 		window = cfg.Provider.Info().ContextWindow
 	}
-	c := &compactor{cfg: cfg.Compaction, window: window, provider: cfg.Provider, summaries: map[string]string{}}
+	c := &compactor{cfg: cfg.Compaction, window: window, provider: cfg.Provider}
 	return &loop{cfg: cfg, compactor: c}, nil
 }
 
@@ -145,7 +145,6 @@ var errStopped = stderrors.New("event consumer stopped")
 type run struct {
 	cfg       Config
 	compactor *compactor
-	est       estimator
 	lastBytes int
 	conv      Conversation
 	yield     func(Event, error) bool
@@ -239,16 +238,17 @@ func (r *run) execute(ctx context.Context) error {
 
 func (r *run) callModel(ctx context.Context) (*Response, error) {
 	full := &Request{System: r.cfg.System, Messages: r.msgs, Tools: r.cfg.Tools.Specs(), MaxTokens: r.cfg.MaxTokens}
-	resp, err := r.generate(ctx, full, r.compactor.budget())
-	if errors.HasCode(err, ErrProviderContext) && !r.cfg.Compaction.Disabled {
+	resp, streamed, err := r.generate(ctx, full, r.compactor.budget(r.cfg.MaxTokens))
+	if errors.HasCode(err, ErrProviderContext) && !streamed && !r.cfg.Compaction.Disabled {
 		// The estimate was wrong or the window unknown: compact harder,
-		// to half of what was just refused, and try once more.
-		resp, err = r.generate(ctx, full, r.est.tokens(r.lastBytes)/2)
+		// to half of what was just refused, and try once more. Not after
+		// text was shown: the retry would show it twice.
+		resp, _, err = r.generate(ctx, full, max(1, r.compactor.tokens(r.lastBytes)/2))
 	}
 	if err != nil {
 		return nil, err
 	}
-	r.est.learn(r.lastBytes, resp.Usage.Input)
+	r.compactor.learn(r.lastBytes, resp.Usage.Input)
 	r.result.Turns++
 	r.result.Usage = r.result.Usage.Add(resp.Usage)
 	msg := resp.Message.Clone()
@@ -264,24 +264,27 @@ func (r *run) callModel(ctx context.Context) (*Response, error) {
 }
 
 // generate sends full, compacted to budget tokens, and streams the answer.
-func (r *run) generate(ctx context.Context, full *Request, budget int) (*Response, error) {
+// It reports whether any text reached the caller.
+func (r *run) generate(ctx context.Context, full *Request, budget int) (*Response, bool, error) {
 	req := *full
 	if !r.cfg.Compaction.Disabled {
-		msgs, what, err := r.compactor.view(ctx, full, &r.est, budget)
-		if err != nil {
-			return nil, err
-		}
-		if what != "" {
-			if err := r.emit(Event{Kind: EventCompacted, Text: what}); err != nil {
-				return nil, err
+		view := r.compactor.view(ctx, full, budget)
+		// A summary is a model call: its cost belongs to this run.
+		r.result.Usage = r.result.Usage.Add(view.usage)
+		if view.what != "" {
+			if err := r.emit(Event{Kind: EventCompacted, Text: view.what, Usage: view.usage}); err != nil {
+				return nil, false, err
 			}
 		}
-		req.Messages = msgs
+		req.Messages = view.msgs
 	}
 	r.lastBytes = requestBytes(&req)
-	return r.cfg.Provider.Generate(ctx, &req, func(delta string) error {
+	streamed := false
+	resp, err := r.cfg.Provider.Generate(ctx, &req, func(delta string) error {
+		streamed = true
 		return r.emit(Event{Kind: EventText, Text: delta})
 	})
+	return resp, streamed, err
 }
 
 // uniqueIDs renames call IDs that repeat an earlier one: some servers reuse
