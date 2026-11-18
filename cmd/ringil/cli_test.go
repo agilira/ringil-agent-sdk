@@ -21,6 +21,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
+	"github.com/agilira/ringil-agent-sdk/sandbox"
 )
 
 type harness struct {
@@ -326,5 +327,79 @@ func TestUnsafeEnvFileRefused(t *testing.T) {
 	}
 	if code := h.run("--key-env", "bad name", "run", "x"); code != exitError {
 		t.Fatal("invalid key name accepted")
+	}
+}
+
+func checkSamePath(t *testing.T, got []sandbox.Mount) {
+	t.Helper()
+	if got[0].Target != "" || got[0].Writable || got[1].Source != "/same/rw" || !got[1].Writable {
+		t.Fatalf("same-path mounts %+v", got)
+	}
+}
+
+func TestParseMounts(t *testing.T) {
+	got, err := parseMounts([]string{"data:/in", "/abs:/out:rw", "/same", "/same/rw:rw"})
+	if err != nil || len(got) != 4 || !filepath.IsAbs(got[0].Source) || got[0].Writable || !got[1].Writable || got[1].Target != "/out" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	checkSamePath(t, got[2:])
+	for _, bad := range []string{"", ":/b", "a:/b:ro", "a:/b:c:rw"} {
+		if _, err := parseMounts([]string{bad}); !errors.HasCode(err, ErrUsage) {
+			t.Errorf("%q accepted: %v", bad, err)
+		}
+	}
+}
+
+// stubSandbox records the spec and exits with the given error.
+type stubSandbox struct {
+	spec sandbox.Spec
+	exit error
+}
+
+func (s *stubSandbox) Start(_ context.Context, spec sandbox.Spec) (sandbox.Process, error) {
+	s.spec = spec
+	return s, nil
+}
+
+func (s *stubSandbox) Wait() error { return s.exit }
+
+func checkSandboxSpec(t *testing.T, spec sandbox.Spec) {
+	t.Helper()
+	if strings.Join(spec.Argv, " ") != "python3 -V" || spec.Network != sandbox.IsolatedNetwork || spec.Dir != "/w" || len(spec.Mounts) != 1 {
+		t.Fatalf("spec %+v", spec)
+	}
+	if len(spec.Protected) != 1 || !strings.HasSuffix(spec.Protected[0], "ringil") {
+		t.Fatalf("protected %v", spec.Protected)
+	}
+}
+
+func TestSandboxCommand(t *testing.T) {
+	h := newHarness("")
+	stub := &stubSandbox{}
+	h.c.newSandbox = func() (sandbox.Sandbox, error) { return stub, nil }
+	if code := h.run("sandbox", "--mount", "x:/w:rw", "--net", "--dir", "/w", "--", "python3", "-V"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	checkSandboxSpec(t, stub.spec)
+	if code := h.run("sandbox"); code != exitError {
+		t.Fatal("empty command accepted")
+	}
+	h.c.newSandbox = func() (sandbox.Sandbox, error) { return nil, errors.New(sandbox.ErrUnavailable, "none here") }
+	if code := h.run("sandbox", "--", "true"); code != exitError || !strings.Contains(h.err.String(), "none here") {
+		t.Fatalf("unavailable: %q", h.err)
+	}
+}
+
+// flash-flags v1.3.0 kept only the last of repeated --mount flags; v1.3.1
+// accumulates them.
+func TestRepeatedMountFlags(t *testing.T) {
+	h := newHarness("")
+	stub := &stubSandbox{}
+	h.c.newSandbox = func() (sandbox.Sandbox, error) { return stub, nil }
+	if code := h.run("sandbox", "--mount", "/a", "--mount", "/b:rw", "--", "true"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if len(stub.spec.Mounts) != 2 || stub.spec.Mounts[0].Source != "/a" || stub.spec.Mounts[1].Source != "/b" {
+		t.Fatalf("mounts %+v", stub.spec.Mounts)
 	}
 }

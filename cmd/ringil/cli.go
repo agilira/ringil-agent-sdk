@@ -18,6 +18,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
+	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
@@ -37,6 +38,8 @@ type cli struct {
 	turnContext func(context.Context) (context.Context, context.CancelFunc)
 	// configDir is where sessions live by default.
 	configDir func() (string, error)
+	// newSandbox returns the platform sandbox; tests may replace it.
+	newSandbox func() (sandbox.Sandbox, error)
 }
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
@@ -46,7 +49,8 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
-		configDir: os.UserConfigDir,
+		configDir:  os.UserConfigDir,
+		newSandbox: sandbox.New,
 	}
 }
 
@@ -72,6 +76,11 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.cmdSessionRemove).
 			SetUsage("sessions rm <name...>")))
+	app.AddCommand(orpheus.NewCommand("sandbox", "Run a command isolated, as scripts and tools will be").SetHandler(c.cmdSandbox).
+		SetUsage("sandbox [--mount DIR[:/dest][:rw]]... [--net] [--dir /path] -- command [args...]").
+		AddStringSliceFlag("mount", "", nil, "grant a host directory, at its own path unless :/dest is given; read-only unless :rw").
+		AddBoolFlag("net", "", false, "give the command an isolated network (no access to the host's services)").
+		AddFlag("dir", "", "", "working directory inside the sandbox"))
 	app.SetDefaultCommand("chat")
 	return app
 }
