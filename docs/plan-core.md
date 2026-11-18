@@ -406,7 +406,7 @@ prima del commit dopo:
 | 6 | MCP stdio/HTTP + OAuth | FATTO 18/11: modulo mcp/ sull'SDK ufficiale; stdio nel sandbox; nessun replay; consenso solo da operatore; login OAuth con token privati |
 | 7 | Delega ai worker (sottoinsiemi di tool, budget condiviso, contesto fresco) | `Spawner` per istanze separate più avanti |
 | 8 | Workflow locali + journal durevole (+ workflow scritti dall'agente) | stesso motore per i piani del modello |
-| 9 | Scratchpad e memoria di progetto Markdown (0.10) + todo dell'agente | |
+| 9 | Scratchpad e memoria di progetto Markdown (0.10) + todo dell'agente | FATTO 18/11: tool notes (semantica memory tool), scope scelti dall'host anche read-only, INDEX.md nel contesto via Config.Context; todo_write con lista nella conversazione |
 | 10 | Ruolo e provider per profilo, regole di progetto, `AGENTS.md` automatico (0.13-0.15) | prompt di sistema già sostituibile |
 | 11 | Lettura selettiva della storia citata dalle sintesi (0.16) | |
 | 12 | Budget durevole per i workflow (0.17) | |

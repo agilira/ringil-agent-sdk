@@ -21,11 +21,13 @@ import (
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/memory/local"
 	"github.com/agilira/ringil-agent-sdk/memory/vector"
+	"github.com/agilira/ringil-agent-sdk/notes"
 	"github.com/agilira/ringil-agent-sdk/provider/budget"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/skills"
+	"github.com/agilira/ringil-agent-sdk/todo"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
 )
 
@@ -315,4 +317,33 @@ func liveVectorMemory(t *testing.T, base, model string) agent.Memory {
 		t.Fatal(err)
 	}
 	return mem
+}
+
+// TestLiveNotes: a real model writes a project note in one conversation,
+// and a later one answers from the note's index in its context.
+func TestLiveNotes(t *testing.T) {
+	model := liveModel(t)
+	nb, err := notes.New(notes.Scope{Name: "project", Dir: filepath.Join(t.TempDir(), "project")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := agent.NewRegistry(nb.Tool(), todo.Tool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, Context: nb.Context, MaxTurns: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.Run(ctx, nil, agent.UserText("Salva nelle note di progetto, nel file /project/INDEX.md, la decisione: il database di produzione è PostgreSQL 17.")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, nil, agent.UserText("Che database usiamo in produzione?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "PostgreSQL") {
+		t.Fatalf("answer %q", res.Text)
+	}
 }

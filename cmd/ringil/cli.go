@@ -19,11 +19,13 @@ import (
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/memory"
+	"github.com/agilira/ringil-agent-sdk/notes"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 	"github.com/agilira/ringil-agent-sdk/skills"
+	"github.com/agilira/ringil-agent-sdk/todo"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
 )
 
@@ -47,6 +49,8 @@ type cli struct {
 	newEmbedder func(openai.Config) (agent.Embedder, error)
 	// closers stop the MCP servers started for the current command.
 	closers []func() error
+	// notes are the session's notebooks, when there are any.
+	notes *notes.Notes
 	// allowed are tools the user allowed for the rest of the session.
 	allowed map[string]bool
 	// newSandbox returns the platform sandbox; tests may replace it.
@@ -130,6 +134,11 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	nb, err := c.notebooks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.notes = nb
 	tools, err := c.tools(ctx, mem, cat)
 	if err != nil {
 		return nil, err
@@ -144,6 +153,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		Memory:        mem,
 		Approve:       c.approve,
 		System:        system,
+		Context:       c.runContext(nb),
 		MaxTurns:      ctx.GetGlobalFlagInt("max-turns"),
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
 		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
@@ -211,9 +221,20 @@ func (c *cli) remoteTools(ctx *orpheus.Context) ([]agent.Tool, error) {
 	return append(mcpTools, agents...), err
 }
 
+// runContext adds the notebooks' indexes to every run.
+func (c *cli) runContext(nb *notes.Notes) func(context.Context) (string, error) {
+	if nb == nil {
+		return nil
+	}
+	return nb.Context
+}
+
 // extraTools: memory and skill tools, when there is something to use.
 func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
-	var extra []agent.Tool
+	extra := []agent.Tool{todo.Tool()}
+	if c.notes != nil {
+		extra = append(extra, c.notes.Tool())
+	}
 	if mem != nil {
 		extra = append(extra, memory.Tools(mem)...)
 	}
