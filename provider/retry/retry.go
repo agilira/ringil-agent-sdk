@@ -88,6 +88,9 @@ func (p *provider) Generate(ctx context.Context, req *agent.Request, sink agent.
 		if err == nil {
 			return resp, nil
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr // cancelled: that is why it stopped, not the attempt's error
+		}
 		wait, ok := p.plan(ctx, err, attempt, *streamed)
 		if !ok {
 			return nil, err

@@ -40,7 +40,7 @@ func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools a
 	crew, err := delegate.NewCrew(delegate.Team{
 		Provider:  p,
 		Approve:   c.approve,
-		MaxTurns:  ctx.GetGlobalFlagInt("max-turns"),
+		MaxTurns:  c.maxTurns(ctx),
 		Observers: append([]agent.Observer{c.showWorker}, c.events...),
 		Workers: []delegate.Worker{
 			{Name: "explore", Description: "searches and reads files, read-only; for questions like where is X, how does Y work", System: exploreSystem, Tools: explore, Prepare: c.prepareWorker},

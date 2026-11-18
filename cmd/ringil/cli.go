@@ -91,6 +91,9 @@ type cli struct {
 	shared bool
 	// events observe every run (serve logs their metadata).
 	events []agent.Observer
+	// role is the profile in use (--profile, or a profile served); nil
+	// keeps the flags and environment.
+	role *profile
 }
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
@@ -121,6 +124,8 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("mcp-config", "", "", "MCP servers file ({\"mcpServers\": ...}); default <config>/ringil/mcp.json").
 		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins").
 		AddGlobalFlag("system", "s", "", "system prompt (default: the SDK's)").
+		AddGlobalFlag("profile", "", "", "a role from the profiles file: its model, endpoint, key and prompt (serve: the one --a2a offers)").
+		AddGlobalFlag("profiles-config", "", "", "profiles file (default: <config>/ringil/profiles.json)").
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
 		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools").
@@ -172,6 +177,9 @@ func (c *cli) app() *orpheus.App {
 const ErrUsage errors.ErrorCode = "USAGE"
 
 func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
+	if err := c.chooseProfile(ctx); err != nil {
+		return nil, err
+	}
 	p, err := c.provider(ctx)
 	if err != nil {
 		return nil, err
@@ -197,7 +205,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if tools, err = c.withDelegate(ctx, model, tools); err != nil {
 		return nil, err
 	}
-	system := ctx.GetGlobalFlagString("system")
+	system := c.system(ctx)
 	if cat != nil {
 		system += cat.Instructions()
 	}
@@ -208,7 +216,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		Approve:       c.approve,
 		System:        system,
 		Context:       c.runContext(nb),
-		MaxTurns:      ctx.GetGlobalFlagInt("max-turns"),
+		MaxTurns:      c.maxTurns(ctx),
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
 		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
 		Observers:     c.events,
@@ -519,27 +527,43 @@ func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	base, err := c.setting(ctx, res, "base", "RINGIL_BASE_URL")
+	base, err := c.roleSetting(ctx, res, "base", "RINGIL_BASE_URL")
 	if err != nil {
 		return nil, err
 	}
-	model, err := c.setting(ctx, res, "model", "RINGIL_MODEL")
+	model, err := c.roleSetting(ctx, res, "model", "RINGIL_MODEL")
 	if err != nil {
 		return nil, err
 	}
 	if base == "" || model == "" {
 		return nil, errors.New(ErrUsage, "set --base and --model, or RINGIL_BASE_URL and RINGIL_MODEL")
 	}
-	keyName := ctx.GetGlobalFlagString("key-env")
-	if err := secrets.ValidateName(keyName); err != nil {
+	keyName := c.keyEnv(ctx)
+	if err := validKeyName(keyName); err != nil {
 		return nil, err
 	}
 	return c.newProvider(openai.Config{
 		BaseURL:   base,
 		Model:     model,
-		KeyFunc:   secrets.OptionalKeyFunc(res, keyName),
+		KeyFunc:   keyFunc(res, keyName),
 		AllowHTTP: ctx.GetGlobalFlagBool("allow-http"),
 	})
+}
+
+// keyFunc reads the key from name; nil, no key, for "".
+func keyFunc(res secrets.Resolver, name string) func(context.Context) (string, error) {
+	if name == "" {
+		return nil
+	}
+	return secrets.OptionalKeyFunc(res, name)
+}
+
+// validKeyName accepts a variable name, or "" for no key.
+func validKeyName(name string) error {
+	if name == "" {
+		return nil
+	}
+	return secrets.ValidateName(name)
 }
 
 // resolver is where settings and secrets come from: the environment first,

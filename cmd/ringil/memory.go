@@ -17,7 +17,6 @@ import (
 	"github.com/agilira/ringil-agent-sdk/memory/local"
 	"github.com/agilira/ringil-agent-sdk/memory/vector"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
-	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
 // memory opens the user's memory, or returns nil with --no-memory. It is on
@@ -44,27 +43,29 @@ func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 }
 
 // embedder is the embedding model on the same endpoint and key as the
-// chat model, or nil when none is set.
+// chat model (the role's, under a role with its own base), or nil when
+// none is set.
 func (c *cli) embedder(ctx *orpheus.Context) (agent.Embedder, error) {
 	res, err := c.resolver(ctx)
 	if err != nil {
 		return nil, err
 	}
-	model, err := c.setting(ctx, res, "embed-model", "RINGIL_EMBED_MODEL")
+	model, err := c.embedModel(ctx, res)
 	if err != nil || model == "" {
 		return nil, err
 	}
-	base, err := c.setting(ctx, res, "base", "RINGIL_BASE_URL")
+	base, err := c.roleSetting(ctx, res, "base", "RINGIL_BASE_URL")
 	if err != nil {
 		return nil, err
 	}
-	if err := secrets.ValidateName(ctx.GetGlobalFlagString("key-env")); err != nil {
+	keyName := c.keyEnv(ctx)
+	if err := validKeyName(keyName); err != nil {
 		return nil, err
 	}
 	return c.newEmbedder(openai.Config{
 		BaseURL:   base,
 		Model:     model,
-		KeyFunc:   secrets.OptionalKeyFunc(res, ctx.GetGlobalFlagString("key-env")),
+		KeyFunc:   keyFunc(res, keyName),
 		AllowHTTP: ctx.GetGlobalFlagBool("allow-http"),
 		// Asymmetric models (NVIDIA NIM) need input_type.
 		EmbedInputType: c.getenv("RINGIL_EMBED_INPUT_TYPE") == "1",

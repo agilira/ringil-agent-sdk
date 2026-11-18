@@ -8,7 +8,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	stderrors "errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -56,8 +59,12 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 		return err
 	}
 	c.events = []agent.Observer{eventlog.Slog(slog.New(slog.NewTextHandler(c.errOut, nil)))}
-	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: ctx.GetFlagInt("max-runs"),
-		Profiles: []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx)}}})
+	profiles, err := c.servedProfiles(ctx)
+	if err != nil {
+		closeQuietly(l)
+		return err
+	}
+	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: ctx.GetFlagInt("max-runs"), Profiles: profiles})
 	if err != nil {
 		closeQuietly(l)
 		return err
@@ -65,7 +72,7 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	c.server = srv
 	defer srv.Close()
 	if ctx.GetFlagBool("a2a") {
-		if err := c.exposeA2A(srv, l.Addr().String()); err != nil {
+		if err := c.exposeA2A(srv, a2aProfile(ctx), l.Addr().String()); err != nil {
 			return err
 		}
 	}
@@ -75,11 +82,39 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	return srv.Serve(run, l)
 }
 
+// servedProfiles are "default" (the flags and environment) and every
+// role of the profiles file.
+func (c *cli) servedProfiles(ctx *orpheus.Context) ([]serve.Profile, error) {
+	roles, err := c.loadProfiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if p := ctx.GetGlobalFlagString("profile"); p != "" && p != "default" {
+		if _, ok := roles[p]; !ok {
+			return nil, errors.New(ErrUsage, "no profile "+p+" in "+c.profilesPath(ctx))
+		}
+	}
+	out := []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx, nil)}}
+	for _, name := range names(roles) {
+		role := roles[name]
+		out = append(out, serve.Profile{Name: name, Description: role.Description, New: c.runInstance(ctx, &role)})
+	}
+	return out, nil
+}
+
+func a2aProfile(ctx *orpheus.Context) string {
+	if p := ctx.GetGlobalFlagString("profile"); p != "" {
+		return p
+	}
+	return "default"
+}
+
 // runInstance builds a run's agent: a CLI of its own, so that its crew,
 // notebooks, task list and approvals are the run's alone.
-func (c *cli) runInstance(ctx *orpheus.Context) func(context.Context) (serve.Instance, error) {
+func (c *cli) runInstance(ctx *orpheus.Context, role *profile) func(context.Context) (serve.Instance, error) {
 	return func(context.Context) (serve.Instance, error) {
 		r := c.forRun()
+		r.role = role
 		a, err := r.agent(ctx)
 		if err != nil {
 			r.shutdown()
@@ -97,10 +132,10 @@ func (c *cli) forRun() *cli {
 		newSandbox: c.newSandbox, cwd: c.cwd, home: c.home, server: c.server, remote: c.remote, shared: true, events: c.events}
 }
 
-// exposeA2A offers the default profile to other agents, at /a2a on the
+// exposeA2A offers a profile (--profile, else default) to other agents, at /a2a on the
 // same listener, with the same token.
-func (c *cli) exposeA2A(srv *serve.Server, addr string) error {
-	h, err := a2a.Expose(srv, "default", a2a.Card{Name: "ringil", Description: "A general agent: answers, reads files, uses its tools.", Version: version, URL: "http://" + addr + a2a.Path})
+func (c *cli) exposeA2A(srv *serve.Server, profile, addr string) error {
+	h, err := a2a.Expose(srv, profile, a2a.Card{Name: "ringil", Description: "A general agent: answers, reads files, uses its tools.", Version: version, URL: "http://" + addr + a2a.Path})
 	if err != nil {
 		return err
 	}
@@ -146,10 +181,30 @@ func (c *cli) serveToken() (token, where string, err error) {
 		return t, "in " + path, err
 	}
 	token, err = newToken(root)
+	if stderrors.Is(err, fs.ErrExist) {
+		// Another serve made it a moment ago: read theirs once written.
+		return awaitToken(root, path)
+	}
 	if err != nil {
 		return "", "", errors.Wrap(err, ErrUsage, "cannot create "+path)
 	}
 	return token, "in " + path + " (new)", nil
+}
+
+// awaitToken reads a token file another process is writing.
+func awaitToken(root *os.Root, path string) (string, string, error) {
+	var err error
+	for range 20 {
+		var info os.FileInfo
+		if info, err = root.Lstat(tokenFile); err == nil {
+			var t string
+			if t, err = keptToken(root, info, path); err == nil {
+				return t, "in " + path, nil
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return "", "", err
 }
 
 // keptToken reads the token file: regular, the user's, readable by no one
@@ -166,18 +221,25 @@ func keptToken(root *os.Root, info os.FileInfo, path string) (string, error) {
 	return "", bad
 }
 
-// newToken makes a token and keeps it in a new private file.
+// newToken makes a token and publishes it whole: written to a file of
+// its own, then linked at its name, which fails if another serve
+// published one first. A reader never sees it half written.
 func newToken(root *os.Root) (string, error) {
 	token := rand.Text() + rand.Text()
-	f, err := root.OpenFile(tokenFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	tmp := "." + tokenFile + "." + strings.ToLower(rand.Text()[:8]) + ".tmp"
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", err
 	}
+	defer func() { _ = root.Remove(tmp) }()
 	_, err = f.WriteString(token + "\n")
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	return token, err
+	if err != nil {
+		return "", err
+	}
+	return token, root.Link(tmp, tokenFile)
 }
 
 func closeQuietly(c io.Closer) {
