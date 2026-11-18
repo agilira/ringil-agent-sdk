@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Compaction controls how a conversation that outgrows the model's context
@@ -118,6 +119,17 @@ func (c *compactor) tokens(bytes int) int {
 	return int(float64(bytes) / ratio)
 }
 
+// bytes is the inverse of tokens.
+func (c *compactor) bytes(tokens int) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ratio := c.ratio
+	if ratio == 0 {
+		ratio = bytesPerToken
+	}
+	return int(float64(tokens) * ratio)
+}
+
 func (c *compactor) learn(bytes, tokens int) {
 	if bytes <= 0 || tokens <= 0 {
 		return
@@ -156,13 +168,70 @@ func (c *compactor) view(ctx context.Context, req *Request, budget int) compacte
 	if !v.fits(budget) {
 		out = c.shorten(ctx, v, budget)
 	}
+	clipped := 0
 	if !v.fits(budget) {
-		// One turn alone is too big: keep only the newest result whole.
+		// One turn alone is too big. Its results the model has not seen
+		// yet share what room there is, each keeping its beginning: a stub
+		// would lose them before they were ever read.
+		clipped = v.clipLatest(budget)
+	}
+	if !v.fits(budget) {
+		// Still too big: keep only the newest result whole.
 		stubbed += v.stub(1)
 	}
 	out.msgs = v.msgs
-	out.what = joinNonEmpty(describeStubs(stubbed), out.what)
+	out.what = joinNonEmpty(describeStubs(stubbed), clippedNote(clipped), out.what)
 	return out
+}
+
+func clippedNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return plural(n, "new tool result") + " clipped"
+}
+
+// clipLatest cuts the results of the last turn, which the model has not
+// seen, to equal shares of the room left; it returns how many it cut.
+func (v *sized) clipLatest(budget int) int {
+	first := len(v.msgs)
+	for first > 0 && v.msgs[first-1].Role == RoleTool && v.msgs[first-1].Result != nil {
+		first--
+	}
+	k := len(v.msgs) - first
+	if k < 2 {
+		return 0
+	}
+	latest := 0
+	for i := first; i < len(v.msgs); i++ {
+		latest += v.sizes[i]
+	}
+	room := v.c.bytes(budget) - (v.base + v.total - latest) - k*clipOverhead
+	share := max(room/k, stubMinBytes)
+	clipped := 0
+	for i := first; i < len(v.msgs); i++ {
+		res := *v.msgs[i].Result
+		if len(res.Content) <= share {
+			continue
+		}
+		res.Content = clipHead(res.Content, share) + "\n[" + strconv.Itoa(len(res.Content)-share) +
+			" more bytes not shown: they did not fit the context; run the tool again for the rest]"
+		v.msgs[i] = ToolMessage(res)
+		v.resize(i)
+		clipped++
+	}
+	return clipped
+}
+
+// clipOverhead is the room a clipped result's framing and note take.
+const clipOverhead = 200
+
+// clipHead keeps the first n bytes of s on a character boundary.
+func clipHead(s string, n int) string {
+	for n > 0 && n < len(s) && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func describeStubs(n int) string {

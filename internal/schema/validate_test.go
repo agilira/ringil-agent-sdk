@@ -234,3 +234,15 @@ func TestUnknownFieldsAreDropped(t *testing.T) {
 		t.Fatalf("nested: %s %d %v", canonical, ignored, probs)
 	}
 }
+
+// 18/11: Qwen 3B sent "limit":null and was refused; null for an optional
+// field is the field left out. A required field still refuses null.
+func TestNullOptionalIsAbsent(t *testing.T) {
+	canonical, _, probs := compile(t, full{}).Validate([]byte(`{"shared":"s","city":"R","days":1,"unit":null}`))
+	if len(probs) > 0 || strings.Contains(string(canonical), "unit") {
+		t.Fatalf("%s %v", canonical, probs)
+	}
+	if got := problems(t, compile(t, full{}), `{"shared":"s","city":null,"days":1}`); got != "city: must not be null" {
+		t.Fatalf("required null: %s", got)
+	}
+}

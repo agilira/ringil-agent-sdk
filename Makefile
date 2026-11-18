@@ -103,7 +103,7 @@ live: ## Run live tests against the endpoint in .env (real calls, may cost)
 	@set -a && . ./.env && set +a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./...
 
 NIM_MODEL ?= nvidia/nemotron-3.5-bolt-e4b
-NIM_EMBED ?= nvidia/nemotron-3.5-embed-1b
+NIM_EMBED ?= nvidia/nemotron-3-embed-1b
 live-nim: ## Run live tests on NVIDIA NIM's free models (NVIDIA_NIM_API_KEY in .env)
 	@set -a && . ./.env && set +a && export RINGIL_BASE_URL=https://integrate.api.nvidia.com/v1 RINGIL_MODEL=$(NIM_MODEL) RINGIL_API_KEY="$$NVIDIA_NIM_API_KEY" RINGIL_EMBED_MODEL=$(NIM_EMBED) RINGIL_EMBED_INPUT_TYPE=1 && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./...
 

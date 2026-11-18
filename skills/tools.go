@@ -233,6 +233,7 @@ func (r *runner) mounts(copyDir, work string) []sandbox.Mount {
 
 // command is the interpreter, the script and its arguments.
 func (r *runner) command(in runIn) ([]string, error) {
+	in.Script = r.cat.resolve(in.Skill, in.Script) // "stats.py" for scripts/stats.py
 	data, err := r.cat.ReadFile(in.Skill, in.Script)
 	if err != nil {
 		return nil, err

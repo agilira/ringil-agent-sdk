@@ -70,7 +70,11 @@ func TestRunScript(t *testing.T) {
 	if err != nil || strings.TrimSpace(out) != "3 words ['-v']" {
 		t.Fatalf("run %q %v", out, err)
 	}
-	for _, bad := range []string{"SKILL.md", "reference/style.md", "scripts/../SKILL.md", "missing.py"} {
+	// 18/11: by its name alone, as Qwen 3B asked for it.
+	if out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "stats.py", Stdin: "a b"}); err != nil || strings.TrimSpace(out) != "2 words []" {
+		t.Fatalf("by name %q %v", out, err)
+	}
+	for _, bad := range []string{"SKILL.md", "reference/style.md", "style.md", "scripts/../SKILL.md", "missing.py"} {
 		if _, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: bad}); err == nil {
 			t.Errorf("%s ran", bad)
 		}

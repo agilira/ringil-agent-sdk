@@ -243,6 +243,30 @@ func (c *Crew) Next(ctx context.Context) (Finished, bool) {
 	}
 }
 
+// Converse runs one turn of a and then, while tasks started in the background
+// are pending, waits for each report and runs a again on it, so that work
+// a model left running is not lost when its turn ends. It returns the
+// last turn's result, whose text is the answer after every report. Hosts
+// with their own event loop (a chat that keeps the prompt free) take
+// reports with Next instead.
+func (c *Crew) Converse(ctx context.Context, a agent.Agent, conv agent.Conversation, input agent.Message) (*agent.Result, error) {
+	if conv == nil {
+		conv = agent.NewConversation()
+	}
+	res, err := a.Run(ctx, conv, input)
+	for err == nil {
+		f, ok := c.Next(ctx)
+		if !ok {
+			break
+		}
+		res, err = a.Run(ctx, conv, Notice(f))
+	}
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	return res, err
+}
+
 // Notice is the message that brings a background report to the parent:
 // marked as a task's report, not as words of the user.
 func Notice(f Finished) agent.Message {

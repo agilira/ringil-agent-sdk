@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	proto "github.com/a2aproject/a2a-go/v2/a2a"
@@ -81,6 +82,8 @@ type Agent struct {
 	remote Remote
 	client *a2aclient.Client
 	card   *proto.AgentCard
+	mu     sync.Mutex
+	seen   map[string]bool // context and task IDs the remote gave us
 }
 
 // Connect reads the remote agent's card and prepares the client.
