@@ -7,6 +7,7 @@ package schema
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -16,7 +17,7 @@ import (
 func problems(t *testing.T, n *Node, input string) string {
 	t.Helper()
 	var parts []string
-	_, got := n.Validate([]byte(input))
+	_, _, got := n.Validate([]byte(input))
 	for _, p := range got {
 		parts = append(parts, p.String())
 	}
@@ -81,7 +82,6 @@ func TestRefusals(t *testing.T) {
 		`{"shared":"s","city":"R","days":1,"labels":[]}`:              "labels: must be an object",
 		`{"shared":"s","city":"R","days":1,"nested":{"note":1}}`:      "nested.note: must be a string",
 		`{"shared":"s","city":null,"days":1}`:                         "city: must not be null",
-		`{"shared":"s","city":"R","days":1,"many":[{"x":1}]}`:         "many[0]: has fields the schema does not define; allowed: note",
 	}
 	for in, want := range cases {
 		if got := problems(t, n, in); got != want {
@@ -94,8 +94,9 @@ func TestCaseVariantsAreUnknown(t *testing.T) {
 	// encoding/json would accept "CITY" for "city"; the validator does not,
 	// so a field cannot be smuggled past the schema by changing its case.
 	n := compile(t, full{})
-	if got := problems(t, n, `{"shared":"s","city":"R","CITY":"X","days":1}`); !strings.Contains(got, "fields the schema does not define") {
-		t.Fatalf("case variant accepted: %s", got)
+	canonical, ignored, probs := n.Validate([]byte(`{"shared":"s","city":"R","CITY":"X","days":1}`))
+	if len(probs) > 0 || ignored != 1 || strings.Contains(string(canonical), "CITY") || strings.Contains(string(canonical), `"X"`) {
+		t.Fatalf("case variant reached the canonical form: %s %d %v", canonical, ignored, probs)
 	}
 }
 
@@ -103,7 +104,7 @@ func TestProblemsAreBounded(t *testing.T) {
 	type many struct {
 		A, B, C, D, E, F, G, H, I, J, K string
 	}
-	_, got := compile(t, many{}).Validate([]byte(`{}`))
+	_, _, got := compile(t, many{}).Validate([]byte(`{}`))
 	if len(got) != maxProblems+1 || got[maxProblems].Message != "3 more problems not listed" {
 		t.Fatalf("problems %v", got)
 	}
@@ -155,8 +156,12 @@ func TestProblemsNeverEchoInput(t *testing.T) {
 		`{"shared":"s","city":"R","days":1,"nested":{"` + secret + `":1}}`,
 	}
 	for _, in := range inputs {
-		if got := problems(t, n, in); got == "" || strings.Contains(got, secret) {
-			t.Errorf("input %s produced %q", in, got)
+		canonical, _, probs := n.Validate([]byte(in))
+		got := fmt.Sprint(probs)
+		// Either refused without echo, or accepted with the unknown field
+		// dropped from what the tool decodes.
+		if strings.Contains(got, secret) || (len(probs) == 0 && strings.Contains(string(canonical), secret)) {
+			t.Errorf("input %s produced %q / %s", in, got, canonical)
 		}
 	}
 }
@@ -173,7 +178,7 @@ func FuzzValidate(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		canonical, got := n.Validate(data)
+		canonical, _, got := n.Validate(data)
 		if len(got) == 0 {
 			var decoded full
 			if err := json.Unmarshal(canonical, &decoded); err != nil {
@@ -216,8 +221,16 @@ func TestNumberParseFloat32Range(t *testing.T) {
 	}
 }
 
-func TestUnknownFieldOnEmptySchema(t *testing.T) {
-	if got := problems(t, compile(t, struct{}{}), `{"x":1}`); got != "arguments: has fields the schema does not define; allowed: none" {
-		t.Fatalf("got %s", got)
+// 18/11: unknown fields are dropped and counted, at any depth: a small
+// model sending {"item":"AX-7"} to a tool without parameters looped on
+// the refusal.
+func TestUnknownFieldsAreDropped(t *testing.T) {
+	canonical, ignored, probs := compile(t, struct{}{}).Validate([]byte(`{"x":1,"y":{"z":2}}`))
+	if len(probs) > 0 || ignored != 2 || string(canonical) != "{}" {
+		t.Fatalf("got %s %d %v", canonical, ignored, probs)
+	}
+	canonical, ignored, probs = compile(t, full{}).Validate([]byte(`{"shared":"s","city":"R","days":1,"many":[{"x":1,"note":"n"}]}`))
+	if len(probs) > 0 || ignored != 1 || strings.Contains(string(canonical), `"x"`) {
+		t.Fatalf("nested: %s %d %v", canonical, ignored, probs)
 	}
 }

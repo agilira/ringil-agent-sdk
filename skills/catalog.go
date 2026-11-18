@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/agilira/go-errors"
@@ -147,6 +148,14 @@ func (c *Catalog) Files(name string) ([]string, error) {
 	return out, nil
 }
 
+// listFiles names up to 20 files.
+func listFiles(files []string) string {
+	if len(files) > 20 {
+		return strings.Join(files[:20], ", ") + " and " + strconv.Itoa(len(files)-20) + " more"
+	}
+	return strings.Join(files, ", ")
+}
+
 // ReadFile returns a file of a skill after checking it against the hash
 // recorded at installation.
 func (c *Catalog) ReadFile(name, file string) ([]byte, error) {
@@ -156,7 +165,10 @@ func (c *Catalog) ReadFile(name, file string) ([]byte, error) {
 	}
 	want, ok := m.Files[file]
 	if !ok {
-		return nil, errors.New(ErrNotFound, "skill "+name+" has no file "+file).WithUserMessage("Skill " + name + " has no file " + file + ".")
+		// Its files are named: a model that guessed a script name can
+		// pick the real one instead of guessing again.
+		files, _ := c.Files(name)
+		return nil, errors.New(ErrNotFound, "skill "+name+" has no file "+file).WithUserMessage("Skill " + name + " has no file " + strconv.Quote(file) + "; its files: " + listFiles(files) + ".")
 	}
 	root, err := os.OpenRoot(c.dir)
 	if err != nil {

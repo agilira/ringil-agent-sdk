@@ -17,6 +17,7 @@ import (
 	"regexp/syntax"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/agilira/go-errors"
 
@@ -319,7 +320,7 @@ type grepIn struct {
 	Pattern    string `json:"pattern" desc:"Regular expression (RE2 syntax)"`
 	Path       string `json:"path,omitempty" desc:"File or directory to search; default the first granted directory"`
 	Include    string `json:"include,omitempty" desc:"Only files whose path matches this glob, e.g. **/*.go"`
-	IgnoreCase bool   `json:"ignore_case,omitempty"`
+	IgnoreCase bool   `json:"ignore_case,omitempty" desc:"Match case-insensitively; a pattern without capital letters already does (smart case)"`
 	Offset     int    `json:"offset,omitempty" min:"0" max:"1000000000"`
 	Limit      int    `json:"limit,omitempty" min:"1" max:"100000" desc:"Matching lines per page; default 100"`
 }
@@ -332,7 +333,7 @@ func (w *workspace) grepTool() agent.Tool {
 }
 
 func (w *workspace) grep(ctx context.Context, in grepIn) (string, error) {
-	re, err := compile(in.Pattern, in.IgnoreCase)
+	re, err := compile(in.Pattern, in.IgnoreCase || !hasUpper(in.Pattern))
 	if err != nil {
 		return "", err
 	}
@@ -354,6 +355,24 @@ func (w *workspace) grep(ctx context.Context, in grepIn) (string, error) {
 		return "", err
 	}
 	return g.report(), nil
+}
+
+// hasUpper reports a capital letter in the pattern outside escapes (\S,
+// \W, \D are classes): as ripgrep's smart case, an all-lowercase pattern
+// matches any case, since "penale" is meant to find "Penale".
+func hasUpper(pattern string) bool {
+	escaped := false
+	for _, r := range pattern {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case unicode.IsUpper(r):
+			return true
+		}
+	}
+	return false
 }
 
 // compile accepts RE2 patterns of bounded size and program length.

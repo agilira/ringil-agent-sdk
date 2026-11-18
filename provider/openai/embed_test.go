@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/agilira/go-errors"
 
@@ -125,5 +126,32 @@ func TestEmbedInputType(t *testing.T) {
 	}
 	if fmt.Sprint(kinds) != "[<nil> <nil> passage query]" {
 		t.Fatalf("input_type sent: %v", kinds)
+	}
+}
+
+// 18/11: NIM left some embedding requests hanging and answered the next
+// at once; a stalled attempt is tried once more.
+func TestEmbedRetriesAStalledAttempt(t *testing.T) {
+	old := embedTimeout
+	embedTimeout = 200 * time.Millisecond
+	defer func() { embedTimeout = old }()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			select { // hangs until the client gives up
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1,0]}]}`))
+	}))
+	defer srv.Close()
+	e, err := NewEmbedder(Config{BaseURL: srv.URL, Model: "m", AllowHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := e.Embed(context.Background(), []string{"x"}); err != nil || len(v) != 1 || calls.Load() != 2 {
+		t.Fatalf("%v %v calls %d", v, err, calls.Load())
 	}
 }

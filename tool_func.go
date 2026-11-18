@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/agilira/go-errors"
@@ -93,7 +94,7 @@ func (t *funcTool[In, Out]) Call(ctx context.Context, input json.RawMessage) (To
 	if t.err != nil {
 		return ToolOutput{}, t.err
 	}
-	in, err := t.decode(input)
+	in, ignored, err := t.decode(input)
 	if err != nil {
 		return ToolOutput{}, err
 	}
@@ -101,26 +102,31 @@ func (t *funcTool[In, Out]) Call(ctx context.Context, input json.RawMessage) (To
 	if err != nil {
 		return ToolOutput{}, err
 	}
-	return encodeOutput(out)
+	res, err := encodeOutput(out)
+	if err == nil && ignored > 0 {
+		// Said, not hidden: a misspelled optional field was not used.
+		res.Content += "\n[" + strconv.Itoa(ignored) + " argument(s) this tool does not define were ignored." + fields(t.spec, "Its parameters:") + "]"
+	}
+	return res, err
 }
 
-func (t *funcTool[In, Out]) decode(input json.RawMessage) (In, error) {
+func (t *funcTool[In, Out]) decode(input json.RawMessage) (In, int, error) {
 	var in In
-	canonical, problems := t.node.Validate(input)
+	canonical, ignored, problems := t.node.Validate(input)
 	if len(problems) > 0 {
 		parts := make([]string, len(problems))
 		for i, p := range problems {
 			parts[i] = p.String()
 		}
-		return in, ToolError(ErrToolInput, "Invalid arguments: "+strings.Join(parts, "; ")+"."+expected(t.spec))
+		return in, 0, ToolError(ErrToolInput, "Invalid arguments: "+strings.Join(parts, "; ")+"."+fields(t.spec, "Call "+t.spec.Name+" again with:"))
 	}
 	// Decode what was validated, not the original bytes: see Validate.
 	if err := json.Unmarshal(canonical, &in); err != nil {
 		// Validation guarantees this does not happen; if it ever does, the
 		// model is told its input was refused, not why.
-		return in, errors.Wrap(err, ErrToolInput, "validated input did not decode")
+		return in, 0, errors.Wrap(err, ErrToolInput, "validated input did not decode")
 	}
-	return in, nil
+	return in, ignored, nil
 }
 
 func encodeOutput(out any) (ToolOutput, error) {
@@ -137,9 +143,10 @@ func encodeOutput(out any) (ToolOutput, error) {
 	return ToolOutput{Content: string(data)}, nil
 }
 
-// expected reminds the model of the fields it must send: a small model
-// often answers a schema error by giving up, unless told what to send.
-func expected(spec ToolSpec) string {
+// fields reminds the model of the tool's parameters after lead: a small
+// model often answers a schema error by giving up, unless told what to
+// send.
+func fields(spec ToolSpec, lead string) string {
 	var sch struct {
 		Required   []string `json:"required"`
 		Properties map[string]struct {
@@ -159,7 +166,7 @@ func expected(spec ToolSpec) string {
 		req[r] = true
 	}
 	var b strings.Builder
-	b.WriteString(" Call " + spec.Name + " again with:")
+	b.WriteString(" " + lead)
 	for _, n := range names {
 		mark := "optional"
 		if req[n] {

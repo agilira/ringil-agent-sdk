@@ -336,7 +336,7 @@ func (r *run) callModel(ctx context.Context) (*Response, error) {
 		// An empty answer after a turn is often a tool call the provider
 		// dropped (a name not in the list): ask once more, saying so.
 		r.result.Usage = r.result.Usage.Add(resp.Usage)
-		resp, err = r.request(ctx, r.system+emptyNudge)
+		resp, err = r.request(ctx, r.system+r.emptyNudge())
 	}
 	if err != nil {
 		return nil, err
@@ -344,7 +344,17 @@ func (r *run) callModel(ctx context.Context) (*Response, error) {
 	return r.keep(ctx, resp)
 }
 
-const emptyNudge = "\n\n[Your last reply was empty. To use a tool, call one of the tools in the tool list with its exact name; otherwise answer in text.]"
+// emptyNudge names the tools: a model that invented a name (create_note
+// for notes) needs the real ones, not a general reminder.
+func (r *run) emptyNudge() string {
+	specs := r.toolSpecs()
+	names := make([]string, 0, min(len(specs), 40))
+	for _, s := range specs[:min(len(specs), 40)] {
+		names = append(names, s.Name)
+	}
+	return "\n\n[Your last reply was empty: a call to a tool name that does not exist is dropped. The only tool names are: " +
+		strings.Join(names, ", ") + ". Call one of them exactly (a command or action goes in its arguments), or answer in text.]"
+}
 
 func empty(resp *Response) bool {
 	return len(resp.Message.Calls) == 0 && strings.TrimSpace(resp.Message.Text()) == ""

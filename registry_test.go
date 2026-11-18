@@ -200,11 +200,13 @@ func TestExecuteTypedToolEndToEnd(t *testing.T) {
 	calls := 0
 	r := mustRegistry(t, weatherTool(&calls))
 	res, err := r.Execute(context.Background(), ToolCall{ID: "9", Name: "weather", Input: json.RawMessage(`{"city":"Roma","pwd":"hunter2"}`)})
-	if !errors.HasCode(err, ErrToolInput) || calls != 0 || strings.Contains(res.Content, "pwd") || strings.Contains(res.Content, "hunter2") {
+	// An unknown field is dropped and counted: the call runs, and neither
+	// its name nor its value is reflected back.
+	if err != nil || calls != 1 || strings.Contains(res.Content, "pwd") || strings.Contains(res.Content, "hunter2") {
 		t.Fatalf("res %+v err %v calls %d", res, err, calls)
 	}
-	if !strings.Contains(res.Content, "allowed: city, unit") {
-		t.Fatalf("model not told how to fix it: %q", res.Content)
+	if !strings.Contains(res.Content, "1 argument(s) this tool does not define were ignored. Its parameters: city (required: City name); unit (optional).") {
+		t.Fatalf("model not told: %q", res.Content)
 	}
 }
 

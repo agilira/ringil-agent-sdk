@@ -39,10 +39,17 @@ func (p Problem) String() string { return p.Path + ": " + p.Message }
 // duplicate keys into structs, so the original could carry a value the
 // validator never saw. A top-level null or empty input counts as an empty
 // object, as models send both for tools without arguments.
-func (n *Node) Validate(data []byte) ([]byte, []Problem) {
+//
+// Fields the schema does not define are not an error: they are removed
+// from the canonical form and counted in ignored. Small models often add
+// one (an "item" to a tool without parameters) and then loop on the
+// refusal; dropping them keeps the call and loses nothing the tool reads.
+// Removed before re-encoding, a case variant ("CITY" beside "city") can
+// still never reach the decoder.
+func (n *Node) Validate(data []byte) (canonical []byte, ignored int, problems []Problem) {
 	value, ok := parse(data)
 	if !ok {
-		return nil, []Problem{{Path: "arguments", Message: "must be one JSON object"}}
+		return nil, 0, []Problem{{Path: "arguments", Message: "must be one JSON object"}}
 	}
 	if value == nil {
 		value = map[string]any{}
@@ -50,13 +57,13 @@ func (n *Node) Validate(data []byte) ([]byte, []Problem) {
 	v := &validator{}
 	v.check(n, value, "arguments")
 	if problems := v.result(); len(problems) > 0 {
-		return nil, problems
+		return nil, v.ignored, problems
 	}
 	canonical, err := json.Marshal(value)
 	if err != nil {
-		return nil, []Problem{{Path: "arguments", Message: "could not be re-encoded"}}
+		return nil, 0, []Problem{{Path: "arguments", Message: "could not be re-encoded"}}
 	}
-	return canonical, nil
+	return canonical, v.ignored, nil
 }
 
 func parse(data []byte) (any, bool) {
@@ -79,6 +86,7 @@ func parse(data []byte) (any, bool) {
 type validator struct {
 	problems []Problem
 	dropped  int
+	ignored  int
 }
 
 func (v *validator) add(path, msg string) {
@@ -144,8 +152,8 @@ func (v *validator) object(n *Node, value any, path string) {
 	}
 	for key := range obj {
 		if !known[key] {
-			v.add(path, "has fields the schema does not define; allowed: "+fieldNames(n))
-			return
+			delete(obj, key)
+			v.ignored++
 		}
 	}
 }
@@ -155,17 +163,6 @@ func join(path, name string) string {
 		return name
 	}
 	return path + "." + name
-}
-
-func fieldNames(n *Node) string {
-	if len(n.Fields) == 0 {
-		return "none"
-	}
-	names := make([]string, len(n.Fields))
-	for i, f := range n.Fields {
-		names[i] = f.Name
-	}
-	return strings.Join(names, ", ")
 }
 
 func (v *validator) mapValue(n *Node, value any, path string) {

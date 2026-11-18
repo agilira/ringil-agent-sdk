@@ -181,8 +181,8 @@ func TestBuiltinTools(t *testing.T) {
 		`{"a":6,"op":"/","b":4}`:        "1.5",
 		`{"a":6,"op":"%","b":4}`:        "must be one of",
 		`{"a":"6","op":"+","b":4}`:      "must be a number",
-		`{"zone":"UTC","extra":"x"}`:    "allowed: zone",
-		`{"a":2,"op":"*","b":3,"x":""}`: "allowed: a, op, b",
+		`{"zone":"UTC","extra":"x"}`:    "were ignored",
+		`{"a":2,"op":"*","b":3,"x":""}`: "were ignored",
 	}
 	tools, err := builtinTools()
 	if err != nil {

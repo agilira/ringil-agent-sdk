@@ -7,6 +7,7 @@ package skills
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,5 +160,16 @@ func TestRemoveUnknown(t *testing.T) {
 		if err := Remove(cat, name); !errors.HasCode(err, ErrNotFound) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// 18/11: a small model guessed script names; the refusal names the real
+// files.
+func TestMissingFileNamesTheFiles(t *testing.T) {
+	cat, _ := installed(t)
+	_, err := cat.ReadFile("review", "count_chars")
+	var e *errors.Error
+	if !errors.HasCode(err, ErrNotFound) || !stderrors.As(err, &e) || !strings.Contains(e.UserMessage(), "its files: SKILL.md, reference/style.md, scripts/stats.py.") {
+		t.Fatalf("%v", err)
 	}
 }
