@@ -251,3 +251,33 @@ func liveCatalog(t *testing.T) (*skills.Catalog, sandbox.Sandbox) {
 	}
 	return cat, sb
 }
+
+// TestLiveDiscovery: with schemas deferred, a real model loads the tool
+// it needs through tool_search and then calls it.
+func TestLiveDiscovery(t *testing.T) {
+	model := liveModel(t)
+	type noArgs struct{}
+	called := false
+	tools := []agent.Tool{agent.NewTool("weather_today", "Today's weather in Milan.", func(context.Context, noArgs) (string, error) {
+		called = true
+		return "Milano: sole, 21 gradi.", nil
+	}, agent.Deferrable())}
+	for _, n := range []string{"crm_lookup", "invoice_create", "slack_post", "calendar_add"} {
+		tools = append(tools, agent.NewTool(n, "Business tool "+n+".", func(context.Context, noArgs) (string, error) { return "", nil }, agent.Deferrable()))
+	}
+	reg, err := agent.NewRegistry(tools...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: reg, Discovery: agent.DiscoveryAlways, MaxTurns: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), nil, agent.UserText("Che tempo fa oggi a Milano? Usa lo strumento adatto."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called || !strings.Contains(res.Text, "21") {
+		t.Fatalf("called %v, answer %q", called, res.Text)
+	}
+}

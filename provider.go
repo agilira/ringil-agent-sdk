@@ -82,6 +82,8 @@ type Annotations struct {
 	ReadOnly    bool `json:"read_only,omitempty"`
 	Destructive bool `json:"destructive,omitempty"`
 	OpenWorld   bool `json:"open_world,omitempty"`
+	// Deferrable: the tool may be listed by name only (see Discovery).
+	Deferrable bool `json:"deferrable,omitempty"`
 }
 
 // Clone returns a deep copy of r.

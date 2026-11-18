@@ -33,6 +33,7 @@ func (c *Client) adapt(t *sdk.Tool, taken map[string]bool) (agent.Tool, bool) {
 	if c.srv.TrustAnnotations {
 		ann = annotations(t.Annotations)
 	}
+	ann.Deferrable = true // server catalogs can be large: listed by name when they are
 	return &tool{c: c, name: t.Name, spec: agent.ToolSpec{
 		Name:        toolName(c.name, t.Name, taken),
 		Description: clip(t.Description, 4096),
