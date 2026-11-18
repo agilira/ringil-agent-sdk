@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 )
@@ -44,6 +45,10 @@ func (r *run) history() []Message {
 	return append([]Message(nil), r.msgs...)
 }
 
+// renderHistory writes one JSON object per message: a line of a tool
+// result can never pose as another message, whatever text it holds. The
+// first message is always shown, clipped if need be, so a read always
+// moves forward.
 func renderHistory(msgs []Message, from, to int) string {
 	if from < 1 || from > len(msgs) {
 		return "No message " + strconv.Itoa(from) + ": the conversation has " + strconv.Itoa(len(msgs)) + "."
@@ -51,9 +56,9 @@ func renderHistory(msgs []Message, from, to int) string {
 	to = min(to, len(msgs))
 	var b strings.Builder
 	for n := from; n <= to; n++ {
-		line := "#" + strconv.Itoa(n) + " " + describeMessage(msgs[n-1]) + "\n"
-		if b.Len()+len(line) > maxHistory {
-			b.WriteString("[stopped at message " + strconv.Itoa(n) + ": ask for the rest from there]\n")
+		line := encodeMessage(n, msgs[n-1], maxHistoryPart)
+		if n > from && b.Len()+len(line) > maxHistory {
+			b.WriteString(`{"stopped_at":` + strconv.Itoa(n) + `,"note":"ask again from this number"}` + "\n")
 			break
 		}
 		b.WriteString(line)
@@ -61,20 +66,30 @@ func renderHistory(msgs []Message, from, to int) string {
 	return b.String()
 }
 
-func describeMessage(m Message) string {
-	var parts []string
-	if t := m.Text(); t != "" {
-		parts = append(parts, clipText(t, maxHistoryPart))
-	}
-	for _, c := range m.Calls {
-		parts = append(parts, "[called "+c.Name+" "+clipText(string(c.Input), 512)+"]")
+type historyLine struct {
+	N      int      `json:"n"`
+	Role   Role     `json:"role"`
+	Text   string   `json:"text,omitempty"`
+	Calls  []string `json:"calls,omitempty"`
+	Result string   `json:"result,omitempty"`
+	Error  bool     `json:"error,omitempty"`
+}
+
+func encodeMessage(n int, m Message, part int) string {
+	h := historyLine{N: n, Role: m.Role, Text: clipText(m.Text(), part)}
+	for i, c := range m.Calls {
+		if i == 16 {
+			h.Calls = append(h.Calls, "... "+strconv.Itoa(len(m.Calls)-16)+" more calls")
+			break
+		}
+		h.Calls = append(h.Calls, c.Name+" "+clipText(string(c.Input), 512))
 	}
 	if m.Result != nil {
-		mark := "result"
-		if m.Result.IsError {
-			mark = "error"
-		}
-		parts = append(parts, "["+mark+"] "+clipText(m.Result.Content, maxHistoryPart))
+		h.Result, h.Error = clipText(m.Result.Content, part), m.Result.IsError
 	}
-	return string(m.Role) + ": " + strings.Join(parts, " ")
+	data, err := json.Marshal(h)
+	if err != nil {
+		return ""
+	}
+	return string(data) + "\n"
 }

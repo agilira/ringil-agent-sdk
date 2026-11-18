@@ -115,7 +115,7 @@ func New(cfg Config) (Agent, error) {
 	if window == 0 {
 		window = cfg.Provider.Info().ContextWindow
 	}
-	c := &compactor{cfg: cfg.Compaction, window: window, provider: cfg.Provider}
+	c := &compactor{cfg: cfg.Compaction, window: window, provider: cfg.Provider, history: offersHistory(cfg)}
 	return &loop{cfg: cfg, compactor: c}, nil
 }
 
@@ -195,8 +195,9 @@ func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
 	}
 	r.start = len(r.msgs)
 	r.tools = cfg.Tools
-	if !cfg.Compaction.Disabled && r.tools != nil && !r.tools.Has(HistoryToolName) {
+	if offersHistory(cfg) {
 		r.hist = r.historyTool() // run by the loop itself: the host's registry stays as it is
+		r.compacted = calledHistory(r.msgs)
 	}
 	if d := newDiscovery(cfg, r.msgs); d != nil {
 		// A host tool already named tool_search keeps every schema visible.
@@ -518,6 +519,25 @@ func (r *run) gate(ctx context.Context, call ToolCall) (ToolResult, error, bool)
 		denied = errors.Wrap(err, ErrToolDenied, "approval failed")
 	}
 	return ToolResult{CallID: call.ID, Content: "The user did not approve this call. Ask before trying again.", IsError: true}, denied, false
+}
+
+// offersHistory: read_history exists when compaction is on, the agent has
+// tools at all, and the host has no tool of that name.
+func offersHistory(cfg Config) bool {
+	return !cfg.Compaction.Disabled && cfg.Tools != nil && len(cfg.Tools.Specs()) > 0 && !cfg.Tools.Has(HistoryToolName)
+}
+
+// calledHistory: a conversation that already used read_history keeps it
+// defined, or a provider could refuse calls to a tool it does not know.
+func calledHistory(msgs []Message) bool {
+	for _, m := range msgs {
+		for _, c := range m.Calls {
+			if c.Name == HistoryToolName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // withHistory offers read_history once the view has left something out.

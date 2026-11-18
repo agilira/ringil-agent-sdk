@@ -89,6 +89,7 @@ type compactor struct {
 	cfg      Compaction
 	window   int
 	provider Provider
+	history  bool // read_history is offered: the notes point to it
 
 	mu        sync.Mutex
 	ratio     float64
@@ -200,7 +201,7 @@ func (c *compactor) shorten(ctx context.Context, v *sized, budget int) compacted
 	if cut == 0 {
 		return compacted{}
 	}
-	note, usage, how := countNote(cut), Usage{}, "left out"
+	note, usage, how := c.countNote(cut), Usage{}, "left out"
 	if c.cfg.Summarize {
 		if summary, used, err := c.summary(ctx, v.msgs[:cut], budget); err == nil {
 			note, usage, how = summary, used, "summarized"
@@ -240,19 +241,28 @@ func (c *compactor) reserve() int {
 	return int(float64(c.cfg.summaryMax()+100) * bytesPerToken)
 }
 
-func countNote(n int) string {
-	return "[" + plural(n, "earlier message") + " of this conversation omitted to fit the context (messages 1-" + strconv.Itoa(n) + "; " + HistoryToolName + " shows them).]"
+func (c *compactor) countNote(n int) string {
+	return "[" + plural(n, "earlier message") + " of this conversation omitted to fit the context (messages 1-" + strconv.Itoa(n) + c.hint("; ", " shows them") + ").]"
+}
+
+// hint names read_history only when it is there to call.
+func (c *compactor) hint(before, after string) string {
+	if !c.history {
+		return ""
+	}
+	return before + HistoryToolName + after
 }
 
 // sized is a view under construction with the byte size of every message,
 // so trying cuts does not re-encode the whole conversation each time.
 type sized struct {
-	c      *compactor
-	base   int
-	msgs   []Message
-	sizes  []int
-	total  int
-	offset int // messages dropped from the front: msgs[i] is message offset+i+1
+	c       *compactor
+	base    int
+	msgs    []Message
+	sizes   []int
+	total   int
+	offset  int          // messages dropped from the front: msgs[i] is message offset+i+1
+	stubbed map[int]bool // positions already stubbed in this view
 }
 
 func newSized(req *Request, c *compactor) *sized {
@@ -300,11 +310,15 @@ func (v *sized) stub(keep int) int {
 			continue
 		}
 		seen++
-		if seen <= keep || len(m.Result.Content) < stubMinBytes || isStub(m.Result.Content) {
+		if seen <= keep || len(m.Result.Content) < stubMinBytes || v.stubbed[v.offset+i] {
 			continue
 		}
 		res := *m.Result
-		res.Content = stub(res.Content, v.offset+i+1)
+		res.Content = v.c.stub(res.Content, v.offset+i+1)
+		if v.stubbed == nil {
+			v.stubbed = map[int]bool{}
+		}
+		v.stubbed[v.offset+i] = true
 		v.msgs[i] = ToolMessage(res)
 		v.resize(i)
 		stubbed++
@@ -314,11 +328,12 @@ func (v *sized) stub(keep int) int {
 
 const stubPrefix = "[Tool result omitted to fit the context: "
 
-func isStub(s string) bool { return strings.HasPrefix(s, stubPrefix) }
-
-func stub(content string, number int) string {
+// stub stands in for a result; only this view's own stubs are skipped
+// later (by position), so a result that merely looks like one is still
+// shortened.
+func (c *compactor) stub(content string, number int) string {
 	return stubPrefix + strconv.Itoa(len(content)) + " bytes, sha256 " + shortHash(content) +
-		". It is message " + strconv.Itoa(number) + ": " + HistoryToolName + " shows it, or run a read-only tool again.]"
+		". It is message " + strconv.Itoa(number) + c.hint(": ", " shows it, or") + " run a read-only tool again.]"
 }
 
 // cut returns where to cut so the rest fits half the budget, or else the
