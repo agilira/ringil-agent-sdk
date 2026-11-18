@@ -38,10 +38,10 @@ func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools a
 		return nil, err
 	}
 	crew, err := delegate.NewCrew(delegate.Team{
-		Provider: p,
-		Approve:  c.approve,
-		MaxTurns: ctx.GetGlobalFlagInt("max-turns"),
-		OnEvent:  c.showWorker,
+		Provider:  p,
+		Approve:   c.approve,
+		MaxTurns:  ctx.GetGlobalFlagInt("max-turns"),
+		Observers: []agent.Observer{c.showWorker},
 		Workers: []delegate.Worker{
 			{Name: "explore", Description: "searches and reads files, read-only; for questions like where is X, how does Y work", System: exploreSystem, Tools: explore, Prepare: c.prepareWorker},
 			{Name: "general", Description: "does a self-contained task with the same tools as you, except delegating and your own notes, task list and memory", System: generalSystem, Tools: general, Prepare: c.prepareWorker},
@@ -96,8 +96,8 @@ func (c *cli) prepareWorker(context.Context, string) (delegate.Setup, error) {
 }
 
 // showWorker prints what a worker does, indented under the parent's call.
-func (c *cli) showWorker(task int, worker string, ev agent.Event) {
-	tag := "    [" + worker + " " + strconv.Itoa(task) + "] "
+func (c *cli) showWorker(ev agent.Event) {
+	tag := "    [" + ev.Worker + " " + strconv.Itoa(ev.Task) + "] "
 	switch ev.Kind {
 	case agent.EventToolStart:
 		c.note(strings.TrimPrefix(tag, "  ") + "-> " + ev.Call.Name + " " + short(string(ev.Call.Input)))

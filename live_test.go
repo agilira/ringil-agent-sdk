@@ -8,9 +8,11 @@
 package agent_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"iter"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +23,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/artifact"
 	"github.com/agilira/ringil-agent-sdk/delegate"
+	"github.com/agilira/ringil-agent-sdk/eventlog"
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/memory/local"
 	"github.com/agilira/ringil-agent-sdk/memory/vector"
@@ -566,4 +569,41 @@ func TestLiveLoop(t *testing.T) {
 		t.Fatalf("job_status ran %d times, stop %s, answer %q", runs, res.Stop, res.Text)
 	}
 	t.Logf("ran %d times, %d turns, answer %q", runs, res.Turns, res.Text)
+}
+
+// TestLiveEventLog: a real run logged through eventlog: every step is
+// there, none of what was said.
+func TestLiveEventLog(t *testing.T) {
+	model := liveModel(t)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	type in struct {
+		City string `json:"city"`
+	}
+	weather := agent.NewTool("weather", "Weather in a city.", func(_ context.Context, i in) (string, error) {
+		return "Bologna-Meteo-Riservato: 18 gradi", nil
+	})
+	tools, err := agent.NewRegistry(weather)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, MaxTurns: 4, Observers: []agent.Observer{eventlog.Slog(logger)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), nil, agent.UserText("Che tempo fa a Bologna? Usa weather.")); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, leak := range []string{"Bologna", "Riservato", "gradi", "tempo"} {
+		if strings.Contains(out, leak) {
+			t.Fatalf("content %q in the log:\n%s", leak, out)
+		}
+	}
+	for _, want := range []string{"agent.started", "agent.model", "agent.tool_end", `"tool":"weather"`, "agent.done"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %s:\n%s", want, out)
+		}
+	}
+	t.Log("\n" + out)
 }

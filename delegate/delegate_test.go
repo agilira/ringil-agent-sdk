@@ -8,6 +8,7 @@ package delegate
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,7 +71,11 @@ func TestWorkerReportsBack(t *testing.T) {
 	worker := fake.New(fake.Call("lookup", `{}`), fake.Reply("Found: 42."))
 	var events atomic.Int32
 	team := Team{Workers: []Worker{{Name: "research", Description: "Finds facts", System: "You research.", Tools: tools, Provider: worker}},
-		OnEvent: func(int, string, agent.Event) { events.Add(1) }}
+		Observers: []agent.Observer{func(ev agent.Event) {
+			if ev.Worker == "research" && ev.Task == 1 {
+				events.Add(1)
+			}
+		}}}
 	res, p := parent(t, team, fake.Call(ToolName, `{"worker":"research","task":"Find the answer"}`), fake.Reply("It is 42."))
 	report := p.Requests()[1].Messages[2].Result.Content
 	if !strings.HasPrefix(report, "Task 1 (research):\nFound: 42.") || !strings.Contains(report, "[worker: 2 model calls") || calls.Load() != 1 || events.Load() == 0 {
@@ -175,14 +180,59 @@ func TestCleanupAfterPanicAndCurrent(t *testing.T) {
 			}
 			return true, nil
 		},
-		OnEvent: func(_ int, _ string, ev agent.Event) {
+		Observers: []agent.Observer{func(ev agent.Event) {
 			if ev.Kind == agent.EventDone {
 				panic("host bug")
 			}
-		},
+		}},
 	}
 	parent(t, team, fake.Call(ToolName, `{"worker":"w","task":"x"}`), fake.Reply("ok"))
 	if done.Load() != 1 || who.Load() != "w" {
 		t.Fatalf("done %d who %v", done.Load(), who.Load())
+	}
+}
+
+// Audit 18/11: a worker's events name the run that delegated (Parent),
+// besides the worker and the task; the parent's own run has no Parent.
+func TestWorkerEventsNameTheParentRun(t *testing.T) {
+	var mu sync.Mutex
+	runs := map[string]string{} // run -> parent
+	tagged := map[string]bool{}
+	obs := func(ev agent.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		runs[ev.Run] = ev.Parent
+		tagged[ev.Run] = ev.Worker == "w" && ev.Task == 1
+	}
+	crew, err := NewCrew(Team{Workers: []Worker{{Name: "w", Description: "w", Provider: fake.New(fake.Reply("done"))}}, Observers: []agent.Observer{obs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crew.Close()
+	reg, err := agent.NewRegistry(crew.Tool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: fake.New(fake.Call(ToolName, `{"worker":"w","task":"x"}`), fake.Reply("ok")), Tools: reg, Observers: []agent.Observer{obs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(bg, nil, agent.UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	checkParents(t, runs, tagged)
+}
+
+// checkParents: two runs; the worker's is tagged and names the other,
+// which is top level.
+func checkParents(t *testing.T, runs map[string]string, tagged map[string]bool) {
+	t.Helper()
+	if len(runs) != 2 {
+		t.Fatalf("runs %v", runs)
+	}
+	for run, parentRun := range runs {
+		if tagged[run] && runs[parentRun] != "" || tagged[run] == (parentRun == "") {
+			t.Fatalf("run %s parent %q tagged %v; all %v", run, parentRun, tagged[run], runs)
+		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/agilira/go-errors"
 )
@@ -67,6 +68,9 @@ type Config struct {
 	// Recall is how many records join the context; zero means 5, a
 	// negative value turns automatic recall off.
 	Recall int
+	// Observers receive every event of every run of this agent; see
+	// Observer.
+	Observers []Observer
 	// Loop configures the loop detector; the zero value warns the model
 	// when the same calls keep giving the same results.
 	Loop Loop
@@ -150,24 +154,102 @@ func (l *loop) Stream(ctx context.Context, conv Conversation, input Message) ite
 		if conv == nil {
 			conv = NewConversation()
 		}
+		ev := eventer{id: rand.Text()[:16], observers: l.cfg.Observers, yield: yield, parent: RunID(ctx)}
+		ctx = context.WithValue(ctx, runKey{}, ev.id)
+		if !ev.send(Event{Kind: EventStarted}) {
+			return
+		}
 		if guard, ok := conv.(RunGuard); ok {
 			end, err := guard.BeginRun()
 			if err != nil {
-				yield(Event{}, err)
+				ev.fail(err)
 				return
 			}
 			defer end()
 		}
-		r := newRun(l.cfg, conv, yield)
+		r := newRun(l.cfg, conv, &ev)
 		r.compactor = l.compactor
 		err := r.begin(ctx, input)
 		if err == nil {
 			err = r.execute(ctx)
 		}
 		if err != nil && !stderrors.Is(err, errStopped) {
-			yield(Event{}, err)
+			ev.fail(err)
 		}
 	}
+}
+
+// runKey carries the running run's ID to its tools.
+type runKey struct{}
+
+// RunID is the ID of the run whose tool ctx belongs to; "" outside one.
+// A tool that starts runs of its own (package delegate) passes it on as
+// their Event.Parent.
+func RunID(ctx context.Context) string {
+	id, _ := ctx.Value(runKey{}).(string)
+	return id
+}
+
+// eventer numbers a run's events and gives each to the observers, then
+// to the stream: one sequence for all.
+type eventer struct {
+	id        string
+	parent    string
+	seq       int
+	observers []Observer
+	broken    map[int]bool // observers that panicked
+	yield     func(Event, error) bool
+	stopped   bool // the consumer stopped: nothing more is sent to anyone
+}
+
+func (e *eventer) stamp(ev *Event) {
+	e.seq++
+	ev.Run, ev.Parent, ev.Seq, ev.Time = e.id, e.parent, e.seq, time.Now()
+}
+
+func (e *eventer) observe(ev Event) {
+	for i, o := range e.observers {
+		if e.broken[i] {
+			continue
+		}
+		func() {
+			defer func() {
+				if recover() != nil {
+					if e.broken == nil {
+						e.broken = map[int]bool{}
+					}
+					e.broken[i] = true
+				}
+			}()
+			o(ev)
+		}()
+	}
+}
+
+// send stamps, observes and streams ev; false when the consumer stopped.
+func (e *eventer) send(ev Event) bool {
+	if e.stopped {
+		return false
+	}
+	e.stamp(&ev)
+	e.observe(ev)
+	if !e.yield(ev, nil) {
+		e.stopped = true
+	}
+	return !e.stopped
+}
+
+// fail ends the sequence with EventFailed, given to the stream with err;
+// after the consumer stopped, nothing is sent.
+func (e *eventer) fail(err error) {
+	if e.stopped {
+		return
+	}
+	e.stopped = true
+	ev := Event{Kind: EventFailed, Err: err}
+	e.stamp(&ev)
+	e.observe(ev)
+	e.yield(ev, err)
 }
 
 // errStopped means the consumer broke out of the event loop.
@@ -175,28 +257,29 @@ var errStopped = stderrors.New("event consumer stopped")
 
 // run is the state of one user turn.
 type run struct {
-	cfg       Config
-	system    string
-	compactor *compactor
-	lastBytes int
-	conv      Conversation
-	yield     func(Event, error) bool
-	msgs      []Message
-	start     int
-	seenIDs   map[string]bool
-	result    Result
-	tools     Registry      // the configured tools, plus tool_search and read_history
-	disc      *discovery    // nil when every schema is sent
-	histMu    sync.Mutex    // guards msgs against read_history running in parallel
-	compacted bool          // the view has left messages out: read_history is offered
-	hist      Tool          // read_history, nil when compaction is off or the host has its own
-	loops     *loopDetector // nil when disabled
-	loopStop  bool          // LoopStop refused a call: the run ends after this batch
-	batch     *loopDetector // the detector plus the calls admitted in the current batch
+	cfg        Config
+	system     string
+	compactor  *compactor
+	lastBytes  int
+	conv       Conversation
+	events     *eventer
+	msgs       []Message
+	start      int
+	seenIDs    map[string]bool
+	result     Result
+	tools      Registry      // the configured tools, plus tool_search and read_history
+	disc       *discovery    // nil when every schema is sent
+	histMu     sync.Mutex    // guards msgs against read_history running in parallel
+	compacted  bool          // the view has left messages out: read_history is offered
+	hist       Tool          // read_history, nil when compaction is off or the host has its own
+	loops      *loopDetector // nil when disabled
+	loopStop   bool          // LoopStop refused a call: the run ends after this batch
+	batch      *loopDetector // the detector plus the calls admitted in the current batch
+	modelStart time.Time     // when the current model call began
 }
 
-func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
-	r := &run{cfg: cfg, conv: conv, yield: yield, seenIDs: map[string]bool{}, system: cfg.System, loops: newLoopDetector(cfg.Loop, cfg.Tools)}
+func newRun(cfg Config, conv Conversation, events *eventer) *run {
+	r := &run{cfg: cfg, conv: conv, events: events, seenIDs: map[string]bool{}, system: cfg.System, loops: newLoopDetector(cfg.Loop, cfg.Tools)}
 	r.msgs = conv.Messages()
 	for _, msg := range r.msgs {
 		for _, call := range msg.Calls {
@@ -314,7 +397,7 @@ func (r *run) add(ctx context.Context, msg Message) error {
 }
 
 func (r *run) emit(ev Event) error {
-	if !r.yield(ev, nil) {
+	if !r.events.send(ev) {
 		return errStopped
 	}
 	return nil
@@ -343,11 +426,17 @@ func (r *run) execute(ctx context.Context) error {
 }
 
 func (r *run) callModel(ctx context.Context) (*Response, error) {
+	r.modelStart = time.Now()
 	resp, err := r.request(ctx, r.system)
 	if err == nil && empty(resp) && r.cfg.Tools != nil && len(r.toolSpecs()) > 0 {
 		// An empty answer after a turn is often a tool call the provider
-		// dropped (a name not in the list): ask once more, saying so.
+		// dropped (a name not in the list): ask once more, saying so. The
+		// empty call is reported and counted, not recorded.
 		r.result.Usage = r.result.Usage.Add(resp.Usage)
+		if err := r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop, Duration: time.Since(r.modelStart)}); err != nil {
+			return nil, err
+		}
+		r.modelStart = time.Now()
 		resp, err = r.request(ctx, r.system+r.emptyNudge())
 	}
 	if err != nil {
@@ -399,7 +488,7 @@ func (r *run) keep(ctx context.Context, resp *Response) (*Response, error) {
 		return nil, err
 	}
 	resp.Message = msg
-	return resp, r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop})
+	return resp, r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop, Duration: time.Since(r.modelStart)})
 }
 
 // generate sends full, compacted to budget tokens, and streams the answer.
@@ -470,7 +559,8 @@ func (r *run) parallel(call ToolCall) bool {
 type outcome struct {
 	res  ToolResult
 	err  error
-	loop string // what the loop detector did, for EventLoop
+	loop string        // what the loop detector did, for EventLoop
+	took time.Duration // how long the call ran
 }
 
 func (r *run) runBatch(ctx context.Context, calls []ToolCall) error {
@@ -478,7 +568,7 @@ func (r *run) runBatch(ctx context.Context, calls []ToolCall) error {
 	run := make([]bool, len(calls))
 	r.batch = r.loops.clone() // calls run together are checked against each other too
 	for i := range calls {
-		if err := r.emit(Event{Kind: EventToolStart, Call: &calls[i]}); err != nil {
+		if err := r.emit(Event{Kind: EventToolStart, Call: &calls[i], UnknownTool: r.unknown(calls[i].Name)}); err != nil {
 			return err
 		}
 		res, err, ok := r.gate(ctx, calls[i])
@@ -510,8 +600,7 @@ func (r *run) runBatch(ctx context.Context, calls []ToolCall) error {
 func (r *run) runCalls(ctx context.Context, calls []ToolCall, run []bool, out []outcome) {
 	if len(calls) == 1 {
 		if run[0] {
-			res, err := r.runOne(ctx, calls[0])
-			out[0] = outcome{res: res, err: err}
+			out[0] = r.timed(ctx, calls[0])
 		}
 		return
 	}
@@ -523,11 +612,21 @@ func (r *run) runCalls(ctx context.Context, calls []ToolCall, run []bool, out []
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res, err := r.runOne(ctx, calls[i])
-			out[i] = outcome{res: res, err: err}
+			out[i] = r.timed(ctx, calls[i])
 		}()
 	}
 	wg.Wait()
+}
+
+// unknown: the agent has no tool of that name (deferred tools included).
+func (r *run) unknown(name string) bool {
+	return !r.tools.Has(name) && (r.hist == nil || name != HistoryToolName)
+}
+
+func (r *run) timed(ctx context.Context, call ToolCall) outcome {
+	start := time.Now()
+	res, err := r.runOne(ctx, call)
+	return outcome{res: res, err: err, took: time.Since(start)}
 }
 
 // record adds one result to the conversation and reports it. A call that
@@ -548,11 +647,11 @@ func (r *run) record(ctx context.Context, call *ToolCall, o outcome, quiet bool)
 		return ctxErr
 	}
 	if o.loop != "" {
-		if err := r.emit(Event{Kind: EventLoop, Call: call, Text: o.loop}); err != nil {
+		if err := r.emit(Event{Kind: EventLoop, Call: call, Text: o.loop, UnknownTool: r.unknown(call.Name)}); err != nil {
 			return err
 		}
 	}
-	return r.emit(Event{Kind: EventToolEnd, Call: call, Output: &res, Err: toolErr})
+	return r.emit(Event{Kind: EventToolEnd, Call: call, Output: &res, Err: toolErr, Duration: o.took, UnknownTool: r.unknown(call.Name)})
 }
 
 // gate decides whether a call runs: an unknown tool or the host's refusal
