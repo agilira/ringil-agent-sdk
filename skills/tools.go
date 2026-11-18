@@ -188,7 +188,7 @@ func dropEnvFlags(args []string) []string {
 }
 
 func (r *runner) run(ctx context.Context, in runIn) (string, error) {
-	argv, err := r.command(in)
+	argv, at, err := r.command(in)
 	if err != nil {
 		return "", err
 	}
@@ -202,13 +202,16 @@ func (r *runner) run(ctx context.Context, in runIn) (string, error) {
 		return "", errors.Wrap(err, ErrIO, "cannot prepare the working directory")
 	}
 	defer removeQuietly(work)
+	// The skill and the working directory appear at their own paths: every
+	// sandbox can do that (macOS's cannot place a directory elsewhere).
+	argv[at] = filepath.Join(copyDir, argv[at])
 	ctx, cancel := context.WithTimeout(ctx, r.timeout())
 	defer cancel()
 	out := &capped{max: r.maxOutput()}
 	spec := sandbox.Spec{
 		Argv:      argv,
-		Dir:       workDir,
-		Env:       r.env(),
+		Dir:       work,
+		Env:       r.env(copyDir, work),
 		Mounts:    r.mounts(copyDir, work),
 		Network:   r.opts.Network,
 		Limits:    r.opts.Limits,
@@ -221,36 +224,35 @@ func (r *runner) run(ctx context.Context, in runIn) (string, error) {
 	return r.deliver(work, in.Skill, text, runErr)
 }
 
-const workDir = "/work"
-
 func (r *runner) mounts(copyDir, work string) []sandbox.Mount {
-	m := append([]sandbox.Mount{{Source: copyDir, Target: "/skill"}, {Source: work, Target: workDir, Writable: true}}, r.opts.Mounts...)
+	m := append([]sandbox.Mount{{Source: copyDir}, {Source: work, Writable: true}}, r.opts.Mounts...)
 	if r.opts.MountsFunc != nil {
 		m = append(m, r.opts.MountsFunc()...)
 	}
 	return m
 }
 
-// command is the interpreter, the script and its arguments.
-func (r *runner) command(in runIn) ([]string, error) {
+// command is the interpreter, the script (relative to the skill, at
+// index at) and its arguments.
+func (r *runner) command(in runIn) ([]string, int, error) {
 	in.Script = r.cat.resolve(in.Skill, in.Script) // "stats.py" for scripts/stats.py
 	data, err := r.cat.ReadFile(in.Skill, in.Script)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	interp, ok := interpreter(in.Script, data)
 	if !ok || in.Script == skillFile {
-		return nil, agent.ToolError(ErrScript, "This file is not a script: it has no known extension and no #! line.")
+		return nil, 0, agent.ToolError(ErrScript, "This file is not a script: it has no known extension and no #! line.")
 	}
 	argv := append([]string{}, interp...)
 	if rt, ok := r.opts.Runtimes[argv[0]]; ok {
 		argv[0] = rt
 	}
-	return append(append(argv, "/skill/"+in.Script), in.Args...), nil
+	return append(append(argv, filepath.FromSlash(in.Script)), in.Args...), len(argv), nil
 }
 
-func (r *runner) env() map[string]string {
-	env := map[string]string{"SKILL_DIR": "/skill", "OUTPUT_DIR": workDir}
+func (r *runner) env(skillDir, work string) map[string]string {
+	env := map[string]string{"SKILL_DIR": skillDir, "OUTPUT_DIR": work}
 	for k, v := range r.opts.Env {
 		env[k] = v
 	}
