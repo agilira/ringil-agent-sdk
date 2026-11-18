@@ -121,6 +121,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		Provider:      retry.Wrap(p, retry.Config{}),
 		Tools:         tools,
 		Memory:        mem,
+		Approve:       c.approve,
 		System:        ctx.GetGlobalFlagString("system"),
 		MaxTurns:      ctx.GetGlobalFlagInt("max-turns"),
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
@@ -180,7 +181,21 @@ func (c *cli) defaultDirs() ([]string, error) {
 // askAccess asks in the terminal whether the agent may use dir. No answer
 // (end of input) is a no.
 func (c *cli) askAccess(_ context.Context, dir string) (bool, error) {
-	if err := c.line("\n  ? The agent wants to access " + clean(dir) + " — allow? [y/N] "); err != nil {
+	return c.confirm("\n  ? The agent wants to access " + clean(dir) + " — allow? [y/N] ")
+}
+
+// approve asks before destructive tools (forget today, file writes later);
+// everything else runs without interrupting the user.
+func (c *cli) approve(_ context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+	if !spec.Annotations.Destructive {
+		return true, nil
+	}
+	return c.confirm("\n  ? The agent wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N] ")
+}
+
+// confirm asks a yes/no question; no answer is a no.
+func (c *cli) confirm(question string) (bool, error) {
+	if err := c.line(question); err != nil {
 		return false, err
 	}
 	answer, ok := c.readLine()

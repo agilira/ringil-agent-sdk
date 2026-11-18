@@ -28,6 +28,49 @@ func tokens(text string) []string {
 	})
 }
 
+// index holds what BM25 needs, computed in one pass over the records: the
+// cost of a search is linear in the size of the memory.
+type index struct {
+	freqs []map[string]int // term counts per record
+	lens  []int
+	df    map[string]int // records containing each term
+	avg   float64
+}
+
+func newIndex(recs []agent.MemoryRecord) *index {
+	ix := &index{freqs: make([]map[string]int, len(recs)), lens: make([]int, len(recs)), df: map[string]int{}}
+	total := 0
+	for i, r := range recs {
+		words := tokens(r.Content)
+		f := make(map[string]int, len(words))
+		for _, w := range words {
+			f[w]++
+		}
+		for w := range f {
+			ix.df[w]++
+		}
+		ix.freqs[i], ix.lens[i] = f, len(words)
+		total += len(words)
+	}
+	ix.avg = math.Max(float64(total)/float64(max(len(recs), 1)), 1)
+	return ix
+}
+
+func (ix *index) score(i int, terms []string) float64 {
+	n := float64(len(ix.freqs))
+	s := 0.0
+	for _, t := range terms {
+		tf := float64(ix.freqs[i][t])
+		if tf == 0 {
+			continue
+		}
+		df := float64(ix.df[t])
+		idf := math.Log(1 + (n-df+0.5)/(df+0.5))
+		s += idf * tf * (k1 + 1) / (tf + k1*(1-b+b*float64(ix.lens[i])/ix.avg))
+	}
+	return s
+}
+
 type scored struct {
 	rec   agent.MemoryRecord
 	score float64
@@ -41,13 +84,10 @@ func rank(recs []agent.MemoryRecord, query string, limit int) []agent.MemoryReco
 		return nil
 	}
 	terms := unique(tokens(query))
-	docs := make([][]string, len(recs))
-	for i, r := range recs {
-		docs[i] = tokens(r.Content)
-	}
+	ix := newIndex(recs)
 	var hits []scored
 	for i, r := range recs {
-		if s := bm25(terms, docs, i); s > 0 || len(terms) == 0 {
+		if s := ix.score(i, terms); s > 0 || len(terms) == 0 {
 			hits = append(hits, scored{r, s})
 		}
 	}
@@ -74,48 +114,4 @@ func unique(words []string) []string {
 		}
 	}
 	return out
-}
-
-func bm25(terms []string, docs [][]string, i int) float64 {
-	avg := averageLength(docs)
-	score := 0.0
-	for _, t := range terms {
-		tf := float64(count(docs[i], t))
-		if tf == 0 {
-			continue
-		}
-		df := float64(documentsWith(docs, t))
-		idf := math.Log(1 + (float64(len(docs))-df+0.5)/(df+0.5))
-		norm := tf + k1*(1-b+b*float64(len(docs[i]))/avg)
-		score += idf * tf * (k1 + 1) / norm
-	}
-	return score
-}
-
-func averageLength(docs [][]string) float64 {
-	total := 0
-	for _, d := range docs {
-		total += len(d)
-	}
-	return math.Max(float64(total)/float64(max(len(docs), 1)), 1)
-}
-
-func count(doc []string, t string) int {
-	n := 0
-	for _, w := range doc {
-		if w == t {
-			n++
-		}
-	}
-	return n
-}
-
-func documentsWith(docs [][]string, t string) int {
-	n := 0
-	for _, d := range docs {
-		if count(d, t) > 0 {
-			n++
-		}
-	}
-	return n
 }

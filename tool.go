@@ -54,6 +54,8 @@ const (
 	ErrToolUnknown errors.ErrorCode = "TOOL_UNKNOWN"
 	// ErrToolPanic: the tool panicked; the agent recovered.
 	ErrToolPanic errors.ErrorCode = "TOOL_PANIC"
+	// ErrToolDenied: the host's approval hook refused the call.
+	ErrToolDenied errors.ErrorCode = "TOOL_DENIED"
 	// ErrToolFailed: the tool failed in a way it did not describe.
 	ErrToolFailed errors.ErrorCode = "TOOL_FAILED"
 )
