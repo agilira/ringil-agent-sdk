@@ -100,3 +100,30 @@ func write(t *testing.T, w http.ResponseWriter, body string) {
 		t.Error(err)
 	}
 }
+
+// Asymmetric models: stored texts go as passages, searches as queries.
+func TestEmbedInputType(t *testing.T) {
+	var kinds []any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		kinds = append(kinds, req["input_type"])
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1,0]}]}`))
+	}))
+	defer srv.Close()
+	for _, on := range []bool{false, true} {
+		e, err := NewEmbedder(Config{BaseURL: srv.URL, Model: "m", AllowHTTP: true, EmbedInputType: on})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.Embed(context.Background(), []string{"doc"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.EmbedQuery(context.Background(), []string{"q"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fmt.Sprint(kinds) != "[<nil> <nil> passage query]" {
+		t.Fatalf("input_type sent: %v", kinds)
+	}
+}

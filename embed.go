@@ -22,5 +22,16 @@ type Embedder interface {
 	Model() string
 }
 
+// QueryEmbedder is an Embedder for asymmetric models, which embed a
+// question differently from the texts it should find (NVIDIA NIM,
+// Cohere, Voyage, E5). Stores use EmbedQuery for searches when the
+// embedder has it.
+type QueryEmbedder interface {
+	Embedder
+	// EmbedQuery returns one vector per query, comparable with those
+	// Embed returns for documents.
+	EmbedQuery(ctx context.Context, queries []string) ([][]float32, error)
+}
+
 // ErrEmbed marks a failed embedding.
 const ErrEmbed errors.ErrorCode = "EMBED_FAILED"

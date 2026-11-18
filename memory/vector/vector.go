@@ -122,7 +122,7 @@ func (s *store) Put(ctx context.Context, rec agent.MemoryRecord) (agent.MemoryRe
 	}
 	// Without a vector now, Search embeds it later: the hash check sees
 	// that any older vector no longer matches the content.
-	vecs, ok := s.embed(ctx, []string{stored.Content})
+	vecs, ok := s.embed(ctx, []string{stored.Content}, false)
 	if !ok {
 		return stored, nil
 	}
@@ -162,7 +162,7 @@ func (s *store) byMeaning(ctx context.Context, query string, limit int) ([]agent
 	if err != nil {
 		return nil, err
 	}
-	q, ok := s.embed(ctx, []string{query})
+	q, ok := s.embed(ctx, []string{query}, true)
 	if !ok {
 		return nil, errors.New(agent.ErrEmbed, "embeddings are unavailable")
 	}
@@ -196,8 +196,8 @@ func rankByMeaning(all []agent.MemoryRecord, have map[string][]float32, q []floa
 
 // embed calls the embedder unless it failed recently; a failure starts a
 // pause, so a broken or misnamed model costs one call a minute, not one
-// per turn.
-func (s *store) embed(ctx context.Context, texts []string) ([][]float32, bool) {
+// per turn. A query goes through EmbedQuery when the model is asymmetric.
+func (s *store) embed(ctx context.Context, texts []string, query bool) ([][]float32, bool) {
 	s.mu.Lock()
 	resting := time.Now().Before(s.resting)
 	s.mu.Unlock()
@@ -208,7 +208,11 @@ func (s *store) embed(ctx context.Context, texts []string) ([][]float32, bool) {
 	for i, t := range texts {
 		clipped[i] = clip(t, maxEmbedChars)
 	}
-	vecs, err := s.emb.Embed(ctx, clipped)
+	embed := s.emb.Embed
+	if qe, ok := s.emb.(agent.QueryEmbedder); ok && query {
+		embed = qe.EmbedQuery
+	}
+	vecs, err := embed(ctx, clipped)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.mu.Lock()
@@ -289,7 +293,7 @@ func (s *store) embedMissing(ctx context.Context, missing []agent.MemoryRecord, 
 		for i, r := range batch {
 			texts[i] = r.Content
 		}
-		vecs, ok := s.embed(ctx, texts)
+		vecs, ok := s.embed(ctx, texts, false)
 		if !ok {
 			s.markFailed(batch)
 			continue

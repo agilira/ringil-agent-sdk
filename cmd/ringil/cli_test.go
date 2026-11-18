@@ -764,7 +764,7 @@ func TestProjectNotesAskAndSessionScratch(t *testing.T) {
 // parent.
 func TestGeneralWorkerRunsAndAsksAsItself(t *testing.T) {
 	h := newHarness(t, "a\n",
-		fake.Call("delegate", `{"worker":"general","task":"forget x1"}`),
+		fake.Call("general", `{"task":"forget x1"}`),
 		fake.Call("forget", `{"id":"x1"}`), // the worker has no memory tools: unknown
 		fake.Reply("worker done"),
 		fake.Reply("ok"))

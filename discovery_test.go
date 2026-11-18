@@ -54,21 +54,25 @@ func TestDeferredToolsLoadOnSearch(t *testing.T) {
 	if _, err := a.Run(context.Background(), conv, agent.UserText("ancora")); err != nil {
 		t.Fatal(err)
 	}
-	if got := names(p.Requests()[3].Tools); !strings.Contains(got, "gmail_fetch") || strings.Contains(got, "slack_post") {
-		t.Fatalf("next run tools %s", got)
+	for _, s := range p.Requests()[3].Tools {
+		if loaded := !strings.Contains(s.Description, "Parameters not shown"); loaded != (s.Name != "slack_post") {
+			t.Fatalf("next run: %s loaded=%v", s.Name, loaded)
+		}
 	}
 }
 
 func checkFirstRun(t *testing.T, reqs []*agent.Request, calls int) {
 	t.Helper()
-	if got := names(reqs[0].Tools); got != "add,tool_search" {
+	// Deferred tools come as light entries: one line, any object.
+	first := reqs[0].Tools
+	if got := names(first); got != "add,gmail_fetch,slack_post,tool_search" {
 		t.Fatalf("first request tools %s", got)
 	}
-	if !strings.Contains(reqs[0].System, `{"name":"gmail_fetch","hint":"Fetch Gmail messages`) {
-		t.Fatalf("deferred list missing: %q", reqs[0].System)
+	if g := first[1]; !strings.Contains(g.Description, "Parameters not shown") || string(g.InputSchema) != `{"type":"object"}` {
+		t.Fatalf("light entry %+v", g)
 	}
-	if got := names(reqs[1].Tools); got != "gmail_fetch,add,tool_search" && got != "add,gmail_fetch,tool_search" {
-		t.Fatalf("after search %s", got)
+	if g := reqs[1].Tools[1]; strings.Contains(g.Description, "Parameters not shown") {
+		t.Fatalf("not loaded after search: %+v", g)
 	}
 	if calls != 1 {
 		t.Fatalf("gmail_fetch ran %d times", calls)
@@ -92,7 +96,7 @@ func TestSmallCatalogIsSentWhole(t *testing.T) {
 
 func TestDiscoveryAlwaysAndOff(t *testing.T) {
 	calls := 0
-	for mode, want := range map[agent.Discovery]string{agent.DiscoveryAlways: "tool_search", agent.DiscoveryOff: "gmail_fetch"} {
+	for mode, want := range map[agent.Discovery]string{agent.DiscoveryAlways: "gmail_fetch,tool_search", agent.DiscoveryOff: "gmail_fetch"} {
 		reg, err := agent.NewRegistry(bigTool("gmail_fetch", "Fetch", &calls))
 		if err != nil {
 			t.Fatal(err)
@@ -151,9 +155,9 @@ func TestDeferredBlockIsBounded(t *testing.T) {
 	if _, err := newAgent(t, agent.Config{Provider: p, Tools: reg}).Run(context.Background(), nil, agent.UserText("x")); err != nil {
 		t.Fatal(err)
 	}
-	sys := p.Requests()[0].System
-	if len(sys) > 50<<10 || !strings.Contains(sys, `"more":`) {
-		t.Fatalf("block of %d bytes", len(sys))
+	req := p.Requests()[0]
+	if len(req.Tools) != 301 || !strings.Contains(req.System, "1700 more tools") {
+		t.Fatalf("%d tools offered; system %q", len(req.Tools), req.System)
 	}
 }
 

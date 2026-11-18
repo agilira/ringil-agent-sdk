@@ -112,65 +112,50 @@ func (d *discovery) mark(names []string) {
 
 // specs are what the model gets: every tool not deferred, the deferred
 // ones it loaded, and tool_search.
+// specs are what the model gets: every tool not deferred, the deferred
+// ones it loaded, a light entry (name, one line, any object) for each of
+// the others, and tool_search. The entries matter: a provider may drop a
+// call to a name missing from the list, and models call tools by name.
+// Calling an entry runs the real tool, whose schema still checks the
+// arguments.
 func (d *discovery) specs(all []ToolSpec) []ToolSpec {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	out := make([]ToolSpec, 0, len(all)-len(d.deferred)+len(d.loaded)+1)
+	out := make([]ToolSpec, 0, len(all)+1)
+	entries := 0
 	for _, s := range all {
-		if _, deferred := d.deferred[s.Name]; !deferred || d.loaded[s.Name] {
+		_, deferred := d.deferred[s.Name]
+		switch {
+		case !deferred || d.loaded[s.Name]:
 			out = append(out, s)
+		case entries < maxEntries:
+			out = append(out, lightEntry(s))
+			entries++
 		}
 	}
 	return append(out, d.searchTool().Spec())
 }
 
-// Bounds of the deferred list in the system prompt: with hints while they
-// fit, names only beyond, and a count past the end.
-const (
-	blockWithHints = 24 << 10
-	blockMax       = 48 << 10
-)
+// maxEntries bounds the light entries; tools past it are found only by
+// tool_search.
+const maxEntries = 300
 
-// block lists the deferred tools for the system prompt, one JSON object
-// per line, so that no description can break out of the block.
-func (d *discovery) block() string {
-	var b strings.Builder
-	b.WriteString("\n\n<deferred-tools>\nMore tools exist, listed by name only. To use one, first call " + SearchToolName +
-		" with its exact names (or with words describing the task); its schema then becomes available.\n")
-	hints := d.listSize(true) <= blockWithHints
-	for i, n := range d.order {
-		hint := ""
-		if hints {
-			hint = firstLine(d.deferred[n].Description, 100)
-		}
-		line, err := json.Marshal(struct {
-			Name string `json:"name"`
-			Hint string `json:"hint,omitempty"`
-		}{n, hint})
-		if err != nil {
-			continue
-		}
-		if b.Len()+len(line) > blockMax {
-			b.WriteString(`{"more":` + strconv.Itoa(len(d.order)-i) + `,"note":"search by words to find them"}` + "\n")
-			break
-		}
-		b.Write(line)
-		b.WriteString("\n")
+func lightEntry(s ToolSpec) ToolSpec {
+	return ToolSpec{
+		Name:        s.Name,
+		Description: firstLine(s.Description, 100) + " [Parameters not shown: call " + SearchToolName + " with this name first.]",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Annotations: s.Annotations,
 	}
-	b.WriteString("</deferred-tools>")
-	return b.String()
 }
 
-// listSize estimates the list with or without hints.
-func (d *discovery) listSize(hints bool) int {
-	n := 0
-	for _, name := range d.order {
-		n += len(name) + 14
-		if hints {
-			n += len(firstLine(d.deferred[name].Description, 100)) + 10
-		}
+// block explains the light entries in the system prompt.
+func (d *discovery) block() string {
+	text := "\n\n<deferred-tools>\nSome tools are listed with one line only and no parameters. Before using one, call " + SearchToolName + " with its exact name: its full parameters then become available."
+	if n := len(d.order) - maxEntries; n > 0 {
+		text += " " + strconv.Itoa(n) + " more tools are not listed at all: find them with " + SearchToolName + " by describing the task."
 	}
-	return n
+	return text + "\n</deferred-tools>"
 }
 
 // unknown is the answer to a call of a tool that does not exist: a

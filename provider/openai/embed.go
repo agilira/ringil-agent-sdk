@@ -39,7 +39,7 @@ type embedder struct {
 // NewEmbedder returns an Embedder for cfg.Model at cfg.BaseURL +
 // "/embeddings", with the same key, header and transport rules as New.
 // ContextWindow, MaxTokens and StallTimeout are not used.
-func NewEmbedder(cfg Config) (agent.Embedder, error) {
+func NewEmbedder(cfg Config) (agent.QueryEmbedder, error) {
 	endpoint, err := endpointURL(cfg.BaseURL, cfg.AllowHTTP)
 	if err != nil {
 		return nil, err
@@ -60,10 +60,20 @@ func (e *embedder) Model() string { return e.cfg.Model }
 
 // Embed implements [agent.Embedder].
 func (e *embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return e.embedAll(ctx, texts, "passage")
+}
+
+// EmbedQuery implements [agent.QueryEmbedder]; without EmbedInputType it
+// is Embed.
+func (e *embedder) EmbedQuery(ctx context.Context, queries []string) ([][]float32, error) {
+	return e.embedAll(ctx, queries, "query")
+}
+
+func (e *embedder) embedAll(ctx context.Context, texts []string, kind string) ([][]float32, error) {
 	out := make([][]float32, 0, len(texts))
 	for start := 0; start < len(texts); start += embedBatch {
 		batch := texts[start:min(start+embedBatch, len(texts))]
-		vecs, err := e.embedBatch(ctx, batch)
+		vecs, err := e.embedBatch(ctx, batch, kind)
 		if err != nil {
 			return nil, err
 		}
@@ -79,10 +89,10 @@ type embedReply struct {
 	} `json:"data"`
 }
 
-func (e *embedder) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+func (e *embedder) embedBatch(ctx context.Context, texts []string, kind string) ([][]float32, error) {
 	ctx, cancel := context.WithTimeout(ctx, embedTimeout)
 	defer cancel()
-	body, err := json.Marshal(map[string]any{"model": e.cfg.Model, "input": texts, "encoding_format": "float"})
+	body, err := json.Marshal(e.request(texts, kind))
 	if err != nil {
 		return nil, errors.Wrap(err, agent.ErrProviderConfig, "request cannot be encoded")
 	}
@@ -101,6 +111,14 @@ func (e *embedder) embedBatch(ctx context.Context, texts []string) ([][]float32,
 		return nil, errors.New(agent.ErrEmbed, "the embedding reply could not be read")
 	}
 	return parseReply(data, len(texts))
+}
+
+func (e *embedder) request(texts []string, kind string) map[string]any {
+	req := map[string]any{"model": e.cfg.Model, "input": texts, "encoding_format": "float"}
+	if e.cfg.EmbedInputType {
+		req["input_type"] = kind
+	}
+	return req
 }
 
 func parseReply(data []byte, n int) ([][]float32, error) {

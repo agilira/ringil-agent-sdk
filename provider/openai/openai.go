@@ -50,6 +50,11 @@ type Config struct {
 	// AllowHTTP permits plain HTTP towards any host, e.g. a model server on
 	// the LAN. Without it plain HTTP is accepted only towards loopback.
 	AllowHTTP bool
+	// EmbedInputType sends input_type ("passage" for stored texts,
+	// "query" for searches) on embedding requests, as asymmetric models
+	// require (NVIDIA NIM's embedding models refuse requests without it).
+	// Chat requests ignore it.
+	EmbedInputType bool
 	// Headers are added to every request (e.g. OpenRouter's HTTP-Referer).
 	// They cannot replace Authorization, Content-Type, Accept or Host.
 	Headers map[string]string

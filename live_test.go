@@ -313,7 +313,7 @@ func TestLiveEmbeddings(t *testing.T) {
 
 func liveVectorMemory(t *testing.T, base, model string) agent.Memory {
 	t.Helper()
-	emb, err := openai.NewEmbedder(openai.Config{BaseURL: base, Model: model, APIKey: os.Getenv("RINGIL_API_KEY")})
+	emb, err := openai.NewEmbedder(openai.Config{BaseURL: base, Model: model, APIKey: os.Getenv("RINGIL_API_KEY"), EmbedInputType: os.Getenv("RINGIL_EMBED_INPUT_TYPE") == "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,11 +385,12 @@ func TestLiveDelegation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dt, err := delegate.Tool(delegate.Team{Provider: model, Workers: []delegate.Worker{{Name: "warehouse", Description: "knows stock levels; it has the stock_level tool", Tools: wtools}}})
+	crew, err := delegate.NewCrew(delegate.Team{Provider: model, Workers: []delegate.Worker{{Name: "warehouse", Description: "knows stock levels; it has the stock_level tool", Tools: wtools}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tools, err := agent.NewRegistry(dt)
+	defer crew.Close()
+	tools, err := agent.NewRegistry(crew.WorkerTools()...)
 	if err != nil {
 		t.Fatal(err)
 	}

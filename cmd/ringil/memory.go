@@ -66,6 +66,8 @@ func (c *cli) embedder(ctx *orpheus.Context) (agent.Embedder, error) {
 		Model:     model,
 		KeyFunc:   secrets.OptionalKeyFunc(res, ctx.GetGlobalFlagString("key-env")),
 		AllowHTTP: ctx.GetGlobalFlagBool("allow-http"),
+		// Asymmetric models (NVIDIA NIM) need input_type.
+		EmbedInputType: c.getenv("RINGIL_EMBED_INPUT_TYPE") == "1",
 	})
 }
 
