@@ -14,13 +14,16 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/agilira/go-errors"
+	"golang.org/x/sys/unix"
 )
 
-// netStartTimeout bounds how long the user-mode network may take to come up.
-const netStartTimeout = 10 * time.Second
+// netStartTimeout bounds how long the user-mode network may take to come up;
+// generous, because a loaded machine (a CI runner) can be slow.
+const netStartTimeout = 30 * time.Second
 
 // resolvConf points DNS at slirp4netns' forwarder.
 const resolvConf = "nameserver 10.0.2.3\n"
@@ -103,7 +106,15 @@ func (l *launch) connect(ctx context.Context, p *process) error {
 	// exitW stays open on our side for the sandbox's life: when Wait
 	// closes it, slirp4netns exits.
 	l.extra = append(l.extra, readyR, exitW)
-	p.net = slirpCommand(ctx, pid, readyW, exitR)
+	netns, userns, err := namespaces(pid)
+	if err != nil {
+		l.extra = append(l.extra, readyW, exitR)
+		return err
+	}
+	l.extra = append(l.extra, netns, userns)
+	p.net = slirpCommand(ctx, readyW, exitR, userns, netns)
+	diag := &tailBuffer{}
+	p.net.Stderr = diag
 	err = p.net.Start()
 	l.extra = append(l.extra, readyW, exitR) // the child has its copies now
 	if err != nil {
@@ -111,17 +122,62 @@ func (l *launch) connect(ctx context.Context, p *process) error {
 		return errors.Wrap(err, ErrStart, "cannot start slirp4netns")
 	}
 	if err := waitReady(readyR); err != nil {
-		return err
+		return err.WithContext("slirp4netns", diag.String())
 	}
 	return release(blockW)
 }
 
-func slirpCommand(ctx context.Context, pid int, ready, exit *os.File) *exec.Cmd {
-	// #nosec G204 -- fixed binary and arguments built from a PID
+// tailBuffer keeps the last bytes slirp4netns wrote to stderr, for the
+// host's error when the network does not come up.
+type tailBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > 4096 {
+		t.buf = t.buf[len(t.buf)-4096:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.buf)
+}
+
+// nsGetUserns is NS_GET_USERNS, _IO(0xb7, 0x1): asked of a namespace, the
+// kernel returns the user namespace that owns it.
+const nsGetUserns = 0xb701
+
+// namespaces opens the sandbox's network namespace and the user namespace
+// that owns it. Asking the kernel for the owner, instead of reading
+// /proc/PID/ns/user, matters: bwrap nests a second user namespace for
+// --disable-userns shortly after reporting the PID, and slirp4netns joining
+// that one could not configure the network. Holding both as descriptors
+// also rules out PID reuse.
+func namespaces(pid int) (*os.File, *os.File, error) {
+	netns, err := os.Open("/proc/" + strconv.Itoa(pid) + "/ns/net")
+	if err != nil {
+		return nil, nil, errors.Wrap(err, ErrStart, "cannot open the sandbox's network namespace")
+	}
+	fd, err := unix.IoctlRetInt(int(netns.Fd()), nsGetUserns)
+	if err != nil {
+		return nil, nil, closeWith(errors.Wrap(err, ErrStart, "cannot find the network namespace's owner"), netns)
+	}
+	return netns, os.NewFile(uintptr(fd), "userns"), nil
+}
+
+func slirpCommand(ctx context.Context, ready, exit, userns, netns *os.File) *exec.Cmd {
+	// #nosec G204 -- fixed binary; namespaces passed as inherited descriptors
 	cmd := exec.CommandContext(ctx, slirpPath, "--configure", "--mtu=65520", "--disable-host-loopback",
-		"--userns-path=/proc/"+strconv.Itoa(pid)+"/ns/user",
-		"--ready-fd=3", "--exit-fd=4", strconv.Itoa(pid), "tap0")
-	cmd.ExtraFiles = []*os.File{ready, exit}
+		"--ready-fd=3", "--exit-fd=4", "--userns-path=/proc/self/fd/5",
+		"--netns-type=path", "/proc/self/fd/6", "tap0")
+	cmd.ExtraFiles = []*os.File{ready, exit, userns, netns}
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	return cmd
 }
@@ -140,7 +196,7 @@ func childPID(info *os.File) (int, error) {
 	return status.ChildPID, nil
 }
 
-func waitReady(ready *os.File) error {
+func waitReady(ready *os.File) *errors.Error {
 	if err := ready.SetReadDeadline(time.Now().Add(netStartTimeout)); err != nil {
 		return errors.Wrap(err, ErrStart, "cannot wait on slirp4netns")
 	}
