@@ -115,7 +115,7 @@ func readPrivate(path string) ([]byte, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() || lockfile.CheckPrivate(info) != nil {
-		return nil, errors.New(ErrUsage, "the MCP configuration must be a regular file of yours, not writable by others")
+		return nil, errors.New(ErrUsage, "the configuration must be a regular file of yours, not writable by others")
 	}
 	return io.ReadAll(io.LimitReader(f, 1<<20))
 }

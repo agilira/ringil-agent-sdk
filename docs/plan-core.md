@@ -418,7 +418,7 @@ prima del commit dopo:
 | 18 | Tool filesystem in scrittura e Git strutturato (2.4.2) | grafts disattivati; output in streaming, non nel cap; fsync prima del ref |
 | 19 | Bash sandbox/host (2.6) | host mode senza fuga di env da /proc/$PPID; timeout che uccide anche i figli setsid |
 | 20 | Pianificazione (4.1): trigger a tempo e a evento, consegna, retry + notifica | DST con libreria matura; ogni difetto di studio diventa un test |
-| 21 | A2A (5.1) | |
+| 21 | A2A (5.1) | CLIENT FATTO 18/11: modulo a2a/ su a2a-go v2.8.0, agente remoto come tool, credenziali solo all'origine della card; server con serve (16) |
 
 Conferma prima dei tool distruttivi e tool in sola lettura in parallelo entrano con il
 punto 1, quando esistono i primi tool reali su cui provarli.

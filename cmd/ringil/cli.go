@@ -78,6 +78,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
 		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
 		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key").
+		AddGlobalFlag("agents-config", "", "", "remote A2A agents file ({\"agents\": ...}); default <config>/ringil/agents.json").
 		AddGlobalFlag("mcp-config", "", "", "MCP servers file ({\"mcpServers\": ...}); default <config>/ringil/mcp.json").
 		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins").
 		AddGlobalFlag("system", "s", "", "system prompt (default: the SDK's)").
@@ -164,13 +165,11 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 	if reg, err = reg.With(c.extraTools(mem, cat)...); err != nil {
 		return nil, err
 	}
-	mcpTools, err := c.connectMCP(ctx)
+	remote, err := c.remoteTools(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if reg, err = reg.With(mcpTools...); err != nil {
-		return nil, err
-	}
+	reg = c.addEach(reg, remote)
 	dirs := ctx.GetFlagStringSlice("workspace")
 	if len(dirs) == 0 {
 		var err error
@@ -183,6 +182,30 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 		return nil, err
 	}
 	return reg.With(ws.ReadTools()...)
+}
+
+// addEach adds remote tools one by one: a name that clashes with another
+// tool is reported and left out, the rest still work.
+func (c *cli) addEach(reg agent.Registry, tools []agent.Tool) agent.Registry {
+	for _, t := range tools {
+		next, err := reg.With(t)
+		if err != nil {
+			c.note("tool " + t.Spec().Name + " left out: its name is already taken")
+			continue
+		}
+		reg = next
+	}
+	return reg
+}
+
+// remoteTools are the tools of MCP servers and remote A2A agents.
+func (c *cli) remoteTools(ctx *orpheus.Context) ([]agent.Tool, error) {
+	mcpTools, err := c.connectMCP(ctx)
+	if err != nil {
+		return nil, err
+	}
+	agents, err := c.connectAgents(ctx)
+	return append(mcpTools, agents...), err
 }
 
 // extraTools: memory and skill tools, when there is something to use.

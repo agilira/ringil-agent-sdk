@@ -8,19 +8,17 @@ package mcp
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/agilira/go-errors"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/agilira/ringil-agent-sdk/internal/safehttp"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 )
 
@@ -51,7 +49,7 @@ type Server struct {
 	AllowHTTP bool
 	// Headers returns headers for every request, such as an API key from
 	// the host's secrets; called per request, so rotated keys apply.
-	Headers func(ctx context.Context) (http.Header, error)
+	Headers safehttp.Headers
 	// OAuth runs the authorization flow when the server asks for it
 	// (auth.NewAuthorizationCodeHandler of the SDK, or the host's own).
 	OAuth auth.OAuthHandler
@@ -103,19 +101,10 @@ func (s Server) validate() error {
 }
 
 func (s Server) validateURL() error {
-	u, err := url.Parse(s.URL)
-	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
-		return errors.New(ErrConfig, "MCP server "+s.Name+" has an invalid URL (credentials and fragments are not allowed)")
+	if err := safehttp.CheckURL(s.URL, s.AllowHTTP); err != nil {
+		return errors.Wrap(err, ErrConfig, "MCP server "+s.Name+": "+err.Error())
 	}
-	if u.Scheme == "https" || (u.Scheme == "http" && (s.AllowHTTP || loopback(u.Hostname()))) {
-		return nil
-	}
-	return errors.New(ErrConfig, "MCP server "+s.Name+" must use https")
-}
-
-func loopback(host string) bool {
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return nil
 }
 
 func (s Server) transport(ctx context.Context) (sdk.Transport, func() error, error) {
@@ -194,28 +183,10 @@ func errOrEOF(err error) error {
 	return err
 }
 
-// httpClient adds the host's headers and keeps redirects on the same
-// origin, so credentials never follow a redirect elsewhere.
+// httpClient adds the host's headers, keeps redirects on the same origin
+// so credentials never follow one elsewhere, and bounds responses.
 func (s Server) httpClient() *http.Client {
-	base := s.HTTPClient
-	if base == nil {
-		base = &http.Client{}
-	}
-	c := *base
-	next := c.Transport
-	if next == nil {
-		next = http.DefaultTransport
-	}
-	c.Transport = headerTransport{next: next, headers: s.Headers, max: s.maxResponse()}
-	c.CheckRedirect = sameOrigin
-	return &c
-}
-
-func sameOrigin(req *http.Request, via []*http.Request) error {
-	if len(via) >= 5 || req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host {
-		return http.ErrUseLastResponse
-	}
-	return nil
+	return safehttp.Client(s.HTTPClient, s.Headers, s.maxResponse(), true) // MCP streams events
 }
 
 func (s Server) maxResponse() int64 {
@@ -224,48 +195,3 @@ func (s Server) maxResponse() int64 {
 	}
 	return 64 << 20
 }
-
-type headerTransport struct {
-	next    http.RoundTripper
-	headers func(ctx context.Context) (http.Header, error)
-	max     int64
-}
-
-func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.headers != nil {
-		h, err := t.headers(req.Context())
-		if err != nil {
-			return nil, errors.Wrap(err, ErrConnect, "cannot get the MCP server's credentials: "+err.Error())
-		}
-		req = req.Clone(req.Context())
-		for k, vs := range h {
-			req.Header[http.CanonicalHeaderKey(k)] = vs
-		}
-	}
-	resp, err := t.next.RoundTrip(req)
-	if err == nil && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		resp.Body = &limitedBody{rc: resp.Body, left: t.max}
-	}
-	return resp, err
-}
-
-// limitedBody fails a response body that grows past its bound, instead of
-// letting a server fill the client's memory.
-type limitedBody struct {
-	rc   io.ReadCloser
-	left int64
-}
-
-func (b *limitedBody) Read(p []byte) (int, error) {
-	if b.left <= 0 {
-		return 0, errors.New(ErrConnect, "the MCP server's response is too large")
-	}
-	if int64(len(p)) > b.left {
-		p = p[:b.left]
-	}
-	n, err := b.rc.Read(p)
-	b.left -= int64(n)
-	return n, err
-}
-
-func (b *limitedBody) Close() error { return b.rc.Close() }
