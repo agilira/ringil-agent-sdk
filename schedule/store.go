@@ -143,7 +143,7 @@ type jobsDoc struct {
 // Jobs returns the jobs, sorted by name. A missing file is no jobs.
 func (s *Store) Jobs() ([]Job, error) {
 	var doc jobsDoc
-	if err := s.read(jobsFile, &doc); err != nil {
+	if err := s.read(jobsFile, &doc, true); err != nil {
 		return nil, err
 	}
 	sort.Slice(doc.Jobs, func(i, k int) bool { return doc.Jobs[i].Name < doc.Jobs[k].Name })
@@ -215,7 +215,7 @@ func (s *Store) editJobs(change func([]Job) ([]Job, error)) error {
 // Status returns every job's status.
 func (s *Store) Status() (map[string]Status, error) {
 	st := map[string]Status{}
-	if err := s.read(statusFile, &st); err != nil {
+	if err := s.read(statusFile, &st, false); err != nil {
 		return nil, err
 	}
 	return st, nil
@@ -223,7 +223,9 @@ func (s *Store) Status() (map[string]Status, error) {
 
 func (s *Store) saveStatus(st map[string]Status) error { return s.write(statusFile, st) }
 
-func (s *Store) read(name string, v any) error {
+// read decodes a file; strict refuses unknown fields (jobs people write),
+// lenient keeps going past them (a status a newer version wrote).
+func (s *Store) read(name string, v any, strict bool) error {
 	data, err := atomicfile.Read(s.root, name, maxFile)
 	if stderrors.Is(err, os.ErrNotExist) {
 		return nil
@@ -232,7 +234,9 @@ func (s *Store) read(name string, v any) error {
 		return errors.Wrap(err, ErrStore, "cannot read "+name)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
+	if strict {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(v); err != nil {
 		return errors.Wrap(err, ErrStore, name+" is not valid")
 	}

@@ -44,6 +44,11 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	if err != nil {
 		return errors.Wrap(err, ErrUsage, "cannot listen on "+listen)
 	}
+	if addr, ok := l.Addr().(*net.TCPAddr); !ok || !addr.IP.IsLoopback() {
+		// Checked again by Serve; here before anything starts (a job).
+		closeQuietly(l)
+		return errors.New(ErrUsage, "serve listens on loopback only (127.0.0.1 or ::1), not "+listen)
+	}
 	srv, where, err := c.newServer(ctx)
 	if err != nil {
 		closeQuietly(l)

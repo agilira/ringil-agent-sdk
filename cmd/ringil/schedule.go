@@ -62,7 +62,7 @@ func describeJob(j schedule.Job, st schedule.Status, now time.Time) string {
 	if profile == "" {
 		profile = "default"
 	}
-	text := j.Name + "  " + j.When + "  (" + profile + ", " + next + ")\n    " + clean(oneLine(j.Input, 100))
+	text := clean(j.Name) + "  " + clean(j.When) + "  (" + clean(profile) + ", " + clean(next) + ")\n    " + clean(oneLine(j.Input, 100))
 	switch {
 	case st.LastFire.IsZero():
 	case st.LastEnd.Before(st.LastFire):
@@ -99,16 +99,17 @@ func oneLine(s string, max int) string {
 }
 
 // cmdScheduleAdd adds or replaces a job; the prompt is the rest of the
-// line, or standard input with "-".
+// line.
 func (c *cli) cmdScheduleAdd(ctx *orpheus.Context) error {
 	args := ctx.Positional()
 	if len(args) < 2 {
 		return errors.New(ErrUsage, "usage: ringil schedule add NAME --when SPEC [--profile P] [--conversation C] PROMPT...")
 	}
+	input := strings.Join(args[1:], " ")
 	job := schedule.Job{
 		Name: args[0], When: ctx.GetFlagString("when"), TimeZone: ctx.GetFlagString("time-zone"),
 		Profile: ctx.GetFlagString("profile"), Conversation: ctx.GetFlagString("conversation"),
-		CatchUp: ctx.GetFlagBool("catch-up"), Input: strings.Join(args[1:], " "),
+		CatchUp: ctx.GetFlagBool("catch-up"), Input: input,
 	}
 	if job.Profile != "" && job.Profile != "default" {
 		roles, err := c.loadProfiles(ctx)
@@ -214,16 +215,17 @@ func scheduledRun(srv *serve.Server) schedule.Run {
 }
 
 func (c *cli) scheduleEvent(e schedule.Event) {
+	job := clean(e.Job)
 	switch e.Kind {
 	case schedule.JobStarted:
-		c.note("job " + e.Job + " started")
+		c.note("job " + job + " started")
 	case schedule.JobFinished:
-		c.note("job " + e.Job + " finished (run " + e.Run + ")")
+		c.note("job " + job + " finished (run " + e.Run + ")")
 	case schedule.JobFailed:
-		c.note("job " + e.Job + " failed (run " + e.Run + "): " + e.Err.Error())
+		c.note("job " + job + " failed (run " + e.Run + "): " + clean(oneLine(e.Err.Error(), 300)))
 	case schedule.JobSkipped:
-		c.note("job " + e.Job + " skipped: its last run is still going")
+		c.note("job " + job + " skipped: its last run is still going")
 	case schedule.JobInvalid:
-		c.note("schedule: " + e.Err.Error())
+		c.note("schedule: " + clean(oneLine(e.Err.Error(), 300)))
 	}
 }

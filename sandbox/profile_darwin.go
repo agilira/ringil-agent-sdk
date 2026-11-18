@@ -23,8 +23,13 @@ import (
 // paths: /etc and /var are links into /private.
 var systemRead = []string{
 	"/usr", "/bin", "/sbin", "/System", "/Library", "/opt", "/dev",
-	"/private/etc", "/private/var/db", "/private/var/select", "/Applications/Xcode.app",
+	"/private/etc", "/private/var/db", "/private/var/select",
 }
+
+// developerTools matches every Xcode, however named (Xcode_26.6.app,
+// Xcode-beta.app): /usr/bin's python3, git and cc are shims that run the
+// active one.
+const developerTools = `(regex #"^/Applications/Xcode[^/]*\.app(/|$)")`
 
 // machServices are the system services a sandboxed program may talk to:
 // logging, user and group lookup, preferences, temporary directories and
@@ -57,6 +62,7 @@ func buildProfile(spec Spec, grants []grant, tmp, proxy string) string {
 	for _, p := range systemRead {
 		b.WriteString("(allow file-read* (subpath " + quote(p) + "))\n")
 	}
+	b.WriteString("(allow file-read* " + developerTools + ")\n")
 	b.WriteString("(allow file-read* file-write* (subpath " + quote(tmp) + "))\n")
 	b.WriteString("(allow file-write* (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n")
 	b.WriteString("(allow file-ioctl (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n")
