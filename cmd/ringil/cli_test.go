@@ -463,7 +463,13 @@ func readOutside(t *testing.T, answer string) (*harness, string) {
 
 func TestOutsideFolderAskedAndAllowed(t *testing.T) {
 	h, other := readOutside(t, "s\n")
-	if !strings.Contains(h.err.String(), "wants to access "+other) {
+	// The question names the real directory (macOS /private/var, Windows
+	// long names), as the workspace resolves it.
+	real, err := filepath.EvalSymlinks(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.err.String(), "wants to access "+real) {
 		t.Fatalf("not asked: %q", h.err)
 	}
 	if msgs := h.script.Requests()[1].Messages; !strings.Contains(msgs[len(msgs)-1].Result.Content, "contenuto riservato") {
