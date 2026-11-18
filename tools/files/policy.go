@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // DefaultExclude are patterns of paths the tools never show or read,
@@ -82,7 +83,7 @@ type policy struct {
 func newPolicy(patterns []string) (policy, error) {
 	p := policy{}
 	for _, raw := range patterns {
-		parts := strings.Split(strings.ToLower(strings.Trim(raw, "/")), "/")
+		parts := strings.Split(fold(strings.Trim(raw, "/")), "/")
 		for _, part := range parts {
 			if _, err := path.Match(part, ""); err != nil || part == "" {
 				return policy{}, err
@@ -197,5 +198,18 @@ func normalize(name string) string {
 	if i := strings.IndexByte(name, ':'); i > 0 {
 		name = name[:i]
 	}
-	return strings.TrimRight(strings.ToLower(name), ". ")
+	return strings.TrimRight(fold(name), ". ")
+}
+
+// fold maps every letter to one form per Unicode case class: the file
+// systems that ignore case treat "ſ" as "s" and "K" (Kelvin) as "k",
+// which lower-casing alone does not.
+func fold(s string) string {
+	return strings.Map(func(r rune) rune {
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			least = min(least, f)
+		}
+		return unicode.ToLower(least)
+	}, s)
 }

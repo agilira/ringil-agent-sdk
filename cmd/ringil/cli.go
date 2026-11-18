@@ -8,6 +8,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	stderrors "errors"
 	"io"
 	"os"
@@ -91,6 +93,9 @@ type cli struct {
 	shared bool
 	// events observe every run (serve logs their metadata).
 	events []agent.Observer
+	// acceptEdits lets file writes and edits go without asking
+	// (--accept-edits); protected files are still confirmed.
+	acceptEdits bool
 	// role is the profile in use (--profile, or a profile served); nil
 	// keeps the flags and environment.
 	role *profile
@@ -129,6 +134,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
 		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools").
+		AddGlobalBoolFlag("accept-edits", "", false, "write and edit files without asking (files holding your rules and settings are still confirmed)").
 		AddGlobalBoolFlag("no-memory", "", false, "do not recall or keep memories across conversations").
 		AddGlobalIntFlag("context-window", "", 0, "model context size in tokens; compaction starts near it (0: only when the model reports it is full)").
 		AddGlobalBoolFlag("summarize", "", false, "summarize left-out turns with the model instead of dropping them (costs a call)").
@@ -177,6 +183,7 @@ func (c *cli) app() *orpheus.App {
 const ErrUsage errors.ErrorCode = "USAGE"
 
 func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
+	c.acceptEdits = ctx.GetGlobalFlagBool("accept-edits")
 	if err := c.chooseProfile(ctx); err != nil {
 		return nil, err
 	}
@@ -253,12 +260,12 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 			return nil, err
 		}
 	}
-	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess})
+	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected})
 	if err != nil {
 		return nil, err
 	}
 	c.readTools = ws.ReadTools()
-	return reg.With(c.readTools...)
+	return reg.With(append(c.readTools, ws.WriteTools()...)...)
 }
 
 // addEach adds remote tools one by one: a name that clashes with another
@@ -461,6 +468,26 @@ func asker(ctx context.Context) string {
 
 // mustAsk: destructive tools, and the notes changes their scope wants
 // confirmed (project notes, deletions).
+// writesFiles are the tools that change files: confirmed unless
+// --accept-edits.
+var writesFiles = map[string]bool{"write_file": true, "edit_file": true}
+
+// confirmProtected asks before any write to a protected file (other
+// agents' rules, editor and CI settings, .git), even with --accept-edits;
+// under serve, the API's caller decides.
+func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
+	if c.server != nil {
+		input, err := json.Marshal(map[string]string{"path": path})
+		if err != nil {
+			return false, err
+		}
+		return c.server.Approve(ctx, agent.ToolCall{ID: "protected-" + rand.Text()[:8], Name: "write_protected_file", Input: input}, agent.ToolSpec{})
+	}
+	c.holdTerminal(ctx)
+	defer c.askMu.Unlock()
+	return c.confirm("\n  ! " + asker(ctx) + " wants to change " + clean(path) + ", which holds your own rules or settings — allow this change? [y/N] ")
+}
+
 // serveApprove: under serve, the API's caller decides what the chat
 // would ask the user.
 func (c *cli) serveApprove(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
@@ -471,6 +498,9 @@ func (c *cli) serveApprove(ctx context.Context, call agent.ToolCall, spec agent.
 }
 
 func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) bool {
+	if writesFiles[call.Name] {
+		return !c.acceptEdits // protected files are confirmed apart, always
+	}
 	if call.Name != notes.DefaultName {
 		return spec.Annotations.Destructive
 	}
