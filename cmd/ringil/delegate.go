@@ -89,7 +89,7 @@ func (c *cli) prepareWorker(context.Context, string) (delegate.Setup, error) {
 		return delegate.Setup{}, err
 	}
 	return delegate.Setup{
-		Tools:   append([]agent.Tool{nb.Tool(), todo.Tool()}, c.artifactTools("worker")...),
+		Tools:   append([]agent.Tool{nb.Tool(), todo.Tool()}, c.artifactTools(true)...),
 		Context: c.runContext(nb),
 		Done:    func() error { return os.RemoveAll(dir) },
 	}, nil

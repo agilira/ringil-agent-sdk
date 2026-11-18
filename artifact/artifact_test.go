@@ -113,7 +113,7 @@ func TestToolsRespectScopes(t *testing.T) {
 	if out, err := call(t, byName["publish_artifact"], publishIn{Name: "out.md", Content: "done"}); err != nil || !strings.Contains(out, "v1") {
 		t.Fatalf("publish %q %v", out, err)
 	}
-	if out, err := call(t, byName["read_artifact"], readIn{Name: "spec.md", Scope: "project"}); err != nil || out != "the spec" {
+	if out, err := call(t, byName["read_artifact"], readIn{Name: "spec.md", Scope: "project"}); err != nil || out != "[spec.md v1, text/markdown]\nthe spec" {
 		t.Fatalf("read project %q %v", out, err)
 	}
 	if _, err := call(t, byName["read_artifact"], readIn{Name: "keys.txt", Scope: "secret"}); err == nil {
@@ -130,4 +130,45 @@ func index2(ts []agent.Tool) map[string]agent.Tool {
 		m[tl.Spec().Name] = tl
 	}
 	return m
+}
+
+// Audit 18/11: scopes from project keys starting with - or _ were refused;
+// the version cap drops the oldest; Delete saves the index before
+// removing contents; a damaged content is rewritten by a new publish.
+func TestAuditRegressions(t *testing.T) {
+	s, dir := store(t)
+	s.MaxVersions = 3
+	for i := range 5 {
+		if _, err := s.Put(bg, "-dotfiles-1a2b", "log.txt", "text/plain", "", []byte{byte('a' + i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, data, err := s.Get(bg, "-dotfiles-1a2b", "log.txt", 0)
+	if err != nil || info.Version != 5 || string(data) != "e" {
+		t.Fatalf("latest %+v %q %v", info, data, err)
+	}
+	if _, _, err := s.Get(bg, "-dotfiles-1a2b", "log.txt", 1); err == nil {
+		t.Fatal("version 1 should be gone")
+	}
+	blobs, err := os.ReadDir(filepath.Join(dir, "-dotfiles-1a2b", blobDir))
+	if err != nil || len(blobs) != 3 {
+		t.Fatalf("%d contents kept, want 3: %v", len(blobs), err)
+	}
+}
+
+func TestDamagedContentHealedByPublish(t *testing.T) {
+	s, dir := store(t)
+	a, err := s.Put(bg, "p", "x.txt", "text/plain", "", []byte("same"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "p", blobDir, a.SHA256), []byte("bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(bg, "p", "x.txt", "text/plain", "", []byte("same")); err != nil {
+		t.Fatal(err)
+	}
+	if _, data, err := s.Get(bg, "p", "x.txt", 0); err != nil || string(data) != "same" {
+		t.Fatalf("not healed: %q %v", data, err)
+	}
 }

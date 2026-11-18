@@ -104,6 +104,7 @@ func TestBadArchivesAreRefused(t *testing.T) {
 		"digest":    forged(t, map[string]string{"a/b": "x"}, `{"version":1,"files":{"a/b":"00"}}`),
 		"extra":     forged(t, map[string]string{"a/b": "x"}, `{"version":1,"files":{}}`),
 		"garbage":   []byte("not an archive"),
+		"escape":    forged(t, map[string]string{"a/\x1b]0;x\a": "x"}, `{"version":1,"files":{}}`),
 	}
 	for name, data := range cases {
 		dest := filepath.Join(t.TempDir(), "r")
@@ -113,5 +114,19 @@ func TestBadArchivesAreRefused(t *testing.T) {
 		if _, err := os.Stat(dest); !os.IsNotExist(err) {
 			t.Errorf("%s: something was restored", name)
 		}
+	}
+}
+
+// Audit 18/11: a destination with a trailing slash failed and left a
+// directory behind.
+func TestRestoreTrailingSlash(t *testing.T) {
+	src := tree(t, map[string]string{"a.txt": "a"})
+	var buf bytes.Buffer
+	if _, err := Create(bg, &buf, map[string]string{"data": src}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "out") + string(filepath.Separator)
+	if _, err := Restore(bg, bytes.NewReader(buf.Bytes()), dest); err != nil {
+		t.Fatal(err)
 	}
 }

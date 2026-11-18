@@ -56,14 +56,14 @@ type Store interface {
 
 var (
 	validName  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
-	validScope = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+	validScope = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$`)
 	validMedia = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9.+-]+$`)
 )
 
 func check(scope, name string) error {
 	switch {
 	case !validScope.MatchString(scope):
-		return errors.New(ErrInput, "scopes are 1-100 letters, digits, . _ -")
+		return errors.New(ErrInput, "scopes are 1-100 letters, digits, . _ -, not starting with a dot")
 	case !validName.MatchString(name):
 		return errors.New(ErrInput, "artifact names are 1-100 letters, digits, . _ -, starting with a letter or digit").WithUserMessage("Artifact names are 1-100 letters, digits, . _ -.")
 	}

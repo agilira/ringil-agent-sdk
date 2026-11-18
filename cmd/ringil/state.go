@@ -37,16 +37,24 @@ func (c *cli) artifactScope() (string, error) {
 	return projectKey(cwd), nil
 }
 
-func (c *cli) artifactTools(by string) []agent.Tool {
+// artifactTools: the agent publishes in the project's scope and reads
+// what its workers published; a worker publishes in the workers' scope
+// and reads the project's, so a worker can never replace what the agent
+// reads as the project's latest.
+func (c *cli) artifactTools(worker bool) []agent.Tool {
 	store, err := c.artifacts()
 	if err != nil {
 		return nil
 	}
-	scope, err := c.artifactScope()
+	project, err := c.artifactScope()
 	if err != nil {
 		return nil
 	}
-	return artifact.Tools(store, artifact.Access{Scope: scope, By: by, Publish: true})
+	work := project + "-work"
+	if worker {
+		return artifact.Tools(store, artifact.Access{Scope: work, By: "worker", Publish: true, Read: []string{project}})
+	}
+	return artifact.Tools(store, artifact.Access{Scope: project, By: "agent", Publish: true, Read: []string{work}})
 }
 
 func (c *cli) cmdArtifacts(ctx *orpheus.Context) error {
@@ -58,17 +66,25 @@ func (c *cli) cmdArtifacts(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
-	list, err := store.List(ctx.Context(), scope)
-	if err != nil {
-		return err
-	}
-	if len(list) == 0 {
-		return c.line("no artifacts for this project")
-	}
-	for _, a := range list {
-		if err := c.line(clean(a.Name) + " v" + strconv.Itoa(a.Version) + "  " + clean(a.MediaType) + "  " + strconv.FormatInt(a.Size, 10) + " bytes  " + a.Created.Format("2006-01-02 15:04") + "  " + short(a.By)); err != nil {
+	total := 0
+	for _, sc := range []string{scope, scope + "-work"} {
+		list, err := store.List(ctx.Context(), sc)
+		if err != nil {
 			return err
 		}
+		total += len(list)
+		for _, a := range list {
+			where := ""
+			if sc != scope {
+				where = "  (workers)"
+			}
+			if err := c.line(clean(a.Name) + " v" + strconv.Itoa(a.Version) + "  " + clean(a.MediaType) + "  " + strconv.FormatInt(a.Size, 10) + " bytes  " + a.Created.Format("2006-01-02 15:04") + "  " + short(a.By) + where); err != nil {
+				return err
+			}
+		}
+	}
+	if total == 0 {
+		return c.line("no artifacts for this project")
 	}
 	return nil
 }
@@ -86,9 +102,17 @@ func (c *cli) cmdArtifactShow(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
-	_, data, err := store.Get(ctx.Context(), scope, ctx.Positional()[0], 0)
+	name := ctx.Positional()[0]
+	_, data, err := store.Get(ctx.Context(), scope, name, 0)
+	if errors.HasCode(err, artifact.ErrNotFound) {
+		_, data, err = store.Get(ctx.Context(), scope+"-work", name, 0)
+	}
 	if err != nil {
 		return err
+	}
+	if !ctx.GetFlagBool("raw") {
+		// Model-written bytes: escape sequences could rewrite the terminal.
+		data = []byte(clean(string(data)))
 	}
 	_, err = c.out.Write(data)
 	return err
