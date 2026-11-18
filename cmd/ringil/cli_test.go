@@ -10,6 +10,8 @@ import (
 	"context"
 	stderrors "errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +48,19 @@ func newHarness(input string, steps ...fake.Step) *harness {
 
 func (h *harness) run(args ...string) int { return run(context.Background(), args, h.c) }
 
+// key resolves the API key the provider would send.
+func (h *harness) key(t *testing.T) string {
+	t.Helper()
+	if h.config.KeyFunc == nil {
+		t.Fatal("no key function configured")
+	}
+	k, err := h.config.KeyFunc(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
 func TestRunPrintsAnswerAndUsesEnvironment(t *testing.T) {
 	h := newHarness("", fake.Stream("Ciao", " Antonio"))
 	if code := h.run("run", "saluta"); code != exitOK {
@@ -54,7 +69,7 @@ func TestRunPrintsAnswerAndUsesEnvironment(t *testing.T) {
 	if h.out.String() != "Ciao Antonio" || !strings.Contains(h.err.String(), "[end, 1 model calls") {
 		t.Fatalf("out %q err %q", h.out, h.err)
 	}
-	if h.config.BaseURL != "http://localhost:1/v1" || h.config.Model != "m" || h.config.APIKey != "k" {
+	if h.config.BaseURL != "http://localhost:1/v1" || h.config.Model != "m" || h.key(t) != "k" {
 		t.Fatalf("config %+v", h.config)
 	}
 }
@@ -64,7 +79,7 @@ func TestFlagsOverrideEnvironment(t *testing.T) {
 	if code := h.run("--base", "https://x.test/v1", "--model", "other", "--key-env", "NOPE", "--allow-http", "run", "x"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
-	if h.config.BaseURL != "https://x.test/v1" || h.config.Model != "other" || h.config.APIKey != "" || !h.config.AllowHTTP {
+	if h.config.BaseURL != "https://x.test/v1" || h.config.Model != "other" || h.key(t) != "" || !h.config.AllowHTTP {
 		t.Fatalf("config %+v", h.config)
 	}
 }
@@ -263,5 +278,53 @@ func TestContextWindowFlagCompacts(t *testing.T) {
 	}
 	if !strings.Contains(h.err.String(), "~ context compacted:") {
 		t.Fatalf("err %q", h.err)
+	}
+}
+
+func envFile(t *testing.T, mode os.FileMode, text string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ringil.env")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestEnvFileProvidesSettingsAndKey(t *testing.T) {
+	h := newHarness("", fake.Reply("ok"))
+	h.c.getenv = func(string) string { return "" }
+	path := envFile(t, 0o600, "RINGIL_BASE_URL=https://from.file/v1 # comment\nRINGIL_MODEL=filemodel\nRINGIL_API_KEY=sk-file\n")
+	if code := h.run("--env-file", path, "run", "x"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if h.config.BaseURL != "https://from.file/v1" || h.config.Model != "filemodel" || h.key(t) != "sk-file" {
+		t.Fatalf("config %+v", h.config)
+	}
+}
+
+func TestEnvironmentWinsOverEnvFile(t *testing.T) {
+	h := newHarness("", fake.Reply("ok"))
+	path := envFile(t, 0o600, "RINGIL_MODEL=filemodel\nRINGIL_API_KEY=sk-file\n")
+	if code := h.run("--env-file", path, "run", "x"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if h.config.Model != "m" || h.key(t) != "k" {
+		t.Fatalf("config %+v", h.config)
+	}
+}
+
+func TestUnsafeEnvFileRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	h := newHarness("", fake.Reply("ok"))
+	if code := h.run("--env-file", envFile(t, 0o644, "A=1\n"), "run", "x"); code != exitError || !strings.Contains(h.err.String(), "secrets:") {
+		t.Fatalf("exit %d: %q", code, h.err)
+	}
+	if code := h.run("--key-env", "bad name", "run", "x"); code != exitError {
+		t.Fatal("invalid key name accepted")
 	}
 }

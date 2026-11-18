@@ -18,6 +18,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
+	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -55,7 +56,8 @@ func (c *cli) app() *orpheus.App {
 		SetVersion(version).
 		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
 		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
-		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "environment variable holding the API key").
+		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key").
+		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins").
 		AddGlobalFlag("system", "s", "", "system prompt (default: the SDK's)").
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
@@ -99,26 +101,68 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 }
 
 func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
-	base := firstSet(ctx.GetGlobalFlagString("base"), c.getenv("RINGIL_BASE_URL"))
-	model := firstSet(ctx.GetGlobalFlagString("model"), c.getenv("RINGIL_MODEL"))
+	res, err := c.resolver(ctx)
+	if err != nil {
+		return nil, err
+	}
+	base, err := c.setting(ctx, res, "base", "RINGIL_BASE_URL")
+	if err != nil {
+		return nil, err
+	}
+	model, err := c.setting(ctx, res, "model", "RINGIL_MODEL")
+	if err != nil {
+		return nil, err
+	}
 	if base == "" || model == "" {
 		return nil, errors.New(ErrUsage, "set --base and --model, or RINGIL_BASE_URL and RINGIL_MODEL")
+	}
+	keyName := ctx.GetGlobalFlagString("key-env")
+	if err := secrets.ValidateName(keyName); err != nil {
+		return nil, err
 	}
 	return c.newProvider(openai.Config{
 		BaseURL:   base,
 		Model:     model,
-		APIKey:    c.getenv(ctx.GetGlobalFlagString("key-env")),
+		KeyFunc:   secrets.OptionalKeyFunc(res, keyName),
 		AllowHTTP: ctx.GetGlobalFlagBool("allow-http"),
 	})
 }
 
-func firstSet(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
+// resolver is where settings and secrets come from: the environment first,
+// then the --env-file if given. The key is never taken from a flag, which
+// would leave it in the shell history and the process list.
+func (c *cli) resolver(ctx *orpheus.Context) (secrets.Resolver, error) {
+	env := secrets.Resolver(lookupEnv{c.getenv})
+	path := ctx.GetGlobalFlagString("env-file")
+	if path == "" {
+		return env, nil
 	}
-	return ""
+	file, err := secrets.EnvFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return secrets.Chain(env, file), nil
+}
+
+// setting returns a flag, or else the named value from the resolver.
+func (c *cli) setting(ctx *orpheus.Context, res secrets.Resolver, flag, name string) (string, error) {
+	if v := ctx.GetGlobalFlagString(flag); v != "" {
+		return v, nil
+	}
+	v, _, err := secrets.Lookup(ctx.Context(), res, name)
+	return v, err
+}
+
+// lookupEnv adapts the CLI's getenv (replaced in tests) to a Resolver. An
+// empty variable counts as unset, as it does for every RINGIL_ setting.
+type lookupEnv struct{ getenv func(string) string }
+
+func (l lookupEnv) Lookup(ctx context.Context, name string) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	v := l.getenv(name)
+	return v, v != "", nil
 }
 
 // describe turns an error into one line for the terminal.
@@ -128,6 +172,8 @@ func describe(err error) string {
 		return "interrupted"
 	case errors.HasCode(err, agent.ErrProviderAuth):
 		return "the API key was refused or is missing"
+	case errors.HasCode(err, secrets.ErrMissing), errors.HasCode(err, secrets.ErrSource), errors.HasCode(err, secrets.ErrValue):
+		return "secrets: " + err.Error()
 	case errors.HasCode(err, agent.ErrProviderConfig):
 		return "provider configuration: " + err.Error()
 	}

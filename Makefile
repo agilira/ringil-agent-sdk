@@ -102,7 +102,7 @@ live: ## Run live tests against the endpoint in .env (real calls, may cost)
 
 chat: ## Chat with the agent using the endpoint in .env
 	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
-	@cd cmd/ringil && go build -o ringil . && cd ../.. && set -a && . ./.env && set +a && ./cmd/ringil/ringil chat
+	@cd cmd/ringil && go build -o ringil . && cd ../.. && ./cmd/ringil/ringil --env-file .env chat
 
 check: fmt vet lint security test ## Run all checks (format, vet, lint, security, test)
 	@echo "$(GREEN)All checks passed!$(NC)"
