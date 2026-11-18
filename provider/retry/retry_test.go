@@ -121,6 +121,9 @@ func TestSilentFailureBeforeTextIsRetriedWithoutOnRestart(t *testing.T) {
 	}
 }
 
+// Cancelled while waiting to retry, or during an attempt (macOS CI, 18/11:
+// the attempt's 503 came back instead of the cancellation): the caller
+// is told it was cancelled.
 func TestCancelledWhileWaiting(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := Wrap(fake.New(fake.Fail(transient()), fake.Reply("ok")), Config{BaseDelay: time.Hour})
@@ -128,6 +131,25 @@ func TestCancelledWhileWaiting(t *testing.T) {
 	if _, err := p.Generate(ctx, &agent.Request{}, nil); !stderrors.Is(err, context.Canceled) {
 		t.Fatalf("err %v", err)
 	}
+}
+
+func TestCancelledDuringAnAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelling := cancelOnCall{fake.New(fake.Fail(transient())), cancel}
+	if _, err := Wrap(cancelling, Config{}).Generate(ctx, &agent.Request{}, nil); !stderrors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// cancelOnCall cancels the context while its attempt runs.
+type cancelOnCall struct {
+	agent.Provider
+	cancel context.CancelFunc
+}
+
+func (c cancelOnCall) Generate(ctx context.Context, req *agent.Request, sink agent.TextSink) (*agent.Response, error) {
+	c.cancel()
+	return c.Provider.Generate(context.WithoutCancel(ctx), req, sink)
 }
 
 func TestBackoffGrowsAndIsCapped(t *testing.T) {

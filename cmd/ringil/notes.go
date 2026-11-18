@@ -53,7 +53,9 @@ func (c *cli) notebooks(ctx *orpheus.Context) (*notes.Notes, error) {
 // exit; run scratchpads left by a crash are cleared after a week.
 func (c *cli) scratchDir(ctx *orpheus.Context, root string) (string, error) {
 	scratch := filepath.Join(root, "scratch")
-	if id := ctx.GetGlobalFlagString("session"); id != "" {
+	// Under serve every run has its own scratchpad, whatever --session
+	// says: runs go at once.
+	if id := ctx.GetGlobalFlagString("session"); id != "" && !c.shared {
 		return c.sessionScratch(ctx, scratch, id)
 	}
 	clearStale(scratch)
