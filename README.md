@@ -173,6 +173,26 @@ marcati come dati, mai nella conversazione salvata. Nella CLI la memoria è atti
 default (`--no-memory` per toglierla), per significato con `--embed-model` o
 `RINGIL_EMBED_MODEL`; `ringil memory`, `memory search`, `memory rm`.
 
+## Regole di progetto
+
+`rules` legge le istruzioni che le persone scrivono per gli agenti, così un agente
+fatto con l'SDK rispetta le stesse regole di quelli che già usano: `AGENTS.md` (lo
+standard aperto) e i file degli altri agenti, `CLAUDE.md`, `GEMINI.md`,
+`.github/copilot-instructions.md`, `.cursorrules`, `.cursor/rules/`, `.windsurfrules`.
+Si leggono dalla radice del repository fino alla cartella di lavoro (il più vicino
+affina il più ampio), più un file globale dell'utente; i link si seguono ma mai fuori
+dal repository né verso file segreti. Entrano nel contesto a ogni turno come regole da
+seguire:
+
+```go
+cfg.Context = rules.Context(rules.Config{Dir: cwd, Global: globalAgentsMD})
+```
+
+`files.DefaultProtected` elenca i percorsi da non toccare senza conferma esplicita
+(regole degli agenti, `.vscode`, `.idea`, `.claude`, `.codex`, `.cursor`, `.git`,
+`.github`...): i tool che scrivono file chiedono sempre prima di modificarli.
+CLI: `ringil rules` mostra quali file l'agente sta seguendo.
+
 ## Todo e note
 
 `todo.Tool()` dà al modello una lista di compiti per il lavoro lungo: la riscrive intera

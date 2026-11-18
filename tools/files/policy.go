@@ -35,6 +35,40 @@ var DefaultExclude = []string{
 	".claude/.credentials.json", ".codex/auth.json",
 }
 
+// Excluded reports whether the absolute path abs matches the exclusion
+// patterns (DefaultExclude when nil): the same test the file tools apply.
+func Excluded(abs string, patterns []string) bool {
+	if patterns == nil {
+		patterns = DefaultExclude
+	}
+	pol, err := newPolicy(patterns)
+	return err != nil || pol.excluded(abs)
+}
+
+// DefaultProtected are paths that hold people's own instructions and tool
+// settings: other agents' rules, editor and CI configuration, the
+// repository itself. A tool that writes files must confirm every change
+// to them with the user, whatever was allowed before; reading is free.
+var DefaultProtected = []string{
+	// agents' rules
+	"AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md", "HERMES.md",
+	".cursorrules", ".windsurfrules", ".clinerules", ".github/copilot-instructions.md",
+	// agents' and editors' settings
+	".claude", ".codex", ".cursor", ".gemini", ".windsurf", ".continue", ".aider*", ".vscode", ".idea", ".zed", ".devcontainer",
+	// the repository and its automation
+	".git", ".github", ".gitlab-ci.yml", ".gitignore", ".gitattributes", ".pre-commit-config.yaml",
+}
+
+// Protected reports whether abs matches the protected patterns
+// (DefaultProtected when nil).
+func Protected(abs string, patterns []string) bool {
+	if patterns == nil {
+		patterns = DefaultProtected
+	}
+	pol, err := newPolicy(patterns)
+	return err != nil || pol.excluded(abs)
+}
+
 var templateSuffixes = []string{".example", ".sample", ".template", ".dist"}
 
 // policy decides which paths are excluded.

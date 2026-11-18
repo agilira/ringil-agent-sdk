@@ -25,6 +25,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/provider/budget"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
+	"github.com/agilira/ringil-agent-sdk/rules"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/todo"
@@ -344,6 +345,26 @@ func TestLiveNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(res.Text, "PostgreSQL") {
+		t.Fatalf("answer %q", res.Text)
+	}
+}
+
+// TestLiveRules: a real model follows rules written for other agents.
+func TestLiveRules(t *testing.T) {
+	model := liveModel(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("Rispondi sempre in inglese, e chiudi ogni risposta con: -- ringil"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Context: rules.Context(rules.Config{Dir: dir})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), nil, agent.UserText("Come si dice gatto?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "-- ringil") {
 		t.Fatalf("answer %q", res.Text)
 	}
 }
