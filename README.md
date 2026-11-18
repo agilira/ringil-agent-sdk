@@ -160,6 +160,29 @@ A ogni domanda i ricordi pertinenti entrano nel contesto di quel turno, delimita
 marcati come dati, mai nella conversazione salvata. Nella CLI la memoria è attiva di
 default (`--no-memory` per toglierla); `ringil memory`, `memory search`, `memory rm`.
 
+## Skill
+
+Formato standard Agent Skills: una cartella con `SKILL.md` (front matter `name`,
+`description`) più file di riferimento e script. Installare è un gesto dell'utente,
+mai del modello; ogni file ha il suo SHA-256 e una skill modificata dopo
+l'installazione viene rifiutata.
+
+```go
+info, err := skills.Install(ctx, "examples/skills/review", dir)
+cat, err := skills.Open(dir)
+cfg.System += cat.Instructions()                     // solo nomi e descrizioni
+tools, err = tools.With(skills.Tools(cat, skills.Options{Sandbox: sb})...)
+```
+
+Il modello ha `load_skill`, `read_skill_file` e, con una sandbox, `run_skill_script`:
+qualunque script della skill (Python, shell, JavaScript, Ruby, Perl o con riga `#!`)
+gira su una copia verificata, senza rete. `Options.Mounts` ed `Options.Env` danno agli
+script cartelle e librerie; un `sandbox.Mount` può nascondere percorsi (`Hide`), e
+`files.Hidden` elenca quelli che i tool sui file escludono.
+La CLI mostra agli script la cartella di lancio in sola lettura con i segreti nascosti,
+più il virtualenv attivo e le librerie Python dell'utente.
+CLI: `ringil skill install <dir>`, `ringil skill`, `ringil skill rm <nome>`.
+
 ## Decoratori
 
 Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,

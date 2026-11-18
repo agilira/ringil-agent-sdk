@@ -340,3 +340,28 @@ head -c 100M /dev/zero > /dev/shm/big 2>/dev/null && echo shm-unbounded || echo 
 		t.Fatalf("%q %v %s", out, err, errOut)
 	}
 }
+
+func TestHiddenPathsAreMasked(t *testing.T) {
+	s := sandboxOrSkip(t)
+	dir := t.TempDir()
+	for name, body := range map[string]string{".env": "SECRET=1", "ok.txt": "visibile", ".ssh/id_ed25519": "KEY"} {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, errOut, err := run(t, s, Spec{
+		Argv:   sh(`cat /w/ok.txt; echo; cat /w/.env; ls /w/.ssh; echo end`),
+		Mounts: []Mount{{Source: dir, Target: "/w", Hide: []string{".env", ".ssh", "missing"}}},
+	})
+	if err != nil || out != "visibile\nend\n" {
+		t.Fatalf("output %q %v: %s", out, err, errOut)
+	}
+	_, err = s.Start(context.Background(), Spec{Argv: []string{"true"}, Mounts: []Mount{{Source: dir, Target: "/w", Hide: []string{"../etc"}}}})
+	if !errors.HasCode(err, ErrConfig) {
+		t.Fatalf("escaping hide accepted: %v", err)
+	}
+}

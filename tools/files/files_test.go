@@ -337,3 +337,20 @@ func TestSecretDirectoriesAreNeverOffered(t *testing.T) {
 		t.Fatalf("asked about a secret directory: %v", a.asked)
 	}
 }
+
+func TestHiddenListsExcluded(t *testing.T) {
+	dir := t.TempDir()
+	for _, p := range []string{".env", ".env.example", "src/main.go", "src/.ssh/id_rsa", "conf/server.key"} {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := Hidden(dir, nil)
+	if err != nil || strings.Join(got, ",") != ".env,conf/server.key,src/.ssh" {
+		t.Fatalf("hidden %v %v", got, err)
+	}
+}
