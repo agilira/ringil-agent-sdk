@@ -372,3 +372,14 @@ func TestMatchPartAgreesWithPathMatch(t *testing.T) {
 		}
 	}
 }
+
+func TestProtectedPaths(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/r/CLAUDE.md": true, "/r/.vscode/settings.json": true, "/r/.github/workflows/ci.yml": true,
+		"/r/.git/config": true, "/r/sub/AGENTS.md": true, "/r/main.go": false, "/r/docs/guide.md": false,
+	} {
+		if got := Protected(p, nil); got != want {
+			t.Errorf("%s: %v", p, got)
+		}
+	}
+}

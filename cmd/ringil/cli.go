@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/agilira/go-errors"
@@ -22,6 +24,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/notes"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
+	"github.com/agilira/ringil-agent-sdk/rules"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 	"github.com/agilira/ringil-agent-sdk/skills"
@@ -106,6 +109,7 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("memory", "List what the agent remembers").SetHandler(c.cmdMemory).
 		AddSubcommand(orpheus.NewCommand("search", "Search what the agent remembers").SetHandler(c.cmdMemory).SetUsage("memory search <words...>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.cmdMemoryRemove).SetUsage("memory rm <id...>")))
+	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.cmdRules))
 	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.cmdSkills).
 		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.cmdSkillInstall).SetUsage("skill install <dir>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Remove installed skills").SetHandler(c.cmdSkillRemove).SetUsage("skill rm <name...>")))
@@ -221,12 +225,59 @@ func (c *cli) remoteTools(ctx *orpheus.Context) ([]agent.Tool, error) {
 	return append(mcpTools, agents...), err
 }
 
-// runContext adds the notebooks' indexes to every run.
+// runContext adds to every run the project's rules (AGENTS.md and the
+// other agents' files) and the notebooks' indexes.
 func (c *cli) runContext(nb *notes.Notes) func(context.Context) (string, error) {
-	if nb == nil {
-		return nil
+	cfg, ok := c.rulesConfig()
+	return func(ctx context.Context) (string, error) {
+		var parts []string
+		if ok {
+			if r := rules.Render(rules.Load(cfg)); r != "" {
+				parts = append(parts, r)
+			}
+		}
+		if nb != nil {
+			n, err := nb.Context(ctx)
+			if err != nil {
+				return strings.Join(parts, "\n\n"), err
+			}
+			if n != "" {
+				parts = append(parts, n)
+			}
+		}
+		return strings.Join(parts, "\n\n"), nil
 	}
-	return nb.Context
+}
+
+// rulesConfig: the start directory up to its repository root, and the
+// user's own AGENTS.md in the config directory.
+func (c *cli) rulesConfig() (rules.Config, bool) {
+	cwd, err := c.cwd()
+	if err != nil {
+		return rules.Config{}, false
+	}
+	cfg := rules.Config{Dir: cwd}
+	if base, err := c.configDir(); err == nil {
+		cfg.Global = filepath.Join(base, "ringil", "AGENTS.md")
+	}
+	return cfg, true
+}
+
+func (c *cli) cmdRules(*orpheus.Context) error {
+	cfg, ok := c.rulesConfig()
+	if !ok {
+		return errors.New(ErrUsage, "cannot read the current directory")
+	}
+	found := rules.Load(cfg)
+	if len(found) == 0 {
+		return c.line("no rules files found (AGENTS.md, CLAUDE.md, GEMINI.md, ...)")
+	}
+	for _, f := range found {
+		if err := c.line(clean(f.Path) + "  " + strconv.Itoa(len(f.Text)) + " bytes"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // extraTools: memory and skill tools, when there is something to use.
