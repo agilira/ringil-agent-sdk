@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/agilira/go-errors"
+	"golang.org/x/sys/unix"
 )
 
 // Fixed system binaries: the sandbox never runs whatever is first on PATH.
@@ -27,6 +28,8 @@ const (
 	bwrapPath   = "/usr/bin/bwrap"
 	prlimitPath = "/usr/bin/prlimit"
 	slirpPath   = "/usr/bin/slirp4netns"
+	nsenterPath = "/usr/bin/nsenter"
+	socatPath   = "/usr/bin/socat"
 )
 
 type linuxSandbox struct{}
@@ -87,6 +90,9 @@ func (linuxSandbox) Start(ctx context.Context, spec Spec) (Process, error) {
 	if spec.Network == IsolatedNetwork && !executable(slirpPath) {
 		return nil, errors.New(ErrUnavailable, "isolated network needs "+slirpPath)
 	}
+	if spec.Network == ProxiedNetwork && (!executable(nsenterPath) || !executable(socatPath)) {
+		return nil, errors.New(ErrUnavailable, "a proxied network needs "+nsenterPath+" and "+socatPath+" (install util-linux and socat)")
+	}
 	l := &launch{}
 	args, err := l.prepare(spec)
 	if err != nil {
@@ -115,7 +121,7 @@ func (l *launch) prepare(spec Spec) ([]string, error) {
 		return nil, err
 	}
 	args = append(args, "--seccomp", l.add(filter))
-	args = append(args, envArgs(spec.Env)...)
+	args = append(args, envArgs(spec)...)
 	dir := spec.Dir
 	if dir == "" {
 		dir = "/"
@@ -159,6 +165,9 @@ func baseArgs() []string {
 var systemConfig = []string{
 	"/etc/alternatives", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
 	"/etc/localtime", "/etc/fonts", "/etc/ssl", "/etc/ca-certificates", "/etc/pki",
+	// who the user is (git and ssh look the name up) and the system's
+	// defaults for git; no secrets live in these
+	"/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/gitconfig", "/etc/mime.types",
 }
 
 // mountArgs opens every granted directory and binds the open descriptor,
@@ -166,8 +175,12 @@ var systemConfig = []string{
 // the mount, a descriptor cannot.
 func (l *launch) mountArgs(spec Spec) ([]string, error) {
 	var args []string
+	if spec.Home != "" {
+		// First, so that mounts inside it land on it.
+		args = append(args, "--size", strconv.Itoa(256<<20), "--perms", "0700", "--tmpfs", spec.Home)
+	}
 	for _, m := range spec.Mounts {
-		f, err := openDir(m.Source)
+		f, dir, err := openSource(m.Source)
 		if err != nil {
 			return nil, err
 		}
@@ -175,12 +188,15 @@ func (l *launch) mountArgs(spec Spec) ([]string, error) {
 		if err := checkProtected(f, spec.Protected); err != nil {
 			return nil, err
 		}
+		if !dir && len(m.Hide)+len(m.ReadOnly) > 0 {
+			return nil, configError("hidden and read-only paths need a directory mount: " + m.Source)
+		}
 		bind := "--ro-bind-fd"
 		if m.Writable {
 			bind = "--bind-fd"
 		}
 		args = append(args, bind, fd, targetOf(m))
-		masks, err := hideArgs(m)
+		masks, err := l.innerArgs(m)
 		if err != nil {
 			return nil, err
 		}
@@ -189,10 +205,10 @@ func (l *launch) mountArgs(spec Spec) ([]string, error) {
 	return args, nil
 }
 
-// hideArgs covers each hidden path with an empty read-only directory or
-// /dev/null, after the mount that contains it.
-func hideArgs(m Mount) ([]string, error) {
-	if len(m.Hide) == 0 {
+// innerArgs keeps a mount's read-only paths read-only, then masks its
+// hidden paths (a hidden path inside a read-only one stays hidden).
+func (l *launch) innerArgs(m Mount) ([]string, error) {
+	if len(m.Hide)+len(m.ReadOnly) == 0 {
 		return nil, nil
 	}
 	root, err := os.OpenRoot(m.Source)
@@ -200,6 +216,24 @@ func hideArgs(m Mount) ([]string, error) {
 		return nil, errors.Wrap(err, ErrGrant, "cannot open "+m.Source)
 	}
 	defer closeQuiet(root)
+	var args []string
+	for _, rel := range m.ReadOnly {
+		info, err := root.Lstat(rel)
+		if err != nil || !info.IsDir() && !info.Mode().IsRegular() {
+			continue // absent, or a link: it resolves to a path covered or not
+		}
+		f, err := root.Open(rel)
+		if err != nil {
+			return nil, errors.Wrap(err, ErrGrant, "cannot open "+rel+" in "+m.Source)
+		}
+		args = append(args, "--ro-bind-fd", l.add(f), path.Join(targetOf(m), rel))
+	}
+	return append(args, hideArgs(root, m)...), nil
+}
+
+// hideArgs covers each hidden path with an empty read-only directory or
+// /dev/null, after the mount that contains it.
+func hideArgs(root *os.Root, m Mount) []string {
 	var args []string
 	for _, h := range m.Hide {
 		info, err := root.Lstat(h)
@@ -216,7 +250,28 @@ func hideArgs(m Mount) ([]string, error) {
 		// a symbolic link stays: it resolves inside the sandbox, where
 		// its target is either another hidden path or not mounted
 	}
-	return args, nil
+	return args
+}
+
+// openSource opens a granted directory, or a granted regular file, and
+// reports which. A file is opened as a path only (never read, so a FIFO
+// cannot block) and never through a final symbolic link.
+func openSource(source string) (*os.File, bool, error) {
+	info, err := os.Lstat(source)
+	if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		f, err := openDir(source)
+		return f, true, err
+	}
+	fd, err := unix.Open(source, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, false, errors.New(ErrGrant, "cannot open granted file "+source)
+	}
+	f := os.NewFile(uintptr(fd), source)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, false, closeWith(errors.New(ErrGrant, "granted files must be regular files: "+source), f)
+	}
+	return f, false, nil
 }
 
 func openDir(source string) (*os.File, error) {
@@ -281,14 +336,17 @@ func within(child, parent string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
-func envArgs(env map[string]string) []string {
-	args := []string{"--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
-		"--setenv", "TMPDIR", "/tmp", "--setenv", "LANG", "C.UTF-8"}
+func envArgs(spec Spec) []string {
+	env := fixedEnv(spec, "/tmp")
+	for k, v := range spec.Env {
+		env[k] = v
+	}
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	args := []string{"--clearenv"}
 	for _, k := range keys {
 		args = append(args, "--setenv", k, env[k])
 	}
@@ -317,8 +375,8 @@ func (l *launch) start(ctx context.Context, spec Spec, args []string) (Process, 
 		return nil, l.failed(errors.Wrap(err, ErrStart, "cannot start bubblewrap"))
 	}
 	p := &process{cmd: cmd, launch: l}
-	if spec.Network == IsolatedNetwork {
-		if err := l.connect(ctx, p); err != nil {
+	if spec.Network != NoNetwork {
+		if err := l.connect(ctx, p, spec); err != nil {
 			return nil, p.abort(err)
 		}
 	}
@@ -328,7 +386,8 @@ func (l *launch) start(ctx context.Context, spec Spec, args []string) (Process, 
 type process struct {
 	cmd    *exec.Cmd
 	launch *launch
-	net    *exec.Cmd
+	net    *exec.Cmd // slirp4netns, or the proxy's bridge
+	bridge bool
 }
 
 // Wait returns the program's exit error first. A failure to release the
@@ -338,7 +397,11 @@ func (p *process) Wait() error {
 	cerr := p.launch.close()
 	var nerr error
 	if p.net != nil {
-		// Closing our end of the exit pipe (in close) stops slirp4netns.
+		// Closing our end of the exit pipe (in close) stops slirp4netns;
+		// the proxy's bridge is stopped by hand.
+		if p.bridge {
+			_ = p.net.Process.Kill() // #nosec G104 -- it may be gone already; Wait reports the rest
+		}
 		nerr = p.net.Wait()
 	}
 	return stderrors.Join(err, cerr, ignoreExit(nerr))
