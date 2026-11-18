@@ -71,9 +71,12 @@ type Team struct {
 	MaxTurns int
 	// MaxReport is how much of a report the parent sees; default 32 KiB.
 	MaxReport int
-	// OnEvent, when set, receives every event of every worker, tagged
-	// with the task's number, for a host that shows the work.
-	OnEvent func(task int, worker string, ev agent.Event)
+	// Observers receive every event of every worker, with Event.Worker,
+	// Event.Task and Event.Parent (the run that delegated) set: give the
+	// parent's observers, and delegated work is logged and shown like the
+	// parent's. Workers run in parallel and in the background: observers
+	// must be safe for concurrent use (see agent.Observer).
+	Observers []agent.Observer
 }
 
 type taskIn struct {
@@ -222,7 +225,7 @@ func (s Spend) Add(o Spend) Spend {
 // as calls happen, so a caller that recovers a panic keeps the count.
 func (c *Crew) countInto(ctx context.Context, t *task, message string, spent *Spend) (*agent.Result, error) {
 	ctx = context.WithValue(ctx, infoKey{}, Info{Task: t.id, Worker: t.worker.Name})
-	a, err := c.agentFor(t.worker, t.setup)
+	a, err := c.agentFor(t.worker, t.setup, t.id)
 	if err != nil {
 		return nil, err
 	}
@@ -238,9 +241,6 @@ func (c *Crew) countInto(ctx context.Context, t *task, message string, spent *Sp
 		case agent.EventCompacted: // a summary is a model call too
 			spent.Usage = spent.Usage.Add(ev.Usage)
 		}
-		if c.OnEvent != nil {
-			c.OnEvent(t.id, t.worker.Name, ev)
-		}
 		if ev.Kind == agent.EventDone {
 			res = ev.Result
 		}
@@ -251,7 +251,7 @@ func (c *Crew) countInto(ctx context.Context, t *task, message string, spent *Sp
 	return res, nil
 }
 
-func (c *Crew) agentFor(w Worker, setup Setup) (agent.Agent, error) {
+func (c *Crew) agentFor(w Worker, setup Setup, task int) (agent.Agent, error) {
 	tools := w.Tools
 	if len(setup.Tools) > 0 {
 		var err error
@@ -271,7 +271,20 @@ func (c *Crew) agentFor(w Worker, setup Setup) (agent.Agent, error) {
 	return agent.New(agent.Config{
 		Provider: p, Tools: tools, System: w.System, Context: setup.Context,
 		Approve: c.Approve, MaxTurns: firstPositive(w.MaxTurns, c.MaxTurns, 30),
+		Observers: tagged(c.Observers, w.Name, task),
 	})
+}
+
+// tagged marks a worker's events with who ran them.
+func tagged(observers []agent.Observer, worker string, task int) []agent.Observer {
+	out := make([]agent.Observer, len(observers))
+	for i, o := range observers {
+		out[i] = func(ev agent.Event) {
+			ev.Worker, ev.Task = worker, task
+			o(ev)
+		}
+	}
+	return out
 }
 
 // body is the worker's final text, bounded.

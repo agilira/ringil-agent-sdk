@@ -156,7 +156,7 @@ func TestEventOrder(t *testing.T) {
 		}
 		kinds = append(kinds, string(ev.Kind))
 	}
-	want := "text,model,tool_start,tool_end,text,model,done"
+	want := "started,text,model,tool_start,tool_end,text,model,done"
 	if strings.Join(kinds, ",") != want {
 		t.Fatalf("events %s\nwant   %s", strings.Join(kinds, ","), want)
 	}
@@ -239,7 +239,7 @@ func TestBreakingOutStopsTheRun(t *testing.T) {
 			break
 		}
 	}
-	if seen != 1 || p.Remaining() != 1 {
+	if seen != 2 || p.Remaining() != 1 { // started, then the first text
 		t.Fatalf("seen %d remaining %d", seen, p.Remaining())
 	}
 }
