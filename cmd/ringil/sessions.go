@@ -17,15 +17,22 @@ import (
 )
 
 func (c *cli) store(ctx *orpheus.Context) (agent.Store, error) {
-	dir := ctx.GetGlobalFlagString("sessions-dir")
-	if dir == "" {
-		base, err := c.configDir()
-		if err != nil {
-			return nil, errors.Wrap(err, ErrUsage, "no user config directory; use --sessions-dir")
-		}
-		dir = filepath.Join(base, "ringil", "sessions")
+	dir, err := c.sessionsDir(ctx)
+	if err != nil {
+		return nil, err
 	}
 	return file.New(dir)
+}
+
+func (c *cli) sessionsDir(ctx *orpheus.Context) (string, error) {
+	if dir := ctx.GetGlobalFlagString("sessions-dir"); dir != "" {
+		return filepath.Abs(dir)
+	}
+	base, err := c.configDir()
+	if err != nil {
+		return "", errors.Wrap(err, ErrUsage, "no user config directory; use --sessions-dir")
+	}
+	return filepath.Join(base, "ringil", "sessions"), nil
 }
 
 // conversation returns the conversation for this invocation and a function
@@ -80,6 +87,9 @@ func (c *cli) cmdSessionRemove(ctx *orpheus.Context) error {
 	}
 	for _, id := range ids {
 		if err := store.Delete(ctx.Context(), id); err != nil {
+			return err
+		}
+		if err := c.removeScratch(ctx, id); err != nil {
 			return err
 		}
 		c.note("deleted " + id)

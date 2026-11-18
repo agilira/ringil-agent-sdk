@@ -116,6 +116,8 @@ func (c *cli) render(ev agent.Event) error {
 		err = c.toolEnd(ev)
 	case agent.EventRecalled:
 		err = c.recalled(ev)
+	case agent.EventContext:
+		err = c.line("  ! notes index unavailable: " + describe(ev.Err))
 	case agent.EventCompacted:
 		err = c.line("  ~ context compacted: " + ev.Text)
 	case agent.EventRecovered:
@@ -162,13 +164,14 @@ func clean(s string) string {
 }
 
 func printable(r rune) bool {
-	switch {
-	case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
-		return false
-	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069, r == 0x200e, r == 0x200f:
-		return false
-	}
-	return true
+	return !(r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)) && !hidden[r] && !(r >= 0x202a && r <= 0x202e) && !(r >= 0x2066 && r <= 0x2069)
+}
+
+// hidden are characters that reorder or hide text on screen: bidi marks,
+// zero-width characters, line separators.
+var hidden = map[rune]bool{
+	0x200b: true, 0x200c: true, 0x200d: true, 0x200e: true, 0x200f: true,
+	0x061c: true, 0x2060: true, 0xfeff: true, 0x2028: true, 0x2029: true,
 }
 
 // recalled shows recalled memories, and a memory that could not be read.

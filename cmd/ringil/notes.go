@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/agilira/orpheus/pkg/orpheus"
 
@@ -25,6 +26,9 @@ import (
 // thrown away at exit without one) and the notes of the project in the
 // start directory, kept across sessions.
 func (c *cli) notebooks(ctx *orpheus.Context) (*notes.Notes, error) {
+	if ctx.GetGlobalFlagBool("no-tools") {
+		return nil, nil
+	}
 	base, err := c.configDir()
 	if err != nil {
 		return nil, nil // no config directory: no notebooks, the agent still works
@@ -39,16 +43,65 @@ func (c *cli) notebooks(ctx *orpheus.Context) (*notes.Notes, error) {
 		return nil, err
 	}
 	project := filepath.Join(root, "projects", projectKey(cwd), "notes")
-	return notes.New(notes.Scope{Name: "scratchpad", Dir: scratch}, notes.Scope{Name: "project", Dir: project})
+	// Project notes last across sessions: a change there is confirmed.
+	return notes.New(notes.Scope{Name: "scratchpad", Dir: scratch}, notes.Scope{Name: "project", Dir: project, ConfirmChanges: true})
 }
 
+// scratchDir is the session's scratchpad, keyed by sessions directory and
+// ID (two stores may hold the same ID), or one for this run, removed at
+// exit; run scratchpads left by a crash are cleared after a week.
 func (c *cli) scratchDir(ctx *orpheus.Context, root string) (string, error) {
+	scratch := filepath.Join(root, "scratch")
 	if id := ctx.GetGlobalFlagString("session"); id != "" {
-		return filepath.Join(root, "scratch", id), nil
+		return c.sessionScratch(ctx, scratch, id)
 	}
-	dir := filepath.Join(root, "scratch", "run-"+strings.ToLower(rand.Text()[:12]))
+	clearStale(scratch)
+	dir := filepath.Join(scratch, "run-"+strings.ToLower(rand.Text()[:12]))
 	c.closers = append(c.closers, func() error { return os.RemoveAll(dir) })
 	return dir, nil
+}
+
+func (c *cli) sessionScratch(ctx *orpheus.Context, scratch, id string) (string, error) {
+	if err := agent.ValidateSessionID(id); err != nil {
+		return "", err
+	}
+	sdir, err := c.sessionsDir(ctx)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(sdir))
+	return filepath.Join(scratch, hex.EncodeToString(sum[:4])+"-"+id), nil
+}
+
+// removeScratch deletes a session's scratchpad with the session.
+func (c *cli) removeScratch(ctx *orpheus.Context, id string) error {
+	base, err := c.configDir()
+	if err != nil {
+		return nil
+	}
+	dir, err := c.sessionScratch(ctx, filepath.Join(base, "ringil", "scratch"), id)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
+// clearStale removes run scratchpads older than a week: a run killed
+// before its exit could not remove its own.
+func clearStale(scratch string) {
+	entries, err := os.ReadDir(scratch)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		info, ierr := e.Info()
+		if ierr != nil || !e.IsDir() || !strings.HasPrefix(e.Name(), "run-") || time.Since(info.ModTime()) < 7*24*time.Hour {
+			continue
+		}
+		if rerr := os.RemoveAll(filepath.Join(scratch, e.Name())); rerr != nil {
+			continue // left for the next start
+		}
+	}
 }
 
 // projectKey names a project's notes after its directory: readable, and
