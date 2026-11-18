@@ -380,3 +380,45 @@ workflow, scheduler, controllo HTTP, A2A.
 
 1. Modulo `github.com/agilira/ringil-agent-sdk`, trasferito sotto Ringil all'apertura (17/11).
 2. Licenza MPL-2.0 (17/11).
+
+## 11. Dopo il nucleo: l'ordine del blueprint studio
+
+Data: 2026-11-18. Studio è il blueprint (`~/Desktop/studio`, README e ROADMAP); qui si
+segue il suo ordine di costruzione, non uno nuovo. Gli adapter (Anthropic, SystemOne,
+Vault, keyring) si attaccano a interfacce esistenti e non entrano in sequenza.
+
+**Già nell'SDK** (equivalenti, rifatti con gli audit): agente e provider sostituibile,
+streaming (0.25), API dei tool, sessioni con ripresa (0.19 superata: nessun tetto),
+budget di chiamate/token (0.11), compattazione con sintesi e stima (0.12, 0.18),
+rate limiter e circuit breaker (0.26), CLI.
+
+**Da costruire**, componenti di studio in ordine di dipendenza (prima ciò su cui gli altri
+poggiano) — ogni pezzo collegato alla CLI e visto girare prima del successivo, CI verde
+prima del commit dopo:
+
+| # | Componente (versione studio) | Note dalle review da applicare |
+|---|---|---|
+| 1 | Segreti: `Resolver`, ambiente, env file privato, catena senza fallback silenziosi (0.28) — FATTO 18/11. Adapter Vault KV v2, file cifrato, keyring OS (da eos-legacy) dopo: si attaccano a `Resolver` | il `# commento` inline non entra nel valore; la chiave API passa da qui, mai flag |
+| 2 | Sandbox condiviso (`internal/isolate`: bwrap, seccomp, prlimit) per script, MCP stdio e Bash | rete in netns propria; seccomp anche bpf/perf_event_open/userfaultfd |
+| 3 | Tool filesystem in lettura con grant `--workspace` (primo tool di studio) | os.Root, no symlink/traversal, nessun byte di file nei log |
+| 4 | Memoria ricercabile `Memory` (scope dall'host) | richiamo nella vista, mai nella sessione; `VectorStore` + Chroma più avanti |
+| 5 | Skills (nomi sempre esposti, corpi e script al bisogno, script solo nel sandbox) | |
+| 6 | MCP stdio/HTTP + OAuth | stdio nel sandbox; nessun replay dopo `MCP_UNCERTAIN`; consenso solo da operatore |
+| 7 | Delega ai worker (sottoinsiemi di tool, budget condiviso, contesto fresco) | `Spawner` per istanze separate più avanti |
+| 8 | Workflow locali + journal durevole (+ workflow scritti dall'agente) | stesso motore per i piani del modello |
+| 9 | Scratchpad e memoria di progetto Markdown (0.10) + todo dell'agente | |
+| 10 | Ruolo e provider per profilo, regole di progetto, `AGENTS.md` automatico (0.13-0.15) | prompt di sistema già sostituibile |
+| 11 | Lettura selettiva della storia citata dalle sintesi (0.16) | |
+| 12 | Budget durevole per i workflow (0.17) | |
+| 13 | Artefatti, backup e ripristino in quarantena (0.20-0.24) | |
+| 14 | Rilevatore di loop (0.27) | default avviso; argomenti alterni e cicli di 3 |
+| 15 | Bus di eventi e adapter slog solo metadati (0.29) | una sola sequenza |
+| 16 | Controller, API HTTP loopback, `serve` (0.30-0.32) | TTL dei run conclusi, lock per job, `omitzero` |
+| 17 | Composio, setup e catalogo con discovery (2.4, 2.4.1) | selettori `user_id`/`entity_id` bloccati; allowlist dallo schema |
+| 18 | Tool filesystem in scrittura e Git strutturato (2.4.2) | grafts disattivati; output in streaming, non nel cap; fsync prima del ref |
+| 19 | Bash sandbox/host (2.6) | host mode senza fuga di env da /proc/$PPID; timeout che uccide anche i figli setsid |
+| 20 | Pianificazione (4.1): trigger a tempo e a evento, consegna, retry + notifica | DST con libreria matura; ogni difetto di studio diventa un test |
+| 21 | A2A (5.1) | |
+
+Conferma prima dei tool distruttivi e tool in sola lettura in parallelo entrano con il
+punto 1, quando esistono i primi tool reali su cui provarli.
