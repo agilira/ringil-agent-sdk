@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -42,6 +43,7 @@ const defaultDiscoveryThreshold = 16 << 10
 type discovery struct {
 	deferred map[string]ToolSpec
 	order    []string
+	mu       sync.Mutex // tool_search is read-only, so it may run in parallel
 	loaded   map[string]bool
 }
 
@@ -99,6 +101,8 @@ func (d *discovery) restore(history []Message) {
 }
 
 func (d *discovery) mark(names []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	for _, n := range names {
 		if _, ok := d.deferred[n]; ok {
 			d.loaded[n] = true
@@ -109,6 +113,8 @@ func (d *discovery) mark(names []string) {
 // specs are what the model gets: every tool not deferred, the deferred
 // ones it loaded, and tool_search.
 func (d *discovery) specs(all []ToolSpec) []ToolSpec {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	out := make([]ToolSpec, 0, len(all)-len(d.deferred)+len(d.loaded)+1)
 	for _, s := range all {
 		if _, deferred := d.deferred[s.Name]; !deferred || d.loaded[s.Name] {

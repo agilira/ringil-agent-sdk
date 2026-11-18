@@ -11,7 +11,9 @@ import (
 	stderrors "errors"
 	"iter"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/agilira/go-errors"
 
@@ -24,9 +26,15 @@ type addIn struct {
 	B int `json:"b"`
 }
 
+// addMu guards the counters: add is read-only, so the agent may run
+// several calls of it at once.
+var addMu sync.Mutex
+
 func adder(calls *int) agent.Tool {
 	return agent.NewTool("add", "Add two integers", func(_ context.Context, in addIn) (int, error) {
+		addMu.Lock()
 		*calls++
+		addMu.Unlock()
 		return in.A + in.B, nil
 	}, agent.ReadOnly())
 }
@@ -474,5 +482,87 @@ func TestApproveErrorRefuses(t *testing.T) {
 	}
 	if calls != 0 || !errors.HasCode(denied, agent.ErrToolDenied) {
 		t.Fatalf("calls %d err %v", calls, denied)
+	}
+}
+
+// Read-only and parallel calls of one turn run at the same time; the
+// results keep the order of the calls.
+func TestParallelCallsRunTogether(t *testing.T) {
+	var running, peak int32
+	var mu sync.Mutex
+	slow := func(name string, opt agent.ToolOption) agent.Tool {
+		return agent.NewTool(name, "slow", func(context.Context, struct{}) (string, error) {
+			mu.Lock()
+			running++
+			peak = max(peak, running)
+			mu.Unlock()
+			time.Sleep(50 * time.Millisecond)
+			mu.Lock()
+			running--
+			mu.Unlock()
+			return name, nil
+		}, opt)
+	}
+	reg, err := agent.NewRegistry(slow("a", agent.ReadOnly()), slow("b", agent.Parallel()), slow("c", agent.Destructive()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []agent.ToolCall
+	for _, n := range []string{"a", "b", "c", "a"} {
+		calls = append(calls, agent.ToolCall{Name: n, Input: json.RawMessage(`{}`)})
+	}
+	p := fake.New(fake.Step{Calls: calls}, fake.Reply("ok"))
+	res, err := newAgent(t, agent.Config{Provider: p, Tools: reg}).Run(context.Background(), nil, agent.UserText("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, m := range res.Messages {
+		if m.Result != nil {
+			order = append(order, m.Result.Content)
+		}
+	}
+	if peak != 2 || strings.Join(order, ",") != "a,b,c,a" {
+		t.Fatalf("peak %d order %v", peak, order)
+	}
+}
+
+// Audit 18/11: a cancel in the middle of a parallel batch lost the
+// results of calls that had already run.
+func TestCancelMidBatchKeepsFinishedResults(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var ran sync.WaitGroup
+	ran.Add(3)
+	tool := func(name string) agent.Tool {
+		return agent.NewTool(name, "x", func(context.Context, struct{}) (string, error) {
+			ran.Done()
+			ran.Wait() // all three have run their effect
+			if name == "a" {
+				cancel()
+			}
+			return name + " done", nil
+		}, agent.ReadOnly())
+	}
+	reg, err := agent.NewRegistry(tool("a"), tool("b"), tool("c"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []agent.ToolCall
+	for _, n := range []string{"a", "b", "c"} {
+		calls = append(calls, agent.ToolCall{Name: n, Input: json.RawMessage(`{}`)})
+	}
+	conv := agent.NewConversation()
+	_, err = newAgent(t, agent.Config{Provider: fake.New(fake.Step{Calls: calls}, fake.Reply("ok")), Tools: reg}).Run(ctx, conv, agent.UserText("x"))
+	if err == nil {
+		t.Fatal("cancel not reported")
+	}
+	recorded := 0
+	for _, m := range conv.Messages() {
+		if m.Result != nil && strings.HasSuffix(m.Result.Content, "done") {
+			recorded++
+		}
+	}
+	if recorded != 3 {
+		t.Fatalf("%d of 3 finished results recorded", recorded)
 	}
 }

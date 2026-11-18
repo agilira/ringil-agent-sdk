@@ -33,13 +33,17 @@ type ToolOutput struct {
 // ToolOption refines a tool's spec.
 type ToolOption func(*ToolSpec)
 
-// ReadOnly marks a tool that changes nothing; the agent may run several at
-// once.
+// ReadOnly marks a tool that changes nothing; the agent may run several
+// calls at once, so its function must be safe for concurrent use.
 func ReadOnly() ToolOption { return func(s *ToolSpec) { s.Annotations.ReadOnly = true } }
 
 // Destructive marks a tool whose effects are hard to undo, so an approval
 // hook can ask first.
 func Destructive() ToolOption { return func(s *ToolSpec) { s.Annotations.Destructive = true } }
+
+// Parallel marks a tool whose calls may run at the same time as others of
+// the same turn; read-only tools always may.
+func Parallel() ToolOption { return func(s *ToolSpec) { s.Annotations.Parallel = true } }
 
 // OpenWorld marks a tool that reaches outside the host (network, email).
 func OpenWorld() ToolOption { return func(s *ToolSpec) { s.Annotations.OpenWorld = true } }

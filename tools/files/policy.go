@@ -51,12 +51,14 @@ func Excluded(abs string, patterns []string) bool {
 // to them with the user, whatever was allowed before; reading is free.
 var DefaultProtected = []string{
 	// agents' rules
-	"AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md", "HERMES.md",
+	"AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md",
 	".cursorrules", ".windsurfrules", ".clinerules", ".github/copilot-instructions.md",
 	// agents' and editors' settings
 	".claude", ".codex", ".cursor", ".gemini", ".windsurf", ".continue", ".aider*", ".vscode", ".idea", ".zed", ".devcontainer",
 	// the repository and its automation
-	".git", ".github", ".gitlab-ci.yml", ".gitignore", ".gitattributes", ".pre-commit-config.yaml",
+	".git", ".github", ".gitlab-ci.yml", ".gitignore", ".gitattributes", ".gitmodules", ".pre-commit-config.yaml", ".husky",
+	// files that make other tools run code: MCP servers, direnv
+	".mcp.json", ".envrc",
 }
 
 // Protected reports whether abs matches the protected patterns
@@ -188,8 +190,12 @@ func components(abs string) []string {
 	return parts
 }
 
-// normalize lower-cases a name and drops trailing dots and spaces, which
-// Windows ignores: ".env." and ".env " open .env there.
+// normalize lower-cases a name and drops what Windows ignores or treats
+// as part of the same file: trailing dots and spaces (".env." opens .env)
+// and an alternate data stream ("AGENTS.md:x" writes to AGENTS.md).
 func normalize(name string) string {
+	if i := strings.IndexByte(name, ':'); i > 0 {
+		name = name[:i]
+	}
 	return strings.TrimRight(strings.ToLower(name), ". ")
 }

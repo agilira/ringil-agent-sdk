@@ -173,6 +173,26 @@ marcati come dati, mai nella conversazione salvata. Nella CLI la memoria è atti
 default (`--no-memory` per toglierla), per significato con `--embed-model` o
 `RINGIL_EMBED_MODEL`; `ringil memory`, `memory search`, `memory rm`.
 
+## Delega ai sub-agenti
+
+`delegate.Tool` dà al modello sub-agenti a cui passare incarichi autonomi: ognuno parte
+con un contesto pulito (vede solo il compito), lavora con i suoi tool e restituisce un
+solo rapporto, così ricerche e letture lunghe non riempiono il contesto del padre. Più
+incarichi dello stesso turno girano in parallelo: il ciclo esegue insieme le chiamate
+di tool in sola lettura o marcati `agent.Parallel()`, chiedendo le conferme una alla
+volta prima di partire.
+
+```go
+dt, err := delegate.Tool(delegate.Team{Provider: model, Approve: approve, Workers: []delegate.Worker{
+	{Name: "explore", Description: "searches files, read-only", Tools: readOnly},
+}})
+```
+
+Ogni tipo di worker ha istruzioni e tool propri (mai la delega stessa, salvo scelta
+dell'host); `Prepare` dà a ogni incarico uno scratchpad suo; le conferme passano
+dall'hook del padre. CLI: `explore` (sola lettura) e `general` (i tool del padre),
+ciascuno con scratchpad proprio, note di progetto in sola lettura e regole del progetto.
+
 ## Regole di progetto
 
 `rules` legge le istruzioni che le persone scrivono per gli agenti, così un agente

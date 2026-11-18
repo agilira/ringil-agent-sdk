@@ -43,6 +43,7 @@ func (c *cli) notebooks(ctx *orpheus.Context) (*notes.Notes, error) {
 		return nil, err
 	}
 	project := filepath.Join(root, "projects", projectKey(cwd), "notes")
+	c.projectNotes = project
 	// Project notes last across sessions: a change there is confirmed.
 	return notes.New(notes.Scope{Name: "scratchpad", Dir: scratch}, notes.Scope{Name: "project", Dir: project, ConfirmChanges: true})
 }

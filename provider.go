@@ -84,6 +84,9 @@ type Annotations struct {
 	OpenWorld   bool `json:"open_world,omitempty"`
 	// Deferrable: the tool may be listed by name only (see Discovery).
 	Deferrable bool `json:"deferrable,omitempty"`
+	// Parallel: calls may run at the same time as other parallel or
+	// read-only calls of the same turn, such as sub-agents.
+	Parallel bool `json:"parallel,omitempty"`
 }
 
 // Clone returns a deep copy of r.
