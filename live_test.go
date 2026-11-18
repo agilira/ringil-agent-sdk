@@ -607,3 +607,33 @@ func TestLiveEventLog(t *testing.T) {
 	}
 	t.Log("\n" + out)
 }
+
+// TestLiveFileEdit: a real model reads a file and changes one value with
+// edit_file; the rest of the file stays as it was.
+func TestLiveFileEdit(t *testing.T) {
+	model := liveModel(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("server:\n  host: localhost\n  port: 8080\n  timeout: 30\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := files.New(files.Config{Dirs: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := agent.NewRegistry(append(ws.ReadTools(), ws.WriteTools()...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, MaxTurns: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), nil, agent.UserText("Nel file config.yaml cambia la porta da 8080 a 9090. Leggi il file e usa edit_file.")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil || string(data) != "server:\n  host: localhost\n  port: 9090\n  timeout: 30\n" {
+		t.Fatalf("file now %q %v", data, err)
+	}
+}

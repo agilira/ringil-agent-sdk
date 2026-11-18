@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"strings"
@@ -61,7 +62,16 @@ func (w *workspace) read(ctx context.Context, in readIn) (string, error) {
 	if pg.limit == 0 {
 		pg.limit = defaultLines
 	}
-	out, err := pg.read(ctx, o.f, w.display(o.real))
+	// The stamp is of the bytes this read went through, not of a second
+	// look that could see a later change.
+	h := sha256.New()
+	out, err := pg.read(ctx, io.TeeReader(o.f, h), w.display(o.real))
+	if err == nil && o.info.Size() <= maxWrite {
+		var s stamp
+		copy(s.sum[:], h.Sum(nil))
+		s.whole = pg.whole()
+		w.remember(o.real, s)
+	}
 	if cerr := o.close(); err == nil {
 		err = cerr
 	}
@@ -74,6 +84,14 @@ type linePage struct {
 	out           strings.Builder
 	shown, last   int
 	full          bool
+	cut           bool // a shown line was clipped
+	total         int
+}
+
+// whole reports whether the page showed the whole file, uncut: only then
+// may the model replace it whole.
+func (p *linePage) whole() bool {
+	return p.offset <= 1 && !p.full && !p.cut && p.shown == p.total
 }
 
 func (p *linePage) read(ctx context.Context, f io.Reader, name string) (string, error) {
@@ -89,6 +107,7 @@ func (p *linePage) read(ctx context.Context, f io.Reader, name string) (string, 
 	if err != nil {
 		return "", err
 	}
+	p.total = total
 	return p.header(name, total) + p.out.String(), nil
 }
 
@@ -99,6 +118,7 @@ func (p *linePage) add(n int, line []byte, cut int) error {
 	text := string(line)
 	if cut > 0 {
 		text += fmt.Sprintf(" [line truncated, %d more bytes]", cut)
+		p.cut = true
 	}
 	entry := fmt.Sprintf("%6d\t%s\n", n, text)
 	if p.out.Len()+len(entry) > maxOutput && p.shown > 0 {

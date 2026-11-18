@@ -3,8 +3,15 @@
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-// Package files gives an agent tools to read the directories the host
-// grants: read_file, list_directory, glob and grep.
+// Package files gives an agent tools for the directories the host grants:
+// read_file, list_directory, glob and grep to read, write_file and
+// edit_file to change.
+//
+// Changes follow three rules. A file is changed only if the model read it
+// and it has not changed since (someone else's edit is never lost). A
+// write is whole or nothing: a temporary file renamed over the old one.
+// Protected paths (DefaultProtected: other agents' rules, editor and CI
+// settings, .git) are written only with Config.ConfirmProtected's yes.
 //
 // Paths may be absolute host paths inside any granted directory, or
 // relative to the first one, so "read /home/me/notes/todo.md" works as the
@@ -58,12 +65,20 @@ type Config struct {
 	// dialog. Nil refuses such paths. Excluded directories are never
 	// offered.
 	Ask func(ctx context.Context, dir string) (bool, error)
+	// Protected replaces DefaultProtected when not nil.
+	Protected []string
+	// ConfirmProtected is asked before every write to a protected path,
+	// whatever else was allowed; nil refuses them.
+	ConfirmProtected func(ctx context.Context, path string) (bool, error)
 }
 
 // Workspace is a set of granted directories.
 type Workspace interface {
 	// ReadTools returns read_file, list_directory, glob and grep.
 	ReadTools() []agent.Tool
+	// WriteTools returns write_file and edit_file. Hosts usually confirm
+	// these calls (the CLI does unless --accept-edits).
+	WriteTools() []agent.Tool
 	// Dirs returns the granted directories, resolved.
 	Dirs() []string
 }
@@ -81,7 +96,15 @@ func New(cfg Config) (Workspace, error) {
 	if err != nil {
 		return nil, errors.New(ErrConfig, "bad exclude pattern")
 	}
-	w := &workspace{policy: pol, ask: cfg.Ask}
+	protectedPatterns := cfg.Protected
+	if protectedPatterns == nil {
+		protectedPatterns = DefaultProtected
+	}
+	prot, err := newPolicy(protectedPatterns)
+	if err != nil {
+		return nil, errors.New(ErrConfig, "bad protected pattern")
+	}
+	w := &workspace{policy: pol, ask: cfg.Ask, protected: prot, confirmProtected: cfg.ConfirmProtected}
 	for _, d := range cfg.Dirs {
 		real, err := resolveDir(d)
 		if err != nil {
@@ -112,12 +135,18 @@ func resolveDir(d string) (string, error) {
 }
 
 type workspace struct {
-	policy policy
-	ask    func(context.Context, string) (bool, error)
+	policy           policy
+	ask              func(context.Context, string) (bool, error)
+	protected        policy
+	confirmProtected func(context.Context, string) (bool, error)
 	// mu guards dirs, which grows when the user grants a directory; it is
 	// held while asking, so one request is never asked twice.
 	mu   sync.Mutex
 	dirs []string
+	// seen is what the model knows each file holds: read or written last.
+	seen map[string]stamp
+	// locks hold a file during one write.
+	locks map[string]*fileLock
 }
 
 func (w *workspace) Dirs() []string {
