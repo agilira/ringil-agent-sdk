@@ -65,23 +65,21 @@ func parseMounts(specs []string) ([]sandbox.Mount, error) {
 }
 
 func parseMount(s string) (sandbox.Mount, error) {
-	parts := strings.Split(s, ":")
-	writable := len(parts) > 1 && parts[len(parts)-1] == "rw"
-	if writable {
-		parts = parts[:len(parts)-1]
+	src, writable := strings.CutSuffix(s, ":rw")
+	// The destination is an absolute sandbox path after the last ":/";
+	// splitting on every ":" would break Windows sources such as C:\data.
+	dest := ""
+	if i := strings.LastIndex(src, ":/"); i >= 0 {
+		src, dest = src[:i], src[i+1:]
 	}
-	if len(parts) < 1 || len(parts) > 2 || parts[0] == "" {
+	if src == "" || strings.Contains(dest, ":") {
 		return sandbox.Mount{}, errors.New(ErrUsage, "--mount takes DIR[:/dest][:rw]")
 	}
-	src, err := filepath.Abs(parts[0])
+	abs, err := filepath.Abs(src)
 	if err != nil {
-		return sandbox.Mount{}, errors.Wrap(err, ErrUsage, "cannot resolve "+parts[0])
+		return sandbox.Mount{}, errors.Wrap(err, ErrUsage, "cannot resolve "+src)
 	}
-	m := sandbox.Mount{Source: src, Writable: writable}
-	if len(parts) == 2 {
-		m.Target = parts[1]
-	}
-	return m, nil
+	return sandbox.Mount{Source: abs, Target: dest, Writable: writable}, nil
 }
 
 // exitStatus reports a non-zero exit of the sandboxed command as such.
