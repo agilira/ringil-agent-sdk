@@ -143,3 +143,46 @@ func TestShebangScriptAnywhereWithEnv(t *testing.T) {
 		t.Fatalf("greet %q %v", out, err)
 	}
 }
+
+func TestScriptFilesAreDelivered(t *testing.T) {
+	src := newSkill(t, map[string]string{
+		"SKILL.md":       reviewSkill,
+		"scripts/out.sh": "echo nuovo > out.txt; mkdir -p sub; echo b > sub/b.txt; ln -s /etc/passwd link; echo fatto; exit ${1:-0}\n",
+	})
+	cat := t.TempDir()
+	if _, err := Install(bg, src, cat); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Open(cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	if err := os.WriteFile(dest+"/out.txt", []byte("mio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools(c, Options{Sandbox: testSandbox(t), Output: dest, Runtimes: map[string]string{"bash": "/usr/bin/bash"}})
+	out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/out.sh"})
+	if err != nil || !strings.Contains(out, "out-1.txt") || !strings.Contains(out, "sub/b.txt") {
+		t.Fatalf("run %q %v", out, err)
+	}
+	checkDelivered(t, dest)
+	// A failing script still hands over what it made.
+	_, err = call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/out.sh", Args: []string{"3"}})
+	if msg := agent.ModelMessage(err); !strings.Contains(msg, "out-2.txt") {
+		t.Fatalf("failed run: %q", msg)
+	}
+}
+
+func checkDelivered(t *testing.T, dest string) {
+	t.Helper()
+	if mine, _ := os.ReadFile(dest + "/out.txt"); string(mine) != "mio" {
+		t.Fatalf("existing file replaced: %q", mine)
+	}
+	if got, _ := os.ReadFile(dest + "/out-1.txt"); string(got) != "nuovo\n" {
+		t.Fatalf("delivered %q", got)
+	}
+	if _, err := os.Lstat(dest + "/link"); !os.IsNotExist(err) {
+		t.Fatalf("link delivered: %v", err)
+	}
+}

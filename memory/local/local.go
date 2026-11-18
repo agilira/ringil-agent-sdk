@@ -82,15 +82,32 @@ func (s *store) locked(ctx context.Context, fn func(*document) (bool, error)) er
 }
 
 func (s *store) withRoot(ctx context.Context, root *os.Root, fn func(*document) (bool, error)) error {
-	lock, err := root.OpenFile(lockName, os.O_RDWR|os.O_CREATE|lockfile.NoFollow, 0o600)
+	lock, err := openLock(root)
 	if err != nil {
-		return errors.Wrap(err, agent.ErrMemoryIO, "cannot open the memory lock")
+		return errors.Wrap(err, agent.ErrMemoryIO, "cannot open the memory lock").WithContext("cause", err.Error())
 	}
 	err = s.withLock(ctx, root, lock, fn)
 	if cerr := lock.Close(); err == nil && cerr != nil {
 		err = errors.Wrap(cerr, agent.ErrMemoryIO, "cannot release the memory lock")
 	}
 	return err
+}
+
+// openLock opens the lock file, creating it only when missing. A plain
+// O_CREATE open by many processes at once can fail transiently on macOS;
+// opening first and creating exclusively avoids that race.
+func openLock(root *os.Root) (*os.File, error) {
+	for range 3 {
+		f, err := root.OpenFile(lockName, os.O_RDWR|lockfile.NoFollow, 0)
+		if !os.IsNotExist(err) {
+			return f, err
+		}
+		f, err = root.OpenFile(lockName, os.O_RDWR|os.O_CREATE|os.O_EXCL|lockfile.NoFollow, 0o600)
+		if !os.IsExist(err) {
+			return f, err
+		}
+	}
+	return nil, os.ErrExist
 }
 
 func (s *store) withLock(ctx context.Context, root *os.Root, lock *os.File, fn func(*document) (bool, error)) error {
