@@ -731,3 +731,29 @@ func (downEmbedder) Model() string { return "emb" }
 func (downEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 	return nil, errors.New(agent.ErrEmbed, "down")
 }
+
+// Audit 18/11: invisible and line-separator characters reached the terminal.
+func TestCleanStripsInvisibles(t *testing.T) {
+	if got := clean("a\u200bb\u2028c\u061cd\ufeffe"); got != "abcde" {
+		t.Fatalf("clean %q", got)
+	}
+}
+
+// Audit 18/11: project notes changed without asking; a session name could
+// point the scratchpad outside the config directory.
+func TestProjectNotesAskAndSessionScratch(t *testing.T) {
+	h := newHarness(t, "n\n", fake.Call("notes", `{"command":"create","path":"/project/INDEX.md","file_text":"x"}`), fake.Reply("ok"))
+	if code := h.run("run", "salva"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if !strings.Contains(h.err.String(), "wants to run notes") {
+		t.Fatalf("not asked: %q", h.err)
+	}
+	h2 := newHarness(t, "")
+	if code := h2.run("--session", "../../x", "run", "ciao"); code == exitOK {
+		t.Fatal("bad session name accepted")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(filepath.Dir(h2.dir)), "x")); !os.IsNotExist(err) {
+		t.Fatalf("folder created outside: %v", err)
+	}
+}

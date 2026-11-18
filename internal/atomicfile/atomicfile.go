@@ -11,6 +11,7 @@ package atomicfile
 import (
 	"crypto/rand"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
@@ -18,7 +19,9 @@ import (
 
 // Write replaces name in root with data, mode 0600.
 func Write(root *os.Root, name string, data []byte) error {
-	tmp := "." + name + "-" + strings.ToLower(rand.Text()[:12]) + ".tmp"
+	// Beside the file, in its own directory: a rename stays within one
+	// directory, and the temporary name is hidden.
+	tmp := path.Join(path.Dir(name), "."+path.Base(name)+"-"+strings.ToLower(rand.Text()[:12])+".tmp")
 	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|lockfile.NoFollow, 0o600)
 	if err != nil {
 		return err

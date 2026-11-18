@@ -145,8 +145,23 @@ func entryLine(s Scope, p string, d fs.DirEntry) string {
 	return "/" + s.Name + "/" + p + "  " + strconv.FormatInt(info.Size(), 10) + " bytes"
 }
 
+// splitLines splits text into lines, without the empty "line" after a
+// final newline, and reports the file's line ending.
+func splitLines(text string) ([]string, string, bool) {
+	eol := "\n"
+	if strings.Contains(text, "\r\n") {
+		eol = "\r\n"
+	}
+	final := strings.HasSuffix(text, eol)
+	text = strings.TrimSuffix(text, eol)
+	if text == "" {
+		return nil, eol, final
+	}
+	return strings.Split(text, eol), eol, final
+}
+
 func numbered(text string, start, end int) string {
-	lines := strings.Split(text, "\n")
+	lines, _, _ := splitLines(text)
 	if start < 1 {
 		start = 1
 	}
@@ -246,12 +261,17 @@ func replaceOnce(text, old, repl string) (string, error) {
 }
 
 func insertAt(text string, line int, add string) (string, error) {
-	lines := strings.Split(text, "\n")
+	lines, eol, final := splitLines(text)
 	if line < 0 || line > len(lines) {
 		return "", agent.ToolError(ErrInput, "insert_line is past the end ("+strconv.Itoa(len(lines))+" lines).")
 	}
-	out := append(append(append([]string{}, lines[:line]...), strings.Split(add, "\n")...), lines[line:]...)
-	return strings.Join(out, "\n"), nil
+	added := strings.Split(strings.TrimSuffix(strings.ReplaceAll(add, "\r\n", "\n"), "\n"), "\n")
+	out := append(append(append([]string{}, lines[:line]...), added...), lines[line:]...)
+	joined := strings.Join(out, eol)
+	if final || text == "" {
+		joined += eol
+	}
+	return joined, nil
 }
 
 func remove(root *os.Root, s Scope, rel string) (string, error) {
@@ -272,11 +292,8 @@ func rename(root *os.Root, s Scope, rel, newPath string, n *Notes) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if s2.Name != s.Name || rel == "." || rel2 == "." {
-		return "", agent.ToolError(ErrInput, "Rename within one scope, file to file.")
-	}
-	if _, err := root.Lstat(rel2); err == nil {
-		return "", agent.ToolError(ErrInput, "The new path is taken.")
+	if err := renameable(root, s, s2, rel, rel2); err != nil {
+		return "", err
 	}
 	if dir := path.Dir(rel2); dir != "." {
 		if err := root.MkdirAll(dir, 0o700); err != nil {
@@ -287,6 +304,20 @@ func rename(root *os.Root, s Scope, rel, newPath string, n *Notes) (string, erro
 		return "", agent.ToolError(ErrInput, "Cannot rename: no such note.")
 	}
 	return "Renamed to /" + s.Name + "/" + rel2 + ".", nil
+}
+
+// renameable checks a rename before anything is created for it.
+func renameable(root *os.Root, from, to Scope, rel, rel2 string) error {
+	if to.Name != from.Name || rel == "." || rel2 == "." {
+		return agent.ToolError(ErrInput, "Rename within one scope, file to file.")
+	}
+	if _, err := root.Lstat(rel2); err == nil {
+		return agent.ToolError(ErrInput, "The new path is taken.")
+	}
+	if _, err := root.Lstat(rel); err != nil {
+		return agent.ToolError(ErrInput, "Cannot rename: no such note.")
+	}
+	return nil
 }
 
 func checkText(text string) error {
@@ -313,10 +344,12 @@ func readFile(s Scope, rel string) (string, error) {
 	return string(data), nil
 }
 
+// countFiles counts files and folders: both are bounded, or a model could
+// make folders without end.
 func countFiles(root *os.Root) int {
 	n := 0
-	walkErr := fs.WalkDir(root.FS(), ".", func(_ string, d fs.DirEntry, err error) error {
-		if err == nil && d.Type().IsRegular() && !strings.HasPrefix(d.Name(), ".") {
+	walkErr := fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && p != "." && !strings.HasPrefix(d.Name(), ".") {
 			n++
 		}
 		return nil

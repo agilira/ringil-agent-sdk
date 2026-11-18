@@ -270,7 +270,7 @@ func (c *cli) askAccess(_ context.Context, dir string) (bool, error) {
 // without interrupting the user. "a" allows that tool for the rest of
 // the session.
 func (c *cli) approve(_ context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
-	if !spec.Annotations.Destructive || c.allowed[call.Name] {
+	if !c.mustAsk(call, spec) || c.allowed[call.Name] {
 		return true, nil
 	}
 	answer, err := c.ask("\n  ? The agent wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
@@ -282,6 +282,15 @@ func (c *cli) approve(_ context.Context, call agent.ToolCall, spec agent.ToolSpe
 		return true, err
 	}
 	return yes(answer), err
+}
+
+// mustAsk: destructive tools, and the notes changes their scope wants
+// confirmed (project notes, deletions).
+func (c *cli) mustAsk(call agent.ToolCall, spec agent.ToolSpec) bool {
+	if c.notes != nil && call.Name == notes.DefaultName {
+		return c.notes.NeedsApproval(call)
+	}
+	return spec.Annotations.Destructive
 }
 
 // confirm asks a yes/no question; no answer is a no.

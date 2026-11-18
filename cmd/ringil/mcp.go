@@ -312,7 +312,7 @@ func sortedKeys(m map[string]mcpEntry) []string {
 func (c *cli) shutdown() {
 	for _, closeFn := range c.closers {
 		if err := closeFn(); err != nil {
-			c.note("closing an MCP server: " + err.Error())
+			c.note("cleanup at exit: " + err.Error())
 		}
 	}
 	c.closers = nil
