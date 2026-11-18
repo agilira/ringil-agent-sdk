@@ -85,7 +85,7 @@ type cli struct {
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 	return &cli{
-		in: in, out: out, errOut: errOut, getenv: os.Getenv, newEmbedder: openai.NewEmbedder,
+		in: in, out: out, errOut: errOut, getenv: os.Getenv, newEmbedder: func(cfg openai.Config) (agent.Embedder, error) { return openai.NewEmbedder(cfg) },
 		newProvider: openai.New,
 		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(ctx, os.Interrupt)
@@ -267,7 +267,7 @@ func (c *cli) withDelegate(ctx *orpheus.Context, model agent.Provider, tools age
 	if tools == nil {
 		return nil, nil
 	}
-	dt, err := c.delegateTool(ctx, model, tools)
+	crew, err := c.delegateCrew(ctx, model, tools)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +275,8 @@ func (c *cli) withDelegate(ctx *orpheus.Context, model agent.Provider, tools age
 	if err != nil {
 		return nil, err
 	}
-	return tools.With(dt, wt)
+	// One tool per worker (explore, general): models call workers by name.
+	return tools.With(append(crew.WorkerTools(), wt)...)
 }
 
 // runContext adds to every run the project's rules (AGENTS.md and the

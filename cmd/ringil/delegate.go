@@ -28,7 +28,7 @@ const generalSystem = "You are a sub-agent working on one task for another agent
 // for searches that would fill its context, and general, with the same
 // tools as the parent but no delegation of its own. Each task gets a
 // scratchpad of its own and reads the project notes and rules.
-func (c *cli) delegateTool(ctx *orpheus.Context, p agent.Provider, parentTools agent.Registry) (agent.Tool, error) {
+func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools agent.Registry) (*delegate.Crew, error) {
 	explore, err := agent.NewRegistry(c.readTools...)
 	if err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func (c *cli) delegateTool(ctx *orpheus.Context, p agent.Provider, parentTools a
 	}
 	c.crew = crew
 	c.closers = append(c.closers, func() error { crew.Close(); return nil })
-	return crew.Tool(), nil
+	return crew, nil
 }
 
 // personal are the parent's own: its notebooks, task list and memory. A

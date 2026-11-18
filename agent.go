@@ -11,6 +11,7 @@ import (
 	stderrors "errors"
 	"iter"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/agilira/go-errors"
@@ -330,7 +331,28 @@ func (r *run) execute(ctx context.Context) error {
 }
 
 func (r *run) callModel(ctx context.Context) (*Response, error) {
-	full := &Request{System: r.system, Messages: r.msgs, Tools: r.toolSpecs(), MaxTokens: r.cfg.MaxTokens}
+	resp, err := r.request(ctx, r.system)
+	if err == nil && empty(resp) && r.cfg.Tools != nil && len(r.toolSpecs()) > 0 {
+		// An empty answer after a turn is often a tool call the provider
+		// dropped (a name not in the list): ask once more, saying so.
+		r.result.Usage = r.result.Usage.Add(resp.Usage)
+		resp, err = r.request(ctx, r.system+emptyNudge)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r.keep(ctx, resp)
+}
+
+const emptyNudge = "\n\n[Your last reply was empty. To use a tool, call one of the tools in the tool list with its exact name; otherwise answer in text.]"
+
+func empty(resp *Response) bool {
+	return len(resp.Message.Calls) == 0 && strings.TrimSpace(resp.Message.Text()) == ""
+}
+
+// request sends the conversation with the given system prompt.
+func (r *run) request(ctx context.Context, system string) (*Response, error) {
+	full := &Request{System: system, Messages: r.msgs, Tools: r.toolSpecs(), MaxTokens: r.cfg.MaxTokens}
 	resp, streamed, err := r.generate(ctx, full, r.compactor.budget(r.cfg.MaxTokens))
 	if errors.HasCode(err, ErrProviderContext) && !streamed && !r.cfg.Compaction.Disabled {
 		// The estimate was wrong or the window unknown: compact harder,
@@ -338,9 +360,11 @@ func (r *run) callModel(ctx context.Context) (*Response, error) {
 		// text was shown: the retry would show it twice.
 		resp, _, err = r.generate(ctx, full, max(1, r.compactor.tokens(r.lastBytes)/2))
 	}
-	if err != nil {
-		return nil, err
-	}
+	return resp, err
+}
+
+// keep adds the model's answer to the conversation.
+func (r *run) keep(ctx context.Context, resp *Response) (*Response, error) {
 	r.compactor.learn(r.lastBytes, resp.Usage.Input)
 	r.result.Turns++
 	r.result.Usage = r.result.Usage.Add(resp.Usage)

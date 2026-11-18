@@ -161,3 +161,19 @@ func TestPanicKeepsSpend(t *testing.T) {
 		t.Fatalf("spent %+v err %v", spent, err)
 	}
 }
+
+func TestWorkerTools(t *testing.T) {
+	crew, err := NewCrew(Team{Workers: []Worker{{Name: "warehouse", Description: "knows stock", Provider: fake.New(fake.Reply("314 units"))}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crew.Close()
+	tools := crew.WorkerTools()
+	if len(tools) != 1 || tools[0].Spec().Name != "warehouse" {
+		t.Fatalf("tools %v", tools)
+	}
+	out, err := tools[0].Call(bg, json.RawMessage(`{"task":"stock of AX-7?"}`))
+	if err != nil || !strings.Contains(out.Content, "314 units") {
+		t.Fatalf("call %q %v", out.Content, err)
+	}
+}

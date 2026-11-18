@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/agilira/go-errors"
@@ -111,7 +112,7 @@ func (t *funcTool[In, Out]) decode(input json.RawMessage) (In, error) {
 		for i, p := range problems {
 			parts[i] = p.String()
 		}
-		return in, ToolError(ErrToolInput, "Invalid arguments: "+strings.Join(parts, "; ")+".")
+		return in, ToolError(ErrToolInput, "Invalid arguments: "+strings.Join(parts, "; ")+"."+expected(t.spec))
 	}
 	// Decode what was validated, not the original bytes: see Validate.
 	if err := json.Unmarshal(canonical, &in); err != nil {
@@ -134,4 +135,41 @@ func encodeOutput(out any) (ToolOutput, error) {
 		return ToolOutput{}, errors.Wrap(err, ErrToolFailed, "tool result does not encode as JSON")
 	}
 	return ToolOutput{Content: string(data)}, nil
+}
+
+// expected reminds the model of the fields it must send: a small model
+// often answers a schema error by giving up, unless told what to send.
+func expected(spec ToolSpec) string {
+	var sch struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(spec.InputSchema, &sch) != nil || len(sch.Properties) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(sch.Properties))
+	for n := range sch.Properties {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	req := map[string]bool{}
+	for _, r := range sch.Required {
+		req[r] = true
+	}
+	var b strings.Builder
+	b.WriteString(" Call " + spec.Name + " again with:")
+	for _, n := range names {
+		mark := "optional"
+		if req[n] {
+			mark = "required"
+		}
+		b.WriteString(" " + n + " (" + mark)
+		if d := firstLine(sch.Properties[n].Description, 80); d != "" {
+			b.WriteString(": " + d)
+		}
+		b.WriteString(");")
+	}
+	return strings.TrimSuffix(b.String(), ";") + "."
 }

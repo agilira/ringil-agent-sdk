@@ -566,3 +566,19 @@ func TestCancelMidBatchKeepsFinishedResults(t *testing.T) {
 		t.Fatalf("%d of 3 finished results recorded", recorded)
 	}
 }
+
+// An empty answer (often a tool call the provider dropped for an unknown
+// name) is asked again once, saying so; it is not recorded.
+func TestEmptyAnswerIsAskedAgain(t *testing.T) {
+	calls := 0
+	p := fake.New(fake.Reply(""), fake.Reply("ok"))
+	conv := agent.NewConversation()
+	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls))}).Run(context.Background(), conv, agent.UserText("x"))
+	if err != nil || res.Text != "ok" {
+		t.Fatalf("result %q %v", res.Text, err)
+	}
+	reqs := p.Requests()
+	if len(reqs) != 2 || !strings.Contains(reqs[1].System, "Your last reply was empty") || len(conv.Messages()) != 2 {
+		t.Fatalf("%d requests, %d messages", len(reqs), len(conv.Messages()))
+	}
+}

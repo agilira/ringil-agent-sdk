@@ -39,7 +39,8 @@ type input struct {
 func (n *Notes) Tool() agent.Tool {
 	desc := "Your notebooks of Markdown files: " + n.describeScopes() + ". " +
 		"Keep working notes there: progress, findings, decisions, open questions, next steps; keep each scope's INDEX.md short and current, it is shown to you every turn. " +
-		"Never store credentials. Commands: view (a directory lists its files, a file shows numbered lines), create, str_replace, insert, delete, rename."
+		"Never store credentials. Commands: view (a directory lists its files, a file shows numbered lines), create, str_replace, insert, delete, rename. " +
+		"To save or write a note, call this tool with command create, the path and file_text; to add to a file, str_replace or insert."
 	return agent.NewTool(DefaultName, desc, n.run)
 }
 

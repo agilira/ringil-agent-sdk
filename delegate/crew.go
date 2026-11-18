@@ -305,3 +305,25 @@ func (c *Crew) Has(name string) bool {
 
 // Workers lists the crew's worker names.
 func (c *Crew) Workers() []string { return append([]string(nil), c.names...) }
+
+type workerIn struct {
+	Description  string `json:"description,omitempty" desc:"A few words naming the task, shown to the user"`
+	Task         string `json:"task" desc:"The complete task: the worker sees nothing else, so include the goal, what you know, where to look and what to report back. To continue a task, your follow-up message"`
+	Background   bool   `json:"background,omitempty" desc:"Start it and go on working; its report arrives later as a message"`
+	ContinueTask int    `json:"continue_task,omitempty" min:"1" desc:"Number of a finished task of this worker to send a follow-up to"`
+}
+
+// WorkerTools returns one tool per worker, named after it: models tend
+// to call a worker by its name, and a provider may drop a call to a name
+// it was not given. Each does what delegate does for that worker.
+func (c *Crew) WorkerTools() []agent.Tool {
+	tools := make([]agent.Tool, 0, len(c.names))
+	for _, n := range c.names {
+		w := c.byName[n]
+		desc := w.Description + ". A sub-agent with a clean context: give it a complete task; it returns one report, numbered. Use background to keep working meanwhile, continue_task to ask it more."
+		tools = append(tools, agent.NewTool(n, desc, func(ctx context.Context, in workerIn) (string, error) {
+			return c.call(ctx, taskIn{Worker: n, Description: in.Description, Task: in.Task, Background: in.Background, ContinueTask: in.ContinueTask})
+		}, agent.Parallel()))
+	}
+	return tools
+}
