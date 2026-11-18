@@ -7,6 +7,7 @@ package skills
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"path"
 	"path/filepath"
@@ -29,6 +30,16 @@ type Options struct {
 	// workspace (read-only unless marked writable). The skill itself is
 	// always at /skill, read-only.
 	Mounts []sandbox.Mount
+	// Output, when set, is the host directory that receives the files a
+	// script creates. Scripts run in an empty working directory (/work,
+	// also $OUTPUT_DIR); afterwards its files are copied into Output,
+	// never over an existing file: a name already taken gets a numbered
+	// one. Without Output the working directory is discarded.
+	Output string
+	// Runtimes maps an interpreter name to the absolute path to run it
+	// with, for interpreters installed outside /usr (node under ~/.nvm);
+	// their directories must be in Mounts.
+	Runtimes map[string]string
 	// Env is added to every script's environment, such as PYTHONPATH
 	// pointing at libraries mounted through Mounts.
 	Env map[string]string
@@ -164,27 +175,28 @@ func dropEnvFlags(args []string) []string {
 }
 
 func (r *runner) run(ctx context.Context, in runIn) (string, error) {
-	data, err := r.cat.ReadFile(in.Skill, in.Script)
+	argv, err := r.command(in)
 	if err != nil {
 		return "", err
-	}
-	interp, ok := interpreter(in.Script, data)
-	if !ok || in.Script == skillFile {
-		return "", agent.ToolError(ErrScript, "This file is not a script: it has no known extension and no #! line.")
 	}
 	copyDir, err := r.cat.verifiedCopy(in.Skill)
 	if err != nil {
 		return "", err
 	}
 	defer removeQuietly(copyDir)
+	work, err := os.MkdirTemp("", "ringil-work-")
+	if err != nil {
+		return "", errors.Wrap(err, ErrIO, "cannot prepare the working directory")
+	}
+	defer removeQuietly(work)
 	ctx, cancel := context.WithTimeout(ctx, r.timeout())
 	defer cancel()
 	out := &capped{max: r.maxOutput()}
 	spec := sandbox.Spec{
-		Argv:      append(append(append([]string{}, interp...), "/skill/"+in.Script), in.Args...),
-		Dir:       "/skill",
-		Env:       r.opts.Env,
-		Mounts:    append([]sandbox.Mount{{Source: copyDir, Target: "/skill"}}, r.opts.Mounts...),
+		Argv:      argv,
+		Dir:       workDir,
+		Env:       r.env(),
+		Mounts:    append([]sandbox.Mount{{Source: copyDir, Target: "/skill"}, {Source: work, Target: workDir, Writable: true}}, r.opts.Mounts...),
 		Network:   r.opts.Network,
 		Limits:    r.opts.Limits,
 		Protected: r.opts.Protected,
@@ -192,23 +204,55 @@ func (r *runner) run(ctx context.Context, in runIn) (string, error) {
 		Stdout:    out,
 		Stderr:    out,
 	}
-	return r.wait(ctx, spec, out)
+	text, runErr := r.wait(ctx, spec, out)
+	return r.deliver(work, text, runErr)
 }
 
-func (r *runner) wait(ctx context.Context, spec sandbox.Spec, out *capped) (string, error) {
-	proc, err := r.opts.Sandbox.Start(ctx, spec)
+const workDir = "/work"
+
+// command is the interpreter, the script and its arguments.
+func (r *runner) command(in runIn) ([]string, error) {
+	data, err := r.cat.ReadFile(in.Skill, in.Script)
 	if err != nil {
-		return "", errors.Wrap(err, ErrScript, "cannot start the sandbox").WithUserMessage("The sandbox could not start the script: " + err.Error())
+		return nil, err
 	}
-	werr := proc.Wait()
-	text := out.String()
+	interp, ok := interpreter(in.Script, data)
+	if !ok || in.Script == skillFile {
+		return nil, agent.ToolError(ErrScript, "This file is not a script: it has no known extension and no #! line.")
+	}
+	argv := append([]string{}, interp...)
+	if rt, ok := r.opts.Runtimes[argv[0]]; ok {
+		argv[0] = rt
+	}
+	return append(append(argv, "/skill/"+in.Script), in.Args...), nil
+}
+
+func (r *runner) env() map[string]string {
+	env := map[string]string{"SKILL_DIR": "/skill", "OUTPUT_DIR": workDir}
+	for k, v := range r.opts.Env {
+		env[k] = v
+	}
+	return env
+}
+
+// deliver copies what the script created into Output, whether it
+// succeeded or not, and tells the model where the files are.
+func (r *runner) deliver(work, text string, runErr error) (string, error) {
+	if r.opts.Output == "" {
+		return text, runErr
+	}
+	saved, err := deliverFiles(work, r.opts.Output)
+	if len(saved) > 0 {
+		text += "\n[Files saved: " + strings.Join(saved, ", ") + "]"
+	}
+	var failed *errors.Error
 	switch {
-	case ctx.Err() != nil:
-		return "", errors.Wrap(ctx.Err(), ErrScript, "script stopped").WithUserMessage("The script was stopped after " + r.timeout().String() + ". Output so far:\n" + text)
-	case werr != nil:
-		return "", errors.Wrap(werr, ErrScript, "script failed").WithUserMessage("The script failed (" + werr.Error() + "). Output:\n" + text)
+	case runErr != nil && stderrors.As(runErr, &failed) && len(saved) > 0:
+		return text, failed.WithUserMessage(failed.UserMsg + "\n[Files saved: " + strings.Join(saved, ", ") + "]")
+	case err != nil && runErr == nil:
+		return text, errors.Wrap(err, ErrIO, "cannot save the script's files").WithUserMessage(text + "\nSome files could not be saved.")
 	}
-	return text, nil
+	return text, runErr
 }
 
 func (r *runner) timeout() time.Duration {
@@ -304,4 +348,20 @@ func (c *capped) String() string {
 		s += "\n[" + strconv.Itoa(c.dropped) + " more bytes of output not shown]"
 	}
 	return s
+}
+
+func (r *runner) wait(ctx context.Context, spec sandbox.Spec, out *capped) (string, error) {
+	proc, err := r.opts.Sandbox.Start(ctx, spec)
+	if err != nil {
+		return "", errors.Wrap(err, ErrScript, "cannot start the sandbox").WithUserMessage("The sandbox could not start the script: " + err.Error())
+	}
+	werr := proc.Wait()
+	text := out.String()
+	switch {
+	case ctx.Err() != nil:
+		return text, errors.Wrap(ctx.Err(), ErrScript, "script stopped").WithUserMessage("The script was stopped after " + r.timeout().String() + ". Output so far:\n" + text)
+	case werr != nil:
+		return text, errors.Wrap(werr, ErrScript, "script failed").WithUserMessage("The script failed (" + werr.Error() + "). Output:\n" + text)
+	}
+	return text, nil
 }

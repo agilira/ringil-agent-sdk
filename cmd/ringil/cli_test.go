@@ -655,3 +655,15 @@ func TestStartMountForScripts(t *testing.T) {
 		}
 	}
 }
+
+func TestScriptOutputGoesToStartDir(t *testing.T) {
+	h := newHarness(t, "")
+	work := t.TempDir()
+	cases := map[string]string{work: work, "/": "", "/usr/lib": "", h.dir: "", filepath.Join(h.dir, "ringil", "x"): ""}
+	for cwd, want := range cases {
+		h.c.cwd = func() (string, error) { return cwd, nil }
+		if got := h.c.outputDir(filepath.Join(h.dir, "ringil")); got != want {
+			t.Errorf("cwd %s: output %q, want %q", cwd, got, want)
+		}
+	}
+}

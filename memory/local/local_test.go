@@ -7,6 +7,7 @@ package local
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -137,6 +138,11 @@ func TestConcurrentWritersLoseNothing(t *testing.T) {
 				return
 			}
 			if _, err := m.Put(bg, agent.MemoryRecord{Content: "fatto numero " + string(rune('a'+i))}); err != nil {
+				var coded *errors.Error
+				if stderrors.As(err, &coded) {
+					t.Errorf("%v %v", err, coded.Context)
+					return
+				}
 				t.Error(err)
 			}
 		}()

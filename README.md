@@ -179,8 +179,13 @@ qualunque script della skill (Python, shell, JavaScript, Ruby, Perl o con riga `
 gira su una copia verificata, senza rete. `Options.Mounts` ed `Options.Env` danno agli
 script cartelle e librerie; un `sandbox.Mount` può nascondere percorsi (`Hide`), e
 `files.Hidden` elenca quelli che i tool sui file escludono.
+Gli script lavorano in una cartella vuota (`/work`, anche `$OUTPUT_DIR`); con
+`Options.Output` i file che creano vengono consegnati lì, mai sopra un file esistente
+(un nome già preso diventa `nome-1.ext`). `Options.Runtimes` indica interpreti installati
+fuori da `/usr`.
 La CLI mostra agli script la cartella di lancio in sola lettura con i segreti nascosti,
-più il virtualenv attivo e le librerie Python dell'utente.
+il virtualenv attivo, le librerie Python dell'utente e gli interpreti per-utente
+(node da nvm, ruby, perl, python); i file prodotti arrivano nella cartella di lancio.
 CLI: `ringil skill install <dir>`, `ringil skill`, `ringil skill rm <nome>`.
 
 ## Decoratori

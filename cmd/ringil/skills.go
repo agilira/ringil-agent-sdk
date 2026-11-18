@@ -57,13 +57,82 @@ func (c *cli) skillOptions() skills.Options {
 	if m, ok := c.startMount(home, base); ok {
 		opts.Mounts = append(opts.Mounts, m)
 	}
+	opts.Output = c.outputDir(base)
+	c.addRuntimes(&opts, home)
 	if libs := c.pythonLibs(home, herr); len(libs) > 0 {
 		for _, l := range libs {
 			opts.Mounts = append(opts.Mounts, sandbox.Mount{Source: l})
 		}
-		opts.Env = map[string]string{"PYTHONPATH": strings.Join(libs, string(os.PathListSeparator))}
+		opts.Env = withEnv(opts.Env, "PYTHONPATH", strings.Join(libs, string(os.PathListSeparator)))
 	}
 	return opts
+}
+
+// outputDir: files scripts create land in the start directory, as they
+// would for the user running the script there; never over an existing
+// file. System directories and the agent's configuration receive nothing.
+func (c *cli) outputDir(config string) string {
+	cwd, err := c.cwd()
+	if err != nil || sandbox.Reserved(filepath.ToSlash(cwd)) || (config != "" && (inside(config, cwd) || inside(cwd, config))) {
+		return ""
+	}
+	return cwd
+}
+
+// runtimeNames are interpreters often installed per user (nvm, rbenv,
+// perlbrew, pyenv) rather than under /usr.
+var runtimeNames = []string{"node", "ruby", "perl", "python3"}
+
+// addRuntimes makes interpreters installed outside /usr usable by
+// scripts: their installation directory is mounted read-only, with the
+// secrets policy applied, and scripts run them by absolute path. A
+// runtime living directly in the home or above it is left out: that would
+// expose the whole home.
+func (c *cli) addRuntimes(opts *skills.Options, home string) {
+	for _, name := range runtimeNames {
+		real, prefix, ok := c.userRuntime(name, home)
+		if !ok {
+			continue
+		}
+		hide, err := files.Hidden(prefix, nil)
+		if err != nil {
+			continue
+		}
+		if opts.Runtimes == nil {
+			opts.Runtimes = map[string]string{}
+		}
+		opts.Runtimes[name] = real
+		opts.Mounts = append(opts.Mounts, sandbox.Mount{Source: prefix, Hide: hide})
+		if name == "node" {
+			opts.Env = withEnv(opts.Env, "NODE_PATH", filepath.Join(prefix, "lib", "node_modules"))
+		}
+	}
+}
+
+// userRuntime finds name on PATH outside /usr; prefix is the installation
+// directory (the parent of its bin).
+func (c *cli) userRuntime(name, home string) (string, string, bool) {
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return "", "", false
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil || strings.HasPrefix(real, "/usr/") {
+		return "", "", false
+	}
+	prefix := filepath.Dir(filepath.Dir(real))
+	if prefix == "/" || (home != "" && inside(home, prefix)) || sandbox.Reserved(filepath.ToSlash(prefix)) {
+		return "", "", false
+	}
+	return real, prefix, true
+}
+
+func withEnv(env map[string]string, k, v string) map[string]string {
+	if env == nil {
+		env = map[string]string{}
+	}
+	env[k] = v
+	return env
 }
 
 // startMount is the start directory for scripts, if it can be shown.
