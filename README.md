@@ -156,9 +156,22 @@ a, err := agent.New(agent.Config{Provider: p, Tools: tools, Memory: mem})
 tools, err = tools.With(memory.Tools(mem)...)      // remember, recall, forget per il modello
 ```
 
+Con un `agent.Embedder` la memoria trova anche per significato: `memory/vector` usa lo
+stesso archivio di `memory/local` e ci affianca i vettori; la ricerca fonde parole
+(BM25) e significato (coseno) per rango reciproco. Se gli embedding non rispondono, la
+memoria continua per parole e lo segnala. `openai.NewEmbedder` parla con qualunque
+endpoint `/embeddings` compatibile; un vector store esterno è un'altra implementazione
+di `agent.Memory`.
+
+```go
+emb, err := openai.NewEmbedder(openai.Config{BaseURL: base, Model: "openai/text-embedding-3-small", KeyFunc: key})
+mem, err := vector.New(dir, emb)
+```
+
 A ogni domanda i ricordi pertinenti entrano nel contesto di quel turno, delimitati e
 marcati come dati, mai nella conversazione salvata. Nella CLI la memoria è attiva di
-default (`--no-memory` per toglierla); `ringil memory`, `memory search`, `memory rm`.
+default (`--no-memory` per toglierla), per significato con `--embed-model` o
+`RINGIL_EMBED_MODEL`; `ringil memory`, `memory search`, `memory rm`.
 
 ## Skill
 

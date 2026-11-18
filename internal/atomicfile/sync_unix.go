@@ -5,28 +5,19 @@
 
 //go:build unix
 
-package local
+package atomicfile
 
-import (
-	"os"
-
-	"github.com/agilira/go-errors"
-
-	agent "github.com/agilira/ringil-agent-sdk"
-)
+import "os"
 
 // syncDir makes the rename itself durable.
 func syncDir(root *os.Root) error {
 	d, err := root.Open(".")
 	if err != nil {
-		return errors.Wrap(err, agent.ErrMemoryIO, "cannot open the memory directory")
+		return err
 	}
 	err = d.Sync()
 	if cerr := d.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
-		return errors.Wrap(err, agent.ErrMemoryIO, "cannot sync the memory directory")
-	}
-	return nil
+	return err
 }

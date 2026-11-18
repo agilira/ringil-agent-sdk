@@ -177,6 +177,8 @@ func printable(r rune) bool {
 // recalled shows recalled memories, and a memory that could not be read.
 func (c *cli) recalled(ev agent.Event) error {
 	switch {
+	case errors.HasCode(ev.Err, agent.ErrMemoryPartial):
+		return c.line("  * recalled " + ev.Text + " (by words only: " + describe(ev.Err) + ")")
 	case ev.Err != nil:
 		return c.line("  ! memory unavailable: " + describe(ev.Err))
 	case ev.Text != "0 memories":

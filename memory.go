@@ -30,7 +30,8 @@ type MemoryRecord struct {
 // store is one more implementation of the same interface.
 type Memory interface {
 	// Search returns up to limit records relevant to query, best first;
-	// an empty query returns the most recent.
+	// an empty query returns the most recent. A degraded search returns its
+	// results with an ErrMemoryPartial error.
 	Search(ctx context.Context, query string, limit int) ([]MemoryRecord, error)
 	// Put stores a record, generating its ID when empty and replacing the
 	// record with the same ID otherwise. It returns what was stored.
@@ -44,6 +45,10 @@ const (
 	ErrMemoryInput    errors.ErrorCode = "MEMORY_INPUT"
 	ErrMemoryNotFound errors.ErrorCode = "MEMORY_NOT_FOUND"
 	ErrMemoryIO       errors.ErrorCode = "MEMORY_IO"
+	// ErrMemoryPartial comes with results: the search worked in part (by
+	// words, while embeddings were unavailable). Callers keep the results
+	// and may warn.
+	ErrMemoryPartial errors.ErrorCode = "MEMORY_PARTIAL"
 )
 
 // defaultRecall is how many memories join each run's context.

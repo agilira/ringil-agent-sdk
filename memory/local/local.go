@@ -19,7 +19,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"io"
+	stderrors "errors"
 	"os"
 	"regexp"
 	"strings"
@@ -29,6 +29,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/internal/atomicfile"
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
 )
 
@@ -82,7 +83,7 @@ func (s *store) locked(ctx context.Context, fn func(*document) (bool, error)) er
 }
 
 func (s *store) withRoot(ctx context.Context, root *os.Root, fn func(*document) (bool, error)) error {
-	lock, err := openLock(root)
+	lock, err := lockfile.Open(root, lockName)
 	if err != nil {
 		return errors.Wrap(err, agent.ErrMemoryIO, "cannot open the memory lock").WithContext("cause", err.Error())
 	}
@@ -91,23 +92,6 @@ func (s *store) withRoot(ctx context.Context, root *os.Root, fn func(*document) 
 		err = errors.Wrap(cerr, agent.ErrMemoryIO, "cannot release the memory lock")
 	}
 	return err
-}
-
-// openLock opens the lock file, creating it only when missing. A plain
-// O_CREATE open by many processes at once can fail transiently on macOS;
-// opening first and creating exclusively avoids that race.
-func openLock(root *os.Root) (*os.File, error) {
-	for range 3 {
-		f, err := root.OpenFile(lockName, os.O_RDWR|lockfile.NoFollow, 0)
-		if !os.IsNotExist(err) {
-			return f, err
-		}
-		f, err = root.OpenFile(lockName, os.O_RDWR|os.O_CREATE|os.O_EXCL|lockfile.NoFollow, 0o600)
-		if !os.IsExist(err) {
-			return f, err
-		}
-	}
-	return nil, os.ErrExist
 }
 
 func (s *store) withLock(ctx context.Context, root *os.Root, lock *os.File, fn func(*document) (bool, error)) error {
@@ -139,29 +123,12 @@ func read(root *os.Root) (*document, error) {
 // maxFile bounds the memory file read into memory; far above real use.
 const maxFile = 1 << 30
 
-// readFile opens without blocking and reads only a regular file: a FIFO
-// planted at the memory's name must not hang every operation.
 func readFile(root *os.Root) ([]byte, error) {
-	f, err := root.OpenFile(dataFile, os.O_RDONLY|nonBlock|lockfile.NoFollow, 0)
-	if err != nil {
-		return nil, err
-	}
-	data, err := readRegular(f)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	return data, err
-}
-
-func readRegular(f *os.File) ([]byte, error) {
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > maxFile {
+	data, err := atomicfile.Read(root, dataFile, maxFile)
+	if stderrors.Is(err, atomicfile.ErrNotRegular) {
 		return nil, errors.New(agent.ErrMemoryIO, "the memory file is not a regular file of sane size")
 	}
-	return io.ReadAll(io.LimitReader(f, maxFile))
+	return data, err
 }
 
 // decode parses the memory file and checks every record, keeping the last
@@ -190,45 +157,13 @@ func decode(data []byte) (*document, error) {
 	return doc, nil
 }
 
-// write replaces the memory file atomically: a new temporary file, sync,
-// rename over the old one, sync of the directory.
+// write replaces the memory file atomically.
 func write(root *os.Root, doc *document) error {
 	data, err := json.MarshalIndent(doc, "", " ")
 	if err != nil {
 		return errors.Wrap(err, agent.ErrMemoryIO, "cannot encode the memory")
 	}
-	tmp := ".memory-" + strings.ToLower(rand.Text()[:12]) + ".tmp"
-	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|lockfile.NoFollow, 0o600)
-	if err != nil {
-		return errors.Wrap(err, agent.ErrMemoryIO, "cannot write the memory")
-	}
-	if err := fill(f, data); err != nil {
-		return discard(err, root, tmp)
-	}
-	if err := root.Rename(tmp, dataFile); err != nil {
-		return discard(errors.Wrap(err, agent.ErrMemoryIO, "cannot replace the memory"), root, tmp)
-	}
-	return syncDir(root)
-}
-
-// discard removes a temporary file after a failed write, keeping the
-// failure's code and recording a failed removal alongside.
-func discard(err *errors.Error, root *os.Root, tmp string) error {
-	if rerr := root.Remove(tmp); rerr != nil {
-		return err.WithContext("cleanup_error", rerr.Error())
-	}
-	return err
-}
-
-func fill(f *os.File, data []byte) *errors.Error {
-	_, err := f.Write(data)
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
+	if err := atomicfile.Write(root, dataFile, data); err != nil {
 		return errors.Wrap(err, agent.ErrMemoryIO, "cannot write the memory")
 	}
 	return nil

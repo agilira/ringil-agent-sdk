@@ -43,6 +43,8 @@ type cli struct {
 	turnContext func(context.Context) (context.Context, context.CancelFunc)
 	// configDir is where sessions live by default.
 	configDir func() (string, error)
+	// newEmbedder builds the embedding model; tests may replace it.
+	newEmbedder func(openai.Config) (agent.Embedder, error)
 	// closers stop the MCP servers started for the current command.
 	closers []func() error
 	// allowed are tools the user allowed for the rest of the session.
@@ -59,7 +61,7 @@ type cli struct {
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 	return &cli{
-		in: in, out: out, errOut: errOut, getenv: os.Getenv,
+		in: in, out: out, errOut: errOut, getenv: os.Getenv, newEmbedder: openai.NewEmbedder,
 		newProvider: openai.New,
 		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(ctx, os.Interrupt)
@@ -78,6 +80,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
 		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
 		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key").
+		AddGlobalFlag("embed-model", "", "", "embedding model for memory by meaning (or RINGIL_EMBED_MODEL); same endpoint and key as the chat model").
 		AddGlobalFlag("agents-config", "", "", "remote A2A agents file ({\"agents\": ...}); default <config>/ringil/agents.json").
 		AddGlobalFlag("mcp-config", "", "", "MCP servers file ({\"mcpServers\": ...}); default <config>/ringil/mcp.json").
 		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins").

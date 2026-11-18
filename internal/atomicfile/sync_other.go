@@ -5,7 +5,7 @@
 
 //go:build !unix
 
-package local
+package atomicfile
 
 import "os"
 

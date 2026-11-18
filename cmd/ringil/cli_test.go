@@ -701,3 +701,33 @@ func TestAlwaysAllowForSession(t *testing.T) {
 		t.Fatalf("second call refused: %q", got)
 	}
 }
+
+// A memory by meaning whose embedder is down still recalls by words, and
+// the chat says so instead of "memory unavailable".
+func TestPartialRecallIsANote(t *testing.T) {
+	h := newHarness(t, "", fake.Reply("ok"), fake.Reply("ok"))
+	env := h.c.getenv
+	h.c.getenv = func(k string) string {
+		if k == "RINGIL_EMBED_MODEL" {
+			return "emb"
+		}
+		return env(k)
+	}
+	h.c.newEmbedder = func(openai.Config) (agent.Embedder, error) { return downEmbedder{}, nil }
+	if code := h.run("run", "Ricordati che Acme paga a 30 giorni"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if code := h.run("run", "Acme paga a quanti giorni?"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if strings.Contains(h.err.String(), "memory unavailable") {
+		t.Fatalf("partial recall shown as failure: %q", h.err)
+	}
+}
+
+type downEmbedder struct{}
+
+func (downEmbedder) Model() string { return "emb" }
+func (downEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, errors.New(agent.ErrEmbed, "down")
+}
