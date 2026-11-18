@@ -10,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/agilira/go-errors"
 
+	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
@@ -93,4 +95,48 @@ func TestServerEntryChecks(t *testing.T) {
 			t.Errorf("%+v: %v", e, err)
 		}
 	}
+}
+
+func TestLoadAgents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	if got, err := loadAgents(path, false); err != nil || got != nil {
+		t.Fatalf("missing default: %v %v", got, err)
+	}
+	body := `{"agents":{"wh":{"url":"https://wh.example","headers":{"X-Api-Key":"${WH_KEY}"}},"off":{"url":"https://x","disabled":true}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadAgents(path, false)
+	if err != nil || got["wh"].URL != "https://wh.example" || !got["off"].Disabled {
+		t.Fatalf("load %v %v", got, err)
+	}
+}
+
+// Audit 18/11: a remote agent named like a built-in tool stopped the CLI.
+func TestClashingRemoteToolIsLeftOut(t *testing.T) {
+	h := newHarness(t, "")
+	reg, err := builtinTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clash := reg.Specs()[0].Name
+	tools, err := builtinTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := h.c.addEach(reg, []agent.Tool{byNameTool(t, tools, clash)})
+	if len(got.Specs()) != len(reg.Specs()) || !strings.Contains(h.err.String(), "left out") {
+		t.Fatalf("clash not reported: %q", h.err)
+	}
+}
+
+func byNameTool(t *testing.T, reg agent.Registry, name string) agent.Tool {
+	t.Helper()
+	for _, s := range reg.Specs() {
+		if s.Name == name {
+			return agent.NewTool(name, "dup", func(context.Context, struct{}) (string, error) { return "", nil })
+		}
+	}
+	t.Fatalf("no %s", name)
+	return nil
 }

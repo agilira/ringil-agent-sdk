@@ -242,6 +242,24 @@ Tutti i meta-tool di Composio sono offerti (ricerca, esecuzione, connessioni,
 workbench); `Server.Tools` li restringe. Nella CLI basta un server HTTP in
 `mcp.json` con l'header `"x-consumer-api-key": "${COMPOSIO_KEY}"`.
 
+## A2A (agenti remoti)
+
+Modulo a parte (`github.com/agilira/ringil-agent-sdk/a2a`, sopra l'SDK ufficiale
+`a2a-go`): un agente remoto Agent2Agent diventa un tool del nostro agente.
+
+```go
+wh, err := a2a.Connect(ctx, a2a.Remote{Name: "warehouse", URL: "https://wh.example", Headers: headers})
+tools, err = tools.With(wh.Tool())
+```
+
+La card dell'agente si legge dal suo URL; le credenziali vanno solo a quell'origine (una
+card che indica un endpoint altrove è rifiutata senza `AllowOtherOrigin`). Il tool aspetta
+il task remoto fino alla fine, a una domanda o al timeout (poi lo annulla); il modello
+continua una conversazione con `context_id` e risponde a una domanda con `task_id`.
+Conta come distruttivo: l'hook `Approve` vede ogni chiamata.
+CLI: `<config>/ringil/agents.json` (o `--agents-config`) con `{"agents": {...}}`.
+Il lato server (esporre il nostro agente via A2A) arriva con `serve`.
+
 ## Decoratori
 
 Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,
