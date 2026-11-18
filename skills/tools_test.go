@@ -7,7 +7,9 @@ package skills
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -146,8 +148,9 @@ func TestShebangScriptAnywhereWithEnv(t *testing.T) {
 
 func TestScriptFilesAreDelivered(t *testing.T) {
 	src := newSkill(t, map[string]string{
-		"SKILL.md":       reviewSkill,
-		"scripts/out.sh": "echo nuovo > out.txt; mkdir -p sub; echo b > sub/b.txt; ln -s /etc/passwd link; echo fatto; exit ${1:-0}\n",
+		"SKILL.md": reviewSkill,
+		"scripts/out.sh": "echo nuovo > out.txt; mkdir -p sub .git/x; echo b > sub/b.txt; echo pwn > .git/x/config; echo k > .env; " +
+			"touch \"$(printf 'a\\nb')\"; ln -s /etc/passwd link; mkdir locked; echo l > locked/f; chmod 000 locked; echo fatto; exit ${1:-0}\n",
 	})
 	cat := t.TempDir()
 	if _, err := Install(bg, src, cat); err != nil {
@@ -158,31 +161,76 @@ func TestScriptFilesAreDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := t.TempDir()
-	if err := os.WriteFile(dest+"/out.txt", []byte("mio"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	tools := Tools(c, Options{Sandbox: testSandbox(t), Output: dest, Runtimes: map[string]string{"bash": "/usr/bin/bash"}})
 	out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/out.sh"})
-	if err != nil || !strings.Contains(out, "out-1.txt") || !strings.Contains(out, "sub/b.txt") {
+	if err != nil || !strings.Contains(out, `"out.txt" "sub/b.txt"`) || !strings.Contains(out, "entries not saved") {
 		t.Fatalf("run %q %v", out, err)
 	}
 	checkDelivered(t, dest)
-	// A failing script still hands over what it made.
+	// A failing script still hands over what it made, in a new folder.
 	_, err = call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/out.sh", Args: []string{"3"}})
-	if msg := agent.ModelMessage(err); !strings.Contains(msg, "out-2.txt") {
+	if msg := agent.ModelMessage(err); !strings.Contains(msg, "Files saved in") {
 		t.Fatalf("failed run: %q", msg)
 	}
 }
 
+// Audit 18/11: files went straight into the start directory, .git included.
 func checkDelivered(t *testing.T, dest string) {
 	t.Helper()
-	if mine, _ := os.ReadFile(dest + "/out.txt"); string(mine) != "mio" {
-		t.Fatalf("existing file replaced: %q", mine)
+	runs, err := os.ReadDir(dest)
+	if err != nil || len(runs) != 1 || !strings.HasPrefix(runs[0].Name(), "review-") {
+		t.Fatalf("output folder %v %v", runs, err)
 	}
-	if got, _ := os.ReadFile(dest + "/out-1.txt"); string(got) != "nuovo\n" {
-		t.Fatalf("delivered %q", got)
+	var got []string
+	walkErr := filepath.WalkDir(filepath.Join(dest, runs[0].Name()), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			got = append(got, d.Name())
+		}
+		return err
+	})
+	if walkErr != nil || strings.Join(got, ",") != "f,out.txt,b.txt" {
+		t.Fatalf("delivered %v %v", got, walkErr)
 	}
-	if _, err := os.Lstat(dest + "/link"); !os.IsNotExist(err) {
-		t.Fatalf("link delivered: %v", err)
+}
+
+// Audit 18/11: a locked /work, empty folders, a full output folder.
+func TestDeliveryEdgeCases(t *testing.T) {
+	src := newSkill(t, map[string]string{
+		"SKILL.md":        reviewSkill,
+		"scripts/lock.sh": "echo 1 > f; chmod 000 f; chmod 000 /work\n",
+		"scripts/dots.sh": "echo k > .env\n",
+		"scripts/big.sh":  "head -c 3000 /dev/zero > big\n",
+	})
+	cat := t.TempDir()
+	if _, err := Install(bg, src, cat); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Open(cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	tools := Tools(c, Options{Sandbox: testSandbox(t), Output: dest, OutputQuota: 4000})
+	if out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/lock.sh"}); err != nil || !strings.Contains(out, `"f"`) {
+		t.Fatalf("locked work dir: %q %v", out, err)
+	}
+	if out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/dots.sh"}); err != nil || strings.Contains(out, "Files saved") {
+		t.Fatalf("hidden only: %q %v", out, err)
+	}
+	if runs, _ := os.ReadDir(dest); len(runs) != 1 {
+		t.Fatalf("empty folder left: %v", runs)
+	}
+	checkQuota(t, tools)
+}
+
+// The quota leaves room for one 3000-byte file, not two.
+func checkQuota(t *testing.T, tools []agent.Tool) {
+	t.Helper()
+	if _, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/big.sh"}); err != nil {
+		t.Fatalf("first big: %v", err)
+	}
+	out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/big.sh"})
+	if err != nil || strings.Contains(out, "Files saved") || !strings.Contains(out, "entries not saved") {
+		t.Fatalf("quota not enforced: %q %v", out, err)
 	}
 }

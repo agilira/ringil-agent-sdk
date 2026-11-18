@@ -7,7 +7,7 @@
 # Variables
 TOOLS_DIR := $(HOME)/go/bin
 # The library and the CLI are separate modules; every check runs on both.
-MODULES := . ./cmd/ringil
+MODULES := . ./mcp ./cmd/ringil
 EACH = for m in $(MODULES); do (cd $$m && $(1)) || exit 1; done
 
 # Colors for output
@@ -33,6 +33,7 @@ coverage: ## Run tests with coverage
 	@echo "$(YELLOW)Running tests with coverage...$(NC)"
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
+	cd mcp && go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
 	cd cmd/ringil && go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "$(GREEN)Coverage report generated: coverage.html$(NC)"
@@ -98,7 +99,7 @@ fuzz: ## Run every fuzz target (FUZZTIME, default 30s each)
 
 live: ## Run live tests against the endpoint in .env (real calls, may cost)
 	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
-	@set -a && . ./.env && set +a && go test -tags live -run '^TestLive' -count=1 -v ./...
+	@set -a && . ./.env && set +a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./...
 
 chat: ## Chat with the agent using the endpoint in .env
 	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
@@ -130,7 +131,7 @@ deps: ## Download and verify dependencies
 clean: ## Clean test artifacts and cache
 	@echo "$(YELLOW)Cleaning...$(NC)"
 	go clean -testcache
-	rm -f coverage.out coverage.html cmd/ringil/coverage.out cmd/ringil/ringil
+	rm -f coverage.out coverage.html mcp/coverage.out cmd/ringil/coverage.out cmd/ringil/ringil
 
 bench: ## Run benchmarks
 	@echo "$(YELLOW)Running benchmarks...$(NC)"

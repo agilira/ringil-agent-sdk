@@ -6,7 +6,9 @@
 package files
 
 import (
+	"context"
 	"io/fs"
+	"os"
 	"path/filepath"
 
 	"github.com/agilira/go-errors"
@@ -22,7 +24,7 @@ const MaxHiddenWalk = 1 << 20
 // masks these paths, so a script cannot read what read_file refuses.
 // A tree larger than MaxHiddenWalk is an error: an incomplete list would
 // leave secrets visible.
-func Hidden(dir string, patterns []string) ([]string, error) {
+func Hidden(ctx context.Context, dir string, patterns []string) ([]string, error) {
 	if patterns == nil {
 		patterns = DefaultExclude
 	}
@@ -34,12 +36,29 @@ func Hidden(dir string, patterns []string) ([]string, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, ErrConfig, "cannot resolve "+dir)
 	}
-	w := &hiddenWalk{pol: pol, real: real, dir: dir}
+	w := &hiddenWalk{ctx: ctx, pol: pol, real: real, dir: dir}
+	if pol.excluded(real) {
+		return w.everything()
+	}
 	err = filepath.WalkDir(real, w.visit)
 	return w.hidden, err
 }
 
+// everything hides all of dir's entries: dir itself is excluded (a
+// start directory inside ~/.ssh).
+func (w *hiddenWalk) everything() ([]string, error) {
+	entries, err := os.ReadDir(w.real)
+	if err != nil {
+		return nil, errors.Wrap(err, ErrConfig, "cannot read "+w.dir)
+	}
+	for _, e := range entries {
+		w.hidden = append(w.hidden, e.Name())
+	}
+	return w.hidden, nil
+}
+
 type hiddenWalk struct {
+	ctx       context.Context
 	pol       policy
 	real, dir string
 	hidden    []string
@@ -49,11 +68,13 @@ type hiddenWalk struct {
 func (w *hiddenWalk) visit(p string, d fs.DirEntry, err error) error {
 	w.seen++
 	switch {
+	case w.seen&1023 == 0 && w.ctx.Err() != nil:
+		return w.ctx.Err()
 	case w.seen > MaxHiddenWalk:
 		return errors.New(ErrConfig, "too many files under "+w.dir+" to check for secrets")
 	case err != nil:
 		return nil // unreadable here is unreadable in the sandbox too
-	case p == w.real || !w.pol.excluded(p):
+	case p == w.real || !w.pol.excludedLeaf(p):
 		return nil
 	}
 	rel, err := filepath.Rel(w.real, p)

@@ -43,6 +43,8 @@ type cli struct {
 	turnContext func(context.Context) (context.Context, context.CancelFunc)
 	// configDir is where sessions live by default.
 	configDir func() (string, error)
+	// closers stop the MCP servers started for the current command.
+	closers []func() error
 	// newSandbox returns the platform sandbox; tests may replace it.
 	newSandbox func() (sandbox.Sandbox, error)
 	// cwd is where the CLI was started, home the user's home; tests
@@ -74,6 +76,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
 		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
 		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key").
+		AddGlobalFlag("mcp-config", "", "", "MCP servers file ({\"mcpServers\": ...}); default <config>/ringil/mcp.json").
 		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins").
 		AddGlobalFlag("system", "s", "", "system prompt (default: the SDK's)").
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
@@ -157,6 +160,13 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 		return nil, err
 	}
 	if reg, err = reg.With(c.extraTools(mem, cat)...); err != nil {
+		return nil, err
+	}
+	mcpTools, err := c.connectMCP(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if reg, err = reg.With(mcpTools...); err != nil {
 		return nil, err
 	}
 	dirs := ctx.GetFlagStringSlice("workspace")

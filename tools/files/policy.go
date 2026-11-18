@@ -25,7 +25,7 @@ var DefaultExclude = []string{
 	"id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
 	// cloud, cluster and package registry credentials
 	".aws", ".azure", ".kube", ".docker", ".config/gcloud", ".config/gh", ".config/hub",
-	".git-credentials", ".npmrc", ".pypirc", ".gem/credentials", ".cargo/credentials*",
+	".git-credentials", ".npmrc", "etc/npmrc", ".pypirc", ".gem/credentials", ".cargo/credentials*",
 	".terraform.d/credentials*", ".m2/settings*.xml",
 	// password stores, keyrings and browser profiles
 	".password-store", ".local/share/keyrings", "Keychains",
@@ -40,6 +40,7 @@ var templateSuffixes = []string{".example", ".sample", ".template", ".dist"}
 // policy decides which paths are excluded.
 type policy struct {
 	patterns [][]string // each pattern split into lower-cased components
+	longest  int        // components in the longest pattern
 }
 
 func newPolicy(patterns []string) (policy, error) {
@@ -52,6 +53,7 @@ func newPolicy(patterns []string) (policy, error) {
 			}
 		}
 		p.patterns = append(p.patterns, parts)
+		p.longest = max(p.longest, len(parts))
 	}
 	return p, nil
 }
@@ -70,16 +72,45 @@ func (p policy) excluded(abs string) bool {
 	return false
 }
 
+// excludedLeaf reports whether a pattern ends at the last component of
+// abs: enough during a walk, where every ancestor was checked already.
+func (p policy) excludedLeaf(abs string) bool {
+	parts := tail(abs, p.longest)
+	for _, pat := range p.patterns {
+		if len(pat) <= len(parts) && matchAt(pat, parts[len(parts)-len(pat):]) {
+			return true
+		}
+	}
+	return false
+}
+
 func matchAt(pat, parts []string) bool {
 	if len(parts) < len(pat) {
 		return false
 	}
 	for j, pp := range pat {
-		if ok, err := path.Match(pp, parts[j]); err != nil || !ok {
+		if !matchPart(pp, parts[j]) {
 			return false
 		}
 	}
 	return !isTemplate(parts[len(pat)-1])
+}
+
+// matchPart is path.Match with fast paths for the common shapes: a plain
+// name, "prefix*" and "*suffix". A walk calls it for every entry and
+// pattern.
+func matchPart(pat, name string) bool {
+	meta := strings.IndexAny(pat, "*?[\\")
+	switch {
+	case meta < 0:
+		return pat == name
+	case meta == len(pat)-1 && pat[meta] == '*':
+		return strings.HasPrefix(name, pat[:meta])
+	case meta == 0 && pat[0] == '*' && !strings.ContainsAny(pat[1:], "*?[\\"):
+		return strings.HasSuffix(name, pat[1:])
+	}
+	ok, err := path.Match(pat, name)
+	return err == nil && ok
 }
 
 func isTemplate(name string) bool {
@@ -89,6 +120,27 @@ func isTemplate(name string) bool {
 		}
 	}
 	return false
+}
+
+// tail returns the last n normalized names of abs, without splitting the
+// rest: a walk asks this for every entry.
+func tail(abs string, n int) []string {
+	rest := filepath.ToSlash(abs)
+	parts := make([]string, 0, n)
+	for len(parts) < n && rest != "" {
+		i := strings.LastIndexByte(rest, '/')
+		if name := rest[i+1:]; name != "" {
+			parts = append(parts, normalize(name))
+		}
+		if i < 0 {
+			break
+		}
+		rest = rest[:i]
+	}
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return parts
 }
 
 // components splits an absolute path into normalized names.

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -349,8 +350,25 @@ func TestHiddenListsExcluded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := Hidden(dir, nil)
+	got, err := Hidden(context.Background(), dir, nil)
 	if err != nil || strings.Join(got, ",") != ".env,conf/server.key,src/.ssh" {
 		t.Fatalf("hidden %v %v", got, err)
+	}
+	inside, err := Hidden(context.Background(), filepath.Join(dir, "src", ".ssh"), nil)
+	if err != nil || strings.Join(inside, ",") != "id_rsa" {
+		t.Fatalf("inside an excluded dir: %v %v", inside, err)
+	}
+}
+
+func TestMatchPartAgreesWithPathMatch(t *testing.T) {
+	pats := []string{".env", ".env.*", "*.pem", "id_rsa*", "a?c", "[ab]x", "*.cargo*", "x\\*"}
+	names := []string{".env", ".env.local", "a.pem", "pem", "id_rsa.pub", "abc", "ax", "bx", "q.cargo.z", "x*", "", ".envx"}
+	for _, p := range pats {
+		for _, n := range names {
+			want, err := path.Match(p, n)
+			if got := matchPart(p, n); got != (want && err == nil) {
+				t.Errorf("%q %q: %v, path.Match %v", p, n, got, want)
+			}
+		}
 	}
 }

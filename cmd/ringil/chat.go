@@ -24,6 +24,7 @@ func (c *cli) cmdRun(ctx *orpheus.Context) error {
 	if prompt == "" {
 		return errors.New(ErrUsage, `nothing to send; usage: ringil run "<prompt>"`)
 	}
+	defer c.shutdown()
 	a, err := c.agent(ctx)
 	if err != nil {
 		return err
@@ -44,6 +45,7 @@ func closing(err error, release func() error) error {
 }
 
 func (c *cli) cmdChat(ctx *orpheus.Context) error {
+	defer c.shutdown()
 	a, err := c.agent(ctx)
 	if err != nil {
 		return err

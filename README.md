@@ -180,13 +180,37 @@ gira su una copia verificata, senza rete. `Options.Mounts` ed `Options.Env` dann
 script cartelle e librerie; un `sandbox.Mount` può nascondere percorsi (`Hide`), e
 `files.Hidden` elenca quelli che i tool sui file escludono.
 Gli script lavorano in una cartella vuota (`/work`, anche `$OUTPUT_DIR`); con
-`Options.Output` i file che creano vengono consegnati lì, mai sopra un file esistente
-(un nome già preso diventa `nome-1.ext`). `Options.Runtimes` indica interpreti installati
+`Options.Output` i file che creano vengono consegnati in una cartella nuova per ogni
+esecuzione (`<skill>-<data-ora>`), senza nomi nascosti e con limiti su numero e
+dimensione. `Options.Runtimes` indica interpreti installati
 fuori da `/usr`.
 La CLI mostra agli script la cartella di lancio in sola lettura con i segreti nascosti,
 il virtualenv attivo, le librerie Python dell'utente e gli interpreti per-utente
-(node da nvm, ruby, perl, python); i file prodotti arrivano nella cartella di lancio.
+(node da nvm, ruby, perl, python); i file prodotti arrivano in `~/ringil-output/`,
+fuori da ogni progetto, perché git o un test runner non li eseguano.
 CLI: `ringil skill install <dir>`, `ringil skill`, `ringil skill rm <nome>`.
+
+## MCP
+
+Modulo a parte (`github.com/agilira/ringil-agent-sdk/mcp`, sopra l'SDK ufficiale
+`modelcontextprotocol/go-sdk`): il nucleo resta senza dipendenze.
+
+```go
+c, err := mcp.Connect(ctx, mcp.Server{Name: "notes", Command: []string{"notes", dir}, Sandbox: sb})
+c, err := mcp.Connect(ctx, mcp.Server{Name: "crm", URL: "https://crm.example/mcp", Headers: headers, OAuth: oauth})
+tools, err = tools.With(c.Tools()...)              // nomi "<server>__<tool>"
+defer c.Close()
+```
+
+Server locali via stdio, nella sandbox se data; remoti via Streamable HTTP, solo HTTPS
+(loopback escluso), credenziali per richiesta dal resolver dell'host, redirect verso altre
+origini mai seguiti, OAuth con l'handler dell'SDK. Le annotazioni seguono i default MCP:
+un tool non marcato read-only è distruttivo, quindi passa dall'hook `Approve`.
+
+CLI: `<config>/ringil/mcp.json` (o `--mcp-config`) nel formato comune
+`{"mcpServers": {...}}`; nei valori `${NOME}` viene risolto da ambiente ed `--env-file`.
+Per un server locale `"sandbox": true` con `"network"` e `"mounts"` lo isola.
+Esempio di server: `mcp/examples/notes`.
 
 ## Decoratori
 
