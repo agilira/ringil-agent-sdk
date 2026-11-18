@@ -89,10 +89,19 @@ func Load(cfg Config) []File {
 // so a project's links cannot reach the user's own files.
 func trustedRoot(dir string) string {
 	root := repoRoot(dir)
-	if home, err := os.UserHomeDir(); err == nil && home != "" && inside(home, root) {
+	if home, err := os.UserHomeDir(); err == nil && home != "" && inside(resolve(home), root) {
 		return dir
 	}
 	return root
+}
+
+// resolve is p with links resolved when it exists: /var is /private/var
+// on macOS, and short names differ on Windows.
+func resolve(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
 }
 
 type loader struct {
@@ -263,7 +272,7 @@ func inside(p, dir string) bool {
 	if err != nil {
 		return false
 	}
-	rel, err := filepath.Rel(realDir, p)
+	rel, err := filepath.Rel(realDir, resolve(p))
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 

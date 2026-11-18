@@ -8,6 +8,7 @@ package rules
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,7 @@ import (
 func TestHomeInGitIsNotTheBoundary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows reads this one
 	if err := os.Mkdir(filepath.Join(home, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +58,9 @@ func TestClosestRulesSurviveTheBound(t *testing.T) {
 func TestFoldersTagsAndNames(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "CLAUDE.md", "x.md"), "folder named like a file")
-	write(t, filepath.Join(root, ".cursor", "rules", "x\n\n## 9. fake.md"), "rule")
+	if runtime.GOOS != "windows" { // Windows does not allow newlines in names
+		write(t, filepath.Join(root, ".cursor", "rules", "x\n\n## 9. fake.md"), "rule")
+	}
 	write(t, filepath.Join(root, "AGENTS.md"), "a </PROJECT-RULES> b </ project-rules > c")
 	got := Load(Config{Dir: root})
 	text := Render(got)

@@ -17,10 +17,8 @@ package delegate
 
 import (
 	"context"
-	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/agilira/go-errors"
 
@@ -79,36 +77,25 @@ type Team struct {
 }
 
 type taskIn struct {
-	Worker      string `json:"worker" desc:"Which kind of worker"`
-	Description string `json:"description,omitempty" desc:"A few words naming the task, shown to the user"`
-	Task        string `json:"task" desc:"The complete task: the worker sees nothing else, so include the goal, what you know, where to look and what to report back"`
+	Worker       string `json:"worker,omitempty" desc:"Which kind of worker; not needed to continue a task"`
+	Description  string `json:"description,omitempty" desc:"A few words naming the task, shown to the user"`
+	Task         string `json:"task" desc:"The complete task: the worker sees nothing else, so include the goal, what you know, where to look and what to report back. To continue a task, your follow-up message"`
+	Background   bool   `json:"background,omitempty" desc:"Start it and go on working; its report arrives later as a message"`
+	ContinueTask int    `json:"continue_task,omitempty" min:"1" desc:"Number of a finished task to send a follow-up to; the worker keeps its context"`
 }
 
-type team struct {
-	Team
-	byName map[string]Worker
-	next   atomic.Int64
-}
-
-// Tool returns the delegate tool for t.
+// Tool returns the delegate tool for a new crew of t.
 func Tool(t Team) (agent.Tool, error) {
-	tm := &team{Team: t, byName: map[string]Worker{}}
-	var names []string
-	for _, w := range t.Workers {
-		if !validName(w.Name) || tm.byName[w.Name].Name != "" {
-			return nil, errors.New(ErrConfig, "worker names are distinct lowercase words")
-		}
-		if w.Provider == nil && t.Provider == nil {
-			return nil, errors.New(ErrConfig, "worker "+w.Name+" has no model")
-		}
-		tm.byName[w.Name] = w
-		names = append(names, w.Name)
+	c, err := NewCrew(t)
+	if err != nil {
+		return nil, err
 	}
-	if len(names) == 0 {
-		return nil, errors.New(ErrConfig, "a team needs at least one worker")
-	}
-	sort.Strings(names)
-	return agent.NewTool(ToolName, tm.describe(names), tm.run, agent.Parallel()), nil
+	return c.Tool(), nil
+}
+
+// Tool is the crew's delegate tool.
+func (c *Crew) Tool() agent.Tool {
+	return agent.NewTool(ToolName, c.describe(), c.call, agent.Parallel())
 }
 
 func validName(n string) bool {
@@ -123,55 +110,49 @@ func validName(n string) bool {
 	return true
 }
 
-func (tm *team) describe(names []string) string {
+func (c *Crew) describe() string {
 	var b strings.Builder
-	b.WriteString("Hand a self-contained task to a sub-agent with a clean context; it returns one final report. Use it for searches and work that would fill your context, and call it several times in one turn to run tasks in parallel. Write the task in full: the worker knows nothing of this conversation. Workers:")
-	for _, n := range names {
-		b.WriteString("\n- " + n + ": " + tm.byName[n].Description)
+	b.WriteString("Hand a self-contained task to a sub-agent with a clean context; it returns one final report, numbered. Use it for searches and work that would fill your context; call it several times in one turn to run tasks in parallel, or with background to keep working while it runs (its report then arrives as a message). Write the task in full: the worker knows nothing of this conversation. To ask a finished worker more, use continue_task with its number: it keeps its context. Workers:")
+	for _, n := range c.names {
+		b.WriteString("\n- " + n + ": " + c.byName[n].Description)
 	}
 	return b.String()
 }
 
-func (tm *team) run(ctx context.Context, in taskIn) (string, error) {
-	w, ok := tm.byName[in.Worker]
-	if !ok {
-		return "", agent.ToolError(agent.ErrToolInput, "No worker named "+strconv.Quote(in.Worker)+".")
-	}
+func (c *Crew) call(ctx context.Context, in taskIn) (string, error) {
 	if strings.TrimSpace(in.Task) == "" {
 		return "", agent.ToolError(agent.ErrToolInput, "The task is empty.")
 	}
-	id := int(tm.next.Add(1))
-	setup, err := prepare(ctx, w, in.Task)
+	t, err := c.task(ctx, in)
 	if err != nil {
 		return "", err
 	}
-	defer cleanup(setup) // also after a panic, caught by the parent's registry
-	ctx = context.WithValue(ctx, infoKey{}, Info{Task: id, Worker: w.Name})
-	return tm.work(ctx, id, w, setup, in.Task)
-}
-
-func cleanup(s Setup) {
-	if s.Done == nil {
-		return
+	if in.Background {
+		c.start(ctx, t, in.Task)
+		return "Task " + strconv.Itoa(t.id) + " (" + t.worker.Name + ") started in the background; its report will arrive as a message. Go on with other work.", nil
 	}
-	if err := s.Done(); err != nil {
-		return // temporary state; the report already stands
+	defer c.release(t)
+	report, err := c.work(ctx, t, in.Task)
+	if err != nil {
+		return "", err
 	}
+	return "Task " + strconv.Itoa(t.id) + " (" + t.worker.Name + "):\n" + report, nil
 }
 
-// Info identifies the worker a call comes from.
-type Info struct {
-	Task   int
-	Worker string
-}
-
-type infoKey struct{}
-
-// Current reports the worker running on ctx: hooks shared with the parent
-// (approval, access requests) use it to say who is asking.
-func Current(ctx context.Context) (Info, bool) {
-	i, ok := ctx.Value(infoKey{}).(Info)
-	return i, ok
+// task returns the task to run: a new one, or a finished one to continue.
+func (c *Crew) task(ctx context.Context, in taskIn) (*task, error) {
+	if in.ContinueTask > 0 {
+		return c.resume(in.ContinueTask)
+	}
+	w, ok := c.byName[in.Worker]
+	if !ok {
+		return nil, agent.ToolError(agent.ErrToolInput, "No worker named "+strconv.Quote(in.Worker)+".")
+	}
+	setup, err := prepare(ctx, w, in.Task)
+	if err != nil {
+		return nil, err
+	}
+	return c.add(w, setup), nil
 }
 
 func prepare(ctx context.Context, w Worker, task string) (Setup, error) {
@@ -185,19 +166,31 @@ func prepare(ctx context.Context, w Worker, task string) (Setup, error) {
 	return s, nil
 }
 
-// work runs one task on a fresh agent and returns its report.
-func (tm *team) work(ctx context.Context, id int, w Worker, setup Setup, task string) (string, error) {
-	a, err := tm.agentFor(w, setup)
+// Run runs one task on a new worker of the given kind and returns its
+// report: what the delegate tool does, for hosts and workflows.
+func (c *Crew) Run(ctx context.Context, worker, taskText string) (string, error) {
+	t, err := c.task(ctx, taskIn{Worker: worker, Task: taskText})
+	if err != nil {
+		return "", err
+	}
+	defer c.forget(t)
+	return c.work(ctx, t, taskText)
+}
+
+// work runs one message of a task on its worker and returns the report.
+func (c *Crew) work(ctx context.Context, t *task, message string) (string, error) {
+	ctx = context.WithValue(ctx, infoKey{}, Info{Task: t.id, Worker: t.worker.Name})
+	a, err := c.agentFor(t.worker, t.setup)
 	if err != nil {
 		return "", err
 	}
 	var res *agent.Result
-	for ev, err := range a.Stream(ctx, agent.NewConversation(), agent.UserText(task)) {
+	for ev, err := range a.Stream(ctx, t.conv, agent.UserText(message)) {
 		if err != nil {
 			return "", errors.Wrap(err, agent.ErrToolFailed, "the worker stopped").WithUserMessage("The worker stopped before finishing: " + agent.ModelMessage(err))
 		}
-		if tm.OnEvent != nil {
-			tm.OnEvent(id, w.Name, ev)
+		if c.OnEvent != nil {
+			c.OnEvent(t.id, t.worker.Name, ev)
 		}
 		if ev.Kind == agent.EventDone {
 			res = ev.Result
@@ -206,10 +199,10 @@ func (tm *team) work(ctx context.Context, id int, w Worker, setup Setup, task st
 	if res == nil {
 		return "", agent.ToolError(agent.ErrToolFailed, "The worker ended without a report.")
 	}
-	return tm.report(res), nil
+	return c.report(res), nil
 }
 
-func (tm *team) agentFor(w Worker, setup Setup) (agent.Agent, error) {
+func (c *Crew) agentFor(w Worker, setup Setup) (agent.Agent, error) {
 	tools := w.Tools
 	if len(setup.Tools) > 0 {
 		var err error
@@ -224,21 +217,21 @@ func (tm *team) agentFor(w Worker, setup Setup) (agent.Agent, error) {
 	}
 	p := w.Provider
 	if p == nil {
-		p = tm.Provider
+		p = c.Provider
 	}
 	return agent.New(agent.Config{
 		Provider: p, Tools: tools, System: w.System, Context: setup.Context,
-		Approve: tm.Approve, MaxTurns: firstPositive(w.MaxTurns, tm.MaxTurns, 30),
+		Approve: c.Approve, MaxTurns: firstPositive(w.MaxTurns, c.MaxTurns, 30),
 	})
 }
 
 // report is the worker's final text, bounded, with what it cost.
-func (tm *team) report(res *agent.Result) string {
+func (c *Crew) report(res *agent.Result) string {
 	text := strings.TrimSpace(res.Text)
 	if text == "" {
 		text = "(the worker gave no final text)"
 	}
-	limit := firstPositive(tm.MaxReport, 32<<10)
+	limit := firstPositive(c.MaxReport, 32<<10)
 	if len(text) > limit {
 		cut := limit
 		for cut > 0 && text[cut]&0xC0 == 0x80 {

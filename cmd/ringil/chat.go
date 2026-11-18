@@ -34,7 +34,11 @@ func (c *cli) cmdRun(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
-	return closing(c.turn(ctx.Context(), a, conv, prompt), release)
+	err = c.turn(ctx.Context(), a, conv, prompt)
+	if err == nil {
+		err = c.reports(ctx.Context(), a, conv, true)
+	}
+	return closing(err, release)
 }
 
 // closing returns err, or the release error when err is nil.
@@ -58,6 +62,21 @@ func (c *cli) cmdChat(ctx *orpheus.Context) error {
 	return closing(c.chat(ctx.Context(), a, conv), release)
 }
 
+// exchange is one message of the chat: background reports that came in
+// meanwhile first, then the user's turn, then reports already finished.
+func (c *cli) exchange(ctx context.Context, a agent.Agent, conv agent.Conversation, line string) {
+	steps := []func() error{
+		func() error { return c.reports(ctx, a, conv, false) },
+		func() error { return c.turn(ctx, a, conv, line) },
+		func() error { return c.reports(ctx, a, conv, false) },
+	}
+	for _, step := range steps {
+		if err := step(); err != nil {
+			c.note("error: " + describe(err))
+		}
+	}
+}
+
 func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) error {
 	for c.prompt() {
 		raw, ok := c.readLine()
@@ -73,9 +92,7 @@ func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) 
 			c.note("history cleared for this chat; a saved session is left as it was and no longer updated")
 			conv = agent.NewConversation()
 		default:
-			if err := c.turn(ctx, a, conv, line); err != nil {
-				c.note("error: " + describe(err))
-			}
+			c.exchange(ctx, a, conv, line)
 		}
 	}
 	if c.lines != nil {
@@ -92,9 +109,13 @@ func (c *cli) prompt() bool {
 // turn sends one prompt and renders its events. Everything the run produced
 // is already in conv, whether or not it finished.
 func (c *cli) turn(ctx context.Context, a agent.Agent, conv agent.Conversation, prompt string) error {
+	return c.turnWith(ctx, a, conv, agent.UserText(prompt))
+}
+
+func (c *cli) turnWith(ctx context.Context, a agent.Agent, conv agent.Conversation, msg agent.Message) error {
 	ctx, cancel := c.turnContext(ctx)
 	defer cancel()
-	for ev, err := range a.Stream(ctx, conv, agent.UserText(prompt)) {
+	for ev, err := range a.Stream(ctx, conv, msg) {
 		if err != nil {
 			return err
 		}

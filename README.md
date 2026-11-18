@@ -193,6 +193,32 @@ dell'host); `Prepare` dà a ogni incarico uno scratchpad suo; le conferme passan
 dall'hook del padre. CLI: `explore` (sola lettura) e `general` (i tool del padre),
 ciascuno con scratchpad proprio, note di progetto in sola lettura e regole del progetto.
 
+### Background e ripresa
+
+Con `background: true` il sub-agente parte e il padre continua: il rapporto arriva più
+tardi da `Crew.Next`, e `delegate.Notice` lo porta al padre come messaggio marcato
+(non parole dell'utente). Con `continue_task` il padre manda un seguito a un compito
+finito: il worker risponde con il suo contesto intatto. `NewCrew` dà l'oggetto completo
+(compiti, background, `Close`); `delegate.Tool` è la scorciatoia.
+
+## Workflow
+
+`workflow.Runner` esegue un piano: passaggi con nome, ognuno un compito per un worker
+del crew, con i passaggi di cui ha bisogno. Un passaggio parte quando i suoi bisogni sono
+finiti e i passaggi pronti girano insieme; ognuno vede solo il suo compito, il brief e i
+rapporti di cui ha bisogno, marcati come dati.
+
+Con un `Journal` (`workflow.NewFileJournal`) l'intenzione di un passaggio si salva prima
+di avviarlo e il rapporto prima di andare avanti. La ripresa salta i passaggi finiti; un
+passaggio avviato e non finito ferma la ripresa (`WORKFLOW_UNCERTAIN`), perché i suoi
+effetti potrebbero esserci già: si verifica e si registra l'esito con `workflow.Resolve`.
+Il journal non riesegue mai nulla di sua iniziativa.
+
+`Runner.Tool()` dà al modello `run_workflow`, per i piani che scrive lui: è marcato
+distruttivo, quindi l'host mostra il piano prima di eseguirlo.
+CLI: il piano compare con i passaggi e chiede conferma; `ringil workflow`,
+`ringil workflow resume <id>`, `ringil workflow resolve <id> <passaggio>` (esito da stdin).
+
 ## Regole di progetto
 
 `rules` legge le istruzioni che le persone scrivono per gli agenti, così un agente

@@ -405,7 +405,7 @@ prima del commit dopo:
 | 5 | Skills (nomi sempre esposti, corpi e script al bisogno, script solo nel sandbox) | FATTO 18/11: formato Agent Skills, hash per file, script su copia verificata nel sandbox |
 | 6 | MCP stdio/HTTP + OAuth | FATTO 18/11: modulo mcp/ sull'SDK ufficiale; stdio nel sandbox; nessun replay; consenso solo da operatore; login OAuth con token privati |
 | 7 | Delega ai worker (sottoinsiemi di tool, budget condiviso, contesto fresco) | FATTO 18/11: pacchetto delegate (tipi di worker, contesto pulito, rapporto unico, Prepare per scratchpad, Approve del padre), esecuzione parallela di tool ReadOnly/Parallel nel nucleo. `Spawner` per istanze separate più avanti |
-| 8 | Workflow locali + journal durevole (+ workflow scritti dall'agente) | stesso motore per i piani del modello |
+| 8 | Workflow locali + journal durevole (+ workflow scritti dall'agente) | FATTO 18/11: workflow.Runner (passaggi pronti in parallelo, journal intent-before-run, ripresa senza replay, Resolve), FileJournal con lock, run_workflow per i piani del modello; delega in background e continue_task |
 | 9 | Scratchpad e memoria di progetto Markdown (0.10) + todo dell'agente | FATTO 18/11: tool notes (semantica memory tool), scope scelti dall'host anche read-only, INDEX.md nel contesto via Config.Context; todo_write con lista nella conversazione |
 | 10 | Ruolo e provider per profilo, regole di progetto, `AGENTS.md` automatico (0.13-0.15) | REGOLE FATTE 18/11: pacchetto rules (AGENTS.md + CLAUDE/GEMINI/Copilot/Cursor/Windsurf, dalla radice del repo, globale utente) via Config.Context; files.DefaultProtected per la scrittura (18). Ruolo/provider per profilo: con serve |
 | 11 | Lettura selettiva della storia citata dalle sintesi (0.16) | |
