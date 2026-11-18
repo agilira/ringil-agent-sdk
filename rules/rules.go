@@ -21,19 +21,25 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/agilira/ringil-agent-sdk/tools/files"
 )
 
 // DefaultFiles are read in each directory, in this order: AGENTS.md
 // first, then other agents' files.
+// A name ending in "/" is a folder whose .md and .mdc files are read.
 var DefaultFiles = []string{
-	"AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md", "HERMES.md",
+	"AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md",
 	".github/copilot-instructions.md", ".cursorrules", ".windsurfrules", ".clinerules",
-	".cursor/rules", // a directory: its .md and .mdc files
+	".cursor/rules/",
 }
+
+// rootOnly are read only at the repository root, as their agents do.
+var rootOnly = map[string]bool{".github/copilot-instructions.md": true}
 
 // Bounds: rules are read into every turn.
 const (
@@ -60,27 +66,39 @@ type File struct {
 	Text string
 }
 
-// Load reads the rules, broadest first.
+// Load reads the rules, broadest first. When they exceed the total
+// bound, the closest files are kept and the broadest cut: a folder's own
+// rules are the most specific.
 func Load(cfg Config) []File {
 	l := &loader{cfg: cfg, seen: map[string]bool{}}
 	if cfg.Global != "" {
-		l.read(cfg.Global, filepath.Dir(cfg.Global))
+		l.read(cfg.Global, "")
 	}
 	stop := cfg.Stop
 	if stop == "" {
-		stop = repoRoot(cfg.Dir)
+		stop = trustedRoot(cfg.Dir)
 	}
 	for _, dir := range chain(stop, cfg.Dir) {
 		l.dir(dir, stop)
 	}
-	return l.out
+	return budget(l.out)
+}
+
+// trustedRoot is the repository root, unless that root is the home or
+// above it (a home kept in git): then only the working directory counts,
+// so a project's links cannot reach the user's own files.
+func trustedRoot(dir string) string {
+	root := repoRoot(dir)
+	if home, err := os.UserHomeDir(); err == nil && home != "" && inside(home, root) {
+		return dir
+	}
+	return root
 }
 
 type loader struct {
-	cfg   Config
-	seen  map[string]bool // resolved paths and texts already read
-	out   []File
-	total int
+	cfg  Config
+	seen map[string]bool // resolved paths and texts already read
+	out  []File
 }
 
 func (l *loader) names() []string {
@@ -91,20 +109,26 @@ func (l *loader) names() []string {
 }
 
 func (l *loader) dir(dir, stop string) {
+	override := exists(filepath.Join(dir, "AGENTS.override.md"))
 	for _, name := range l.names() {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		info, err := os.Stat(p)
-		switch {
-		case err != nil:
-		case info.IsDir():
+		if (rootOnly[name] && dir != stop) || (override && name == "AGENTS.md") {
+			continue // Codex reads the override instead of AGENTS.md
+		}
+		p := filepath.Join(dir, filepath.FromSlash(strings.TrimSuffix(name, "/")))
+		if strings.HasSuffix(name, "/") {
 			l.ruleDir(p, stop)
-		default:
+		} else {
 			l.read(p, stop)
 		}
 	}
 }
 
-// ruleDir reads the Markdown rules of a directory such as .cursor/rules.
+func exists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// ruleDir reads the Markdown rules of a folder such as .cursor/rules.
 func (l *loader) ruleDir(dir, stop string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -117,31 +141,60 @@ func (l *loader) ruleDir(dir, stop string) {
 	}
 }
 
-// read adds one file if it resolves inside within, is a regular file and
-// not a secret, and says something new.
+// read adds one file if it is a regular file with a single name, not a
+// secret, and says something new. A link must resolve to Markdown, and,
+// for project files, inside within; the global file is the user's own and
+// may link anywhere.
 func (l *loader) read(p, within string) {
 	real, err := filepath.EvalSymlinks(p)
-	if err != nil || l.seen[real] || !inside(real, within) || files.Excluded(real, nil) {
+	if err != nil || l.seen[real] || !l.allowed(p, real, within) {
 		return
 	}
 	l.seen[real] = true
 	text, ok := readRegular(real)
-	if text = strings.TrimSpace(text); ok && text != "" {
-		l.add(p, text)
+	if text = strings.TrimSpace(text); ok && text != "" && !l.seen["text:"+text] {
+		l.seen["text:"+text] = true
+		l.out = append(l.out, File{Path: p, Text: text})
 	}
 }
 
-// add keeps a new text within the total bound.
-func (l *loader) add(p, text string) {
-	if l.seen["text:"+text] || l.total >= maxTotal {
-		return
+func (l *loader) allowed(p, real, within string) bool {
+	if files.Excluded(real, nil) {
+		return false
 	}
-	l.seen["text:"+text] = true
-	if room := maxTotal - l.total; len(text) > room {
-		text = strings.ToValidUTF8(text[:room], "") + "\n[...]"
+	if real == p || real == mustAbs(p) {
+		return true // not a link
 	}
-	l.total += len(text)
-	l.out = append(l.out, File{Path: p, Text: text})
+	ext := filepath.Ext(real)
+	return (ext == ".md" || ext == ".mdc") && (within == "" || inside(real, within))
+}
+
+func mustAbs(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		if r, err := filepath.EvalSymlinks(filepath.Dir(a)); err == nil {
+			return filepath.Join(r, filepath.Base(a))
+		}
+	}
+	return p
+}
+
+// budget keeps the total within maxTotal, filling from the closest file
+// back to the broadest; a file that does not fit is cut or left out with
+// a mark, so the model knows something is missing.
+func budget(fs []File) []File {
+	left := maxTotal
+	for i := len(fs) - 1; i >= 0; i-- {
+		switch {
+		case len(fs[i].Text) <= left:
+			left -= len(fs[i].Text)
+		case left > 1024:
+			fs[i].Text = strings.ToValidUTF8(fs[i].Text[:left], "") + "\n[... cut: the rules are too long]"
+			left = 0
+		default:
+			fs[i].Text = "[left out: the rules are too long]"
+		}
+	}
+	return fs
 }
 
 func readRegular(p string) (string, bool) {
@@ -162,11 +215,21 @@ func readRegular(p string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	text := strings.ToValidUTF8(string(data), "")
+	if !singleName(info) {
+		return "", false // a hard link could bring any file in under a rules name
+	}
+	text := strings.Map(dropNUL, strings.ToValidUTF8(string(data), ""))
 	if info.Size() > maxFile {
 		text += "\n[...]"
 	}
 	return text, true
+}
+
+func dropNUL(r rune) rune {
+	if r == 0 {
+		return -1
+	}
+	return r
 }
 
 // repoRoot is the nearest directory from dir upwards holding .git, or dir.
@@ -204,6 +267,19 @@ func inside(p, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+var closeTag = regexp.MustCompile(`(?i)<\s*/\s*project-rules\s*>`)
+
+// SafePath shows a path on one line: control characters, which could
+// forge headers or terminal lines, are dropped.
+func SafePath(p string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == 0x2028 || r == 0x2029 {
+			return -1
+		}
+		return r
+	}, filepath.ToSlash(p))
+}
+
 // Context returns a Config.Context hook that reads the rules at the start
 // of every run, so edits apply at once.
 func Context(cfg Config) func(context.Context) (string, error) {
@@ -217,10 +293,10 @@ func Render(fs []File) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("<project-rules>\nThe user's rules for this project, from the files below (broadest first; a later, closer file refines an earlier one). Follow them. What the user asks in this conversation comes first. Files written for other agents may name tools or commands you do not have: follow their intent with your own tools.\n")
+	b.WriteString("<project-rules>\nThe user's rules for this project, from the files below, broadest first: a file in a deeper folder refines those above it; files in the same folder are written for different agents and apply together. Follow them. What the user asks in this conversation comes first. Files written for other agents may name tools or commands you do not have: follow their intent with your own tools.\n")
 	for i, f := range fs {
-		b.WriteString("\n## " + strconv.Itoa(i+1) + ". " + filepath.ToSlash(f.Path) + "\n\n")
-		b.WriteString(strings.ReplaceAll(f.Text, "</project-rules>", "</project_rules>"))
+		b.WriteString("\n## " + strconv.Itoa(i+1) + ". " + SafePath(f.Path) + "\n\n")
+		b.WriteString(closeTag.ReplaceAllString(f.Text, "</project_rules>"))
 		b.WriteString("\n")
 	}
 	b.WriteString("</project-rules>")

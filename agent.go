@@ -11,6 +11,7 @@ import (
 	stderrors "errors"
 	"iter"
 	"strconv"
+	"sync"
 
 	"github.com/agilira/go-errors"
 )
@@ -382,53 +383,129 @@ func (r *run) uniqueIDs(calls []ToolCall) {
 	}
 }
 
+// runTools runs the calls of one model turn. Consecutive calls that may
+// run together (read-only or parallel tools) run at once; the others one
+// by one, in order. Approval is asked before anything runs, one call at a
+// time; results are recorded in the order of the calls.
 func (r *run) runTools(ctx context.Context, calls []ToolCall) error {
-	for _, call := range calls {
-		if err := r.emit(Event{Kind: EventToolStart, Call: &call}); err != nil {
-			return err
-		}
-		res, toolErr := r.callTool(ctx, call)
-		if res.CallID == "" {
-			// Execute's contract: an empty CallID means the tool did not run
-			// (the context ended first). Nothing to record; the call stays
-			// pending and the next run reports it as interrupted.
-			if toolErr == nil {
-				toolErr = errors.New(ErrAgentConfig, "registry returned a result without a call ID")
+	for i := 0; i < len(calls); {
+		j := i + 1
+		if r.parallel(calls[i]) {
+			for j < len(calls) && r.parallel(calls[j]) {
+				j++
 			}
-			return toolErr
 		}
-		res.CallID = call.ID
-		if err := r.add(ctx, ToolMessage(res)); err != nil {
+		if err := r.runBatch(ctx, calls[i:j]); err != nil {
 			return err
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		if err := r.emit(Event{Kind: EventToolEnd, Call: &call, Output: &res, Err: toolErr}); err != nil {
-			return err
-		}
+		i = j
 	}
 	return nil
 }
 
-// callTool runs one call after the host's approval, if the host asks for
-// one. A refusal, or a failure to ask, is answered like a failed tool.
-func (r *run) callTool(ctx context.Context, call ToolCall) (ToolResult, error) {
-	if _, known := r.spec(call.Name); !known && r.disc != nil {
-		return r.disc.unknown(call), errors.New(ErrToolUnknown, "the model called an unknown tool")
+func (r *run) parallel(call ToolCall) bool {
+	spec, ok := r.spec(call.Name)
+	return ok && (spec.Annotations.ReadOnly || spec.Annotations.Parallel)
+}
+
+type outcome struct {
+	res ToolResult
+	err error
+}
+
+func (r *run) runBatch(ctx context.Context, calls []ToolCall) error {
+	out := make([]outcome, len(calls))
+	run := make([]bool, len(calls))
+	for i := range calls {
+		if err := r.emit(Event{Kind: EventToolStart, Call: &calls[i]}); err != nil {
+			return err
+		}
+		res, err, ok := r.gate(ctx, calls[i])
+		out[i], run[i] = outcome{res, err}, ok
 	}
-	if r.cfg.Approve != nil {
-		if spec, ok := r.spec(call.Name); ok {
-			if allowed, err := r.cfg.Approve(ctx, call, spec); err != nil || !allowed {
-				denied := errors.New(ErrToolDenied, "the user did not approve the call")
-				if err != nil {
-					denied = errors.Wrap(err, ErrToolDenied, "approval failed")
-				}
-				return ToolResult{CallID: call.ID, Content: "The user did not approve this call. Ask before trying again.", IsError: true}, denied
-			}
+	r.runCalls(ctx, calls, run, out)
+	// Every call that ran is recorded before any stop: a result lost after
+	// its effect would make the next run tell the model it may not have
+	// happened.
+	// After a stop no more events are sent: the consumer may be gone.
+	var stop error
+	for i := range calls {
+		if err := r.record(ctx, &calls[i], out[i], stop != nil); err != nil && stop == nil {
+			stop = err
 		}
 	}
-	return r.tools.Execute(ctx, call)
+	return stop
+}
+
+// runCalls runs the approved calls, together when there are several.
+func (r *run) runCalls(ctx context.Context, calls []ToolCall, run []bool, out []outcome) {
+	if len(calls) == 1 {
+		if run[0] {
+			res, err := r.tools.Execute(ctx, calls[0])
+			out[0] = outcome{res, err}
+		}
+		return
+	}
+	var wg sync.WaitGroup
+	for i := range calls {
+		if !run[i] {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := r.tools.Execute(ctx, calls[i])
+			out[i] = outcome{res, err}
+		}()
+	}
+	wg.Wait()
+}
+
+// record adds one result to the conversation and reports it. A call that
+// did not run (empty CallID) stays pending for the next run to report.
+func (r *run) record(ctx context.Context, call *ToolCall, o outcome, quiet bool) error {
+	res, toolErr := o.res, o.err
+	if res.CallID == "" {
+		if toolErr == nil {
+			toolErr = errors.New(ErrAgentConfig, "registry returned a result without a call ID")
+		}
+		return toolErr
+	}
+	res.CallID = call.ID
+	if err := r.add(ctx, ToolMessage(res)); err != nil {
+		return err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil || quiet {
+		return ctxErr
+	}
+	return r.emit(Event{Kind: EventToolEnd, Call: call, Output: &res, Err: toolErr})
+}
+
+// gate decides whether a call runs: an unknown tool or the host's refusal
+// answers it at once (ok false) with the result to record.
+func (r *run) gate(ctx context.Context, call ToolCall) (ToolResult, error, bool) {
+	if ctx.Err() != nil {
+		return ToolResult{}, ctx.Err(), false // not run: recorded as pending, no question asked
+	}
+	if _, known := r.spec(call.Name); !known && r.disc != nil {
+		return r.disc.unknown(call), errors.New(ErrToolUnknown, "the model called an unknown tool"), false
+	}
+	if r.cfg.Approve == nil {
+		return ToolResult{}, nil, true
+	}
+	spec, ok := r.spec(call.Name)
+	if !ok {
+		return ToolResult{}, nil, true
+	}
+	allowed, err := r.cfg.Approve(ctx, call, spec)
+	if err == nil && allowed {
+		return ToolResult{}, nil, true
+	}
+	denied := errors.New(ErrToolDenied, "the user did not approve the call")
+	if err != nil {
+		denied = errors.Wrap(err, ErrToolDenied, "approval failed")
+	}
+	return ToolResult{CallID: call.ID, Content: "The user did not approve this call. Ask before trying again.", IsError: true}, denied, false
 }
 
 // toolSpecs are the schemas sent with a request.

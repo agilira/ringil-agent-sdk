@@ -15,11 +15,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/delegate"
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/notes"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
@@ -54,6 +57,17 @@ type cli struct {
 	closers []func() error
 	// notes are the session's notebooks, when there are any.
 	notes *notes.Notes
+	// projectNotes is the project notes folder, for workers to read.
+	projectNotes string
+	// readTools are the file reading tools, for read-only workers.
+	readTools []agent.Tool
+	// askMu keeps one question on screen at a time: workers run in
+	// parallel and may all need the user.
+	askMu sync.Mutex
+	// outMu keeps lines whole when workers print at once.
+	outMu sync.Mutex
+	// workerIn and workerOut add up the workers' tokens of a turn.
+	workerIn, workerOut atomic.Int64
 	// allowed are tools the user allowed for the rest of the session.
 	allowed map[string]bool
 	// newSandbox returns the platform sandbox; tests may replace it.
@@ -147,12 +161,16 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	model := retry.Wrap(p, retry.Config{})
+	if tools, err = c.withDelegate(ctx, model, tools); err != nil {
+		return nil, err
+	}
 	system := ctx.GetGlobalFlagString("system")
 	if cat != nil {
 		system += cat.Instructions()
 	}
 	return agent.New(agent.Config{
-		Provider:      retry.Wrap(p, retry.Config{}),
+		Provider:      model,
 		Tools:         tools,
 		Memory:        mem,
 		Approve:       c.approve,
@@ -198,7 +216,8 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 	if err != nil {
 		return nil, err
 	}
-	return reg.With(ws.ReadTools()...)
+	c.readTools = ws.ReadTools()
+	return reg.With(c.readTools...)
 }
 
 // addEach adds remote tools one by one: a name that clashes with another
@@ -223,6 +242,18 @@ func (c *cli) remoteTools(ctx *orpheus.Context) ([]agent.Tool, error) {
 	}
 	agents, err := c.connectAgents(ctx)
 	return append(mcpTools, agents...), err
+}
+
+// withDelegate adds the delegate tool over the tools the agent has.
+func (c *cli) withDelegate(ctx *orpheus.Context, model agent.Provider, tools agent.Registry) (agent.Registry, error) {
+	if tools == nil {
+		return nil, nil
+	}
+	dt, err := c.delegateTool(ctx, model, tools)
+	if err != nil {
+		return nil, err
+	}
+	return tools.With(dt)
 }
 
 // runContext adds to every run the project's rules (AGENTS.md and the
@@ -273,7 +304,7 @@ func (c *cli) cmdRules(*orpheus.Context) error {
 		return c.line("no rules files found (AGENTS.md, CLAUDE.md, GEMINI.md, ...)")
 	}
 	for _, f := range found {
-		if err := c.line(clean(f.Path) + "  " + strconv.Itoa(len(f.Text)) + " bytes"); err != nil {
+		if err := c.line(rules.SafePath(f.Path) + "  " + strconv.Itoa(len(f.Text)) + " bytes"); err != nil {
 			return err
 		}
 	}
@@ -312,36 +343,59 @@ func (c *cli) defaultDirs() ([]string, error) {
 
 // askAccess asks in the terminal whether the agent may use dir. No answer
 // (end of input) is a no.
-func (c *cli) askAccess(_ context.Context, dir string) (bool, error) {
-	return c.confirm("\n  ? The agent wants to access " + clean(dir) + " — allow? [y/N] ")
+func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
+	c.askMu.Lock()
+	defer c.askMu.Unlock()
+	return c.confirm("\n  ? " + asker(ctx) + " wants to access " + clean(dir) + " — allow? [y/N] ")
 }
 
 // approve asks before destructive tools (forget, MCP tools from servers
 // whose hints are not trusted, file writes later); everything else runs
 // without interrupting the user. "a" allows that tool for the rest of
 // the session.
-func (c *cli) approve(_ context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
-	if !c.mustAsk(call, spec) || c.allowed[call.Name] {
+func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+	c.askMu.Lock()
+	defer c.askMu.Unlock()
+	// "always" is remembered per asker: a worker's yes is not the
+	// parent's, nor another worker's.
+	who, key := asker(ctx), call.Name
+	if info, ok := delegate.Current(ctx); ok {
+		key = info.Worker + ":" + call.Name
+	}
+	if !c.mustAsk(ctx, call, spec) || c.allowed[key] {
 		return true, nil
 	}
-	answer, err := c.ask("\n  ? The agent wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
+	answer, err := c.ask("\n  ? " + who + " wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
 	if answer == "a" || answer == "always" || answer == "sempre" {
 		if c.allowed == nil {
 			c.allowed = map[string]bool{}
 		}
-		c.allowed[call.Name] = true
+		c.allowed[key] = true
 		return true, err
 	}
 	return yes(answer), err
 }
 
+// asker names who is asking: the agent, or one of its workers.
+func asker(ctx context.Context) string {
+	if info, ok := delegate.Current(ctx); ok {
+		return "Worker " + info.Worker + " " + strconv.Itoa(info.Task)
+	}
+	return "The agent"
+}
+
 // mustAsk: destructive tools, and the notes changes their scope wants
 // confirmed (project notes, deletions).
-func (c *cli) mustAsk(call agent.ToolCall, spec agent.ToolSpec) bool {
-	if c.notes != nil && call.Name == notes.DefaultName {
-		return c.notes.NeedsApproval(call)
+func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) bool {
+	if call.Name != notes.DefaultName {
+		return spec.Annotations.Destructive
 	}
-	return spec.Annotations.Destructive
+	if _, worker := delegate.Current(ctx); worker {
+		// A worker writes only its own scratchpad (the project is read
+		// only for it): only deleting is confirmed.
+		return strings.Contains(string(call.Input), `"delete"`)
+	}
+	return c.notes != nil && c.notes.NeedsApproval(call)
 }
 
 // confirm asks a yes/no question; no answer is a no.

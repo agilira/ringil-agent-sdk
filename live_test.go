@@ -18,6 +18,7 @@ import (
 	"time"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/delegate"
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/memory/local"
 	"github.com/agilira/ringil-agent-sdk/memory/vector"
@@ -365,6 +366,39 @@ func TestLiveRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(res.Text, "-- ringil") {
+		t.Fatalf("answer %q", res.Text)
+	}
+}
+
+// TestLiveDelegation: a real model hands a lookup to a sub-agent with a
+// tool the parent does not have, and answers from its report.
+func TestLiveDelegation(t *testing.T) {
+	model := liveModel(t)
+	type noArgs struct{}
+	stock := agent.NewTool("stock_level", "Stock of item AX-7 in the warehouse.", func(context.Context, noArgs) (string, error) {
+		return "AX-7: 314 units in Bologna.", nil
+	}, agent.ReadOnly())
+	wtools, err := agent.NewRegistry(stock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dt, err := delegate.Tool(delegate.Team{Provider: model, Workers: []delegate.Worker{{Name: "warehouse", Description: "knows stock levels; it has the stock_level tool", Tools: wtools}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := agent.NewRegistry(dt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, MaxTurns: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), nil, agent.UserText("Quante unità di AX-7 abbiamo? Chiedi al worker warehouse."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ReplaceAll(res.Text, ".", ""), "314") {
 		t.Fatalf("answer %q", res.Text)
 	}
 }

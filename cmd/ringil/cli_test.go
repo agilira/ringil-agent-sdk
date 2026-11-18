@@ -757,3 +757,20 @@ func TestProjectNotesAskAndSessionScratch(t *testing.T) {
 		t.Fatalf("folder created outside: %v", err)
 	}
 }
+
+// Audit 18/11: the general worker never ran (its notes and task list
+// clashed with the parent's), and a worker's "always" applied to the
+// parent.
+func TestGeneralWorkerRunsAndAsksAsItself(t *testing.T) {
+	h := newHarness(t, "a\n",
+		fake.Call("delegate", `{"worker":"general","task":"forget x1"}`),
+		fake.Call("forget", `{"id":"x1"}`), // the worker has no memory tools: unknown
+		fake.Reply("worker done"),
+		fake.Reply("ok"))
+	if code := h.run("run", "vai"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if strings.Contains(h.err.String(), "DELEGATE_CONFIG") || !strings.Contains(h.err.String(), "[general 1] done") {
+		t.Fatalf("general worker did not run: %q", h.err)
+	}
+}

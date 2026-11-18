@@ -123,13 +123,14 @@ func (c *cli) render(ev agent.Event) error {
 	case agent.EventRecovered:
 		err = c.line("  ! " + ev.Call.Name + " was interrupted earlier; the model was told, it was not run again")
 	case agent.EventDone:
-		u := ev.Result.Usage
-		err = c.line(fmt.Sprintf("\n  [%s, %d model calls, %d in / %d out tokens]", ev.Stop, ev.Result.Turns, u.Input, u.Output))
+		err = c.done(ev)
 	}
 	return err
 }
 
 func (c *cli) line(s string) error {
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
 	_, err := fmt.Fprintln(c.errOut, s)
 	return err
 }
@@ -175,6 +176,16 @@ var hidden = map[rune]bool{
 }
 
 // recalled shows recalled memories, and a memory that could not be read.
+// done prints the turn's cost, workers included.
+func (c *cli) done(ev agent.Event) error {
+	u := ev.Result.Usage
+	workers := ""
+	if in, out := c.workerIn.Swap(0), c.workerOut.Swap(0); in+out > 0 {
+		workers = fmt.Sprintf("; workers %d in / %d out", in, out)
+	}
+	return c.line(fmt.Sprintf("\n  [%s, %d model calls, %d in / %d out tokens%s]", ev.Stop, ev.Result.Turns, u.Input, u.Output, workers))
+}
+
 func (c *cli) toolEnd(ev agent.Event) error {
 	if ev.Call.Name == todo.ToolName && !ev.Output.IsError {
 		return c.showTodos(ev.Call)
