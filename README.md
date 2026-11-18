@@ -148,6 +148,18 @@ terminale, un'app mostra una finestra); senza, sono rifiutate. Nessuna
 uscita dalle cartelle (`..`, symlink); file dei segreti (`.env`, chiavi SSH, `*.pem`,
 credenziali cloud) esclusi di default, modificabile con `Config.Exclude`.
 
+## Memoria
+
+```go
+mem, err := local.New(dir)                         // memory/local: file privato, ricerca BM25
+a, err := agent.New(agent.Config{Provider: p, Tools: tools, Memory: mem})
+tools, err = tools.With(memory.Tools(mem)...)      // remember, recall, forget per il modello
+```
+
+A ogni domanda i ricordi pertinenti entrano nel contesto di quel turno, delimitati e
+marcati come dati, mai nella conversazione salvata. Nella CLI la memoria è attiva di
+default (`--no-memory` per toglierla); `ringil memory`, `memory search`, `memory rm`.
+
 ## Decoratori
 
 Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,

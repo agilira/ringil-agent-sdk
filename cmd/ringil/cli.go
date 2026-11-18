@@ -18,6 +18,7 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
@@ -77,6 +78,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
 		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools").
+		AddGlobalBoolFlag("no-memory", "", false, "do not recall or keep memories across conversations").
 		AddGlobalIntFlag("context-window", "", 0, "model context size in tokens; compaction starts near it (0: only when the model reports it is full)").
 		AddGlobalBoolFlag("summarize", "", false, "summarize left-out turns with the model instead of dropping them (costs a call)").
 		AddGlobalFlag("session", "S", "", "save the conversation under this name and resume it next time").
@@ -87,6 +89,9 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.cmdSessionRemove).
 			SetUsage("sessions rm <name...>")))
+	app.AddCommand(orpheus.NewCommand("memory", "List what the agent remembers").SetHandler(c.cmdMemory).
+		AddSubcommand(orpheus.NewCommand("search", "Search what the agent remembers").SetHandler(c.cmdMemory).SetUsage("memory search <words...>")).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.cmdMemoryRemove).SetUsage("memory rm <id...>")))
 	app.AddCommand(orpheus.NewCommand("sandbox", "Run a command isolated, as scripts and tools will be").SetHandler(c.cmdSandbox).
 		SetUsage("sandbox [--mount DIR[:/dest][:rw]]... [--net] [--dir /path] -- command [args...]").
 		AddStringSliceFlag("mount", "", nil, "grant a host directory, at its own path unless :/dest is given; read-only unless :rw").
@@ -104,13 +109,18 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	tools, err := c.tools(ctx)
+	mem, err := c.memory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tools, err := c.tools(ctx, mem)
 	if err != nil {
 		return nil, err
 	}
 	return agent.New(agent.Config{
 		Provider:      retry.Wrap(p, retry.Config{}),
 		Tools:         tools,
+		Memory:        mem,
 		System:        ctx.GetGlobalFlagString("system"),
 		MaxTurns:      ctx.GetGlobalFlagInt("max-turns"),
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
@@ -125,13 +135,18 @@ func withWorkspace(cmd *orpheus.Command) *orpheus.Command {
 }
 
 // tools grants the built-in tools and, with --workspace, the file tools.
-func (c *cli) tools(ctx *orpheus.Context) (agent.Registry, error) {
+func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory) (agent.Registry, error) {
 	if ctx.GetGlobalFlagBool("no-tools") {
 		return nil, nil
 	}
 	reg, err := builtinTools()
 	if err != nil {
 		return nil, err
+	}
+	if mem != nil {
+		if reg, err = reg.With(memory.Tools(mem)...); err != nil {
+			return nil, err
+		}
 	}
 	dirs := ctx.GetFlagStringSlice("workspace")
 	if len(dirs) == 0 {

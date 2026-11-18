@@ -33,8 +33,9 @@ type harness struct {
 	dir      string
 }
 
-func newHarness(input string, steps ...fake.Step) *harness {
-	h := &harness{out: &bytes.Buffer{}, err: &bytes.Buffer{}, script: fake.New(steps...), dir: os.TempDir()}
+func newHarness(t *testing.T, input string, steps ...fake.Step) *harness {
+	t.Helper()
+	h := &harness{out: &bytes.Buffer{}, err: &bytes.Buffer{}, script: fake.New(steps...), dir: t.TempDir()}
 	h.c = newCLI(strings.NewReader(input), h.out, h.err)
 	h.c.getenv = func(k string) string {
 		return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "RINGIL_API_KEY": "k"}[k]
@@ -65,7 +66,7 @@ func (h *harness) key(t *testing.T) string {
 }
 
 func TestRunPrintsAnswerAndUsesEnvironment(t *testing.T) {
-	h := newHarness("", fake.Stream("Ciao", " Antonio"))
+	h := newHarness(t, "", fake.Stream("Ciao", " Antonio"))
 	if code := h.run("run", "saluta"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -78,7 +79,7 @@ func TestRunPrintsAnswerAndUsesEnvironment(t *testing.T) {
 }
 
 func TestFlagsOverrideEnvironment(t *testing.T) {
-	h := newHarness("", fake.Reply("ok"))
+	h := newHarness(t, "", fake.Reply("ok"))
 	if code := h.run("--base", "https://x.test/v1", "--model", "other", "--key-env", "NOPE", "--allow-http", "run", "x"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -88,7 +89,7 @@ func TestFlagsOverrideEnvironment(t *testing.T) {
 }
 
 func TestRunShowsToolCalls(t *testing.T) {
-	h := newHarness("", fake.Call("calculate", `{"a":2,"op":"*","b":21}`), fake.Reply("42"))
+	h := newHarness(t, "", fake.Call("calculate", `{"a":2,"op":"*","b":21}`), fake.Reply("42"))
 	if code := h.run("run", "2*21"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -98,7 +99,7 @@ func TestRunShowsToolCalls(t *testing.T) {
 }
 
 func TestNoToolsFlag(t *testing.T) {
-	h := newHarness("", fake.Reply("ok"))
+	h := newHarness(t, "", fake.Reply("ok"))
 	if code := h.run("--no-tools", "run", "x"); code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
@@ -108,15 +109,15 @@ func TestNoToolsFlag(t *testing.T) {
 }
 
 func TestRunErrors(t *testing.T) {
-	h := newHarness("")
+	h := newHarness(t, "")
 	if code := h.run("run"); code != exitError || !strings.Contains(h.err.String(), "nothing to send") {
 		t.Fatalf("empty prompt: %d %q", code, h.err)
 	}
-	h = newHarness("", fake.Fail(errors.New(agent.ErrProviderAuth, "401")))
+	h = newHarness(t, "", fake.Fail(errors.New(agent.ErrProviderAuth, "401")))
 	if code := h.run("run", "x"); code != exitError || !strings.Contains(h.err.String(), "API key was refused") {
 		t.Fatalf("auth: %d %q", code, h.err)
 	}
-	h = newHarness("")
+	h = newHarness(t, "")
 	h.c.getenv = func(string) string { return "" }
 	if code := h.run("run", "x"); code != exitError || !strings.Contains(h.err.String(), "--base and --model") {
 		t.Fatalf("missing config: %d %q", code, h.err)
@@ -124,7 +125,7 @@ func TestRunErrors(t *testing.T) {
 }
 
 func TestChatKeepsHistoryAndCommands(t *testing.T) {
-	h := newHarness("ciao\n\nancora\n/reset\ndopo reset\n/exit\nnever\n",
+	h := newHarness(t, "ciao\n\nancora\n/reset\ndopo reset\n/exit\nnever\n",
 		fake.Reply("uno"), fake.Reply("due"), fake.Reply("tre"))
 	if code := h.run(); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
@@ -139,7 +140,7 @@ func TestChatKeepsHistoryAndCommands(t *testing.T) {
 }
 
 func TestChatSurvivesAFailedTurn(t *testing.T) {
-	h := newHarness("primo\nsecondo\n", fake.Fail(stderrors.New("boom")), fake.Reply("ok"))
+	h := newHarness(t, "primo\nsecondo\n", fake.Fail(stderrors.New("boom")), fake.Reply("ok"))
 	if code := h.run("chat"); code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
@@ -199,9 +200,7 @@ func TestBuiltinTools(t *testing.T) {
 }
 
 func sessionHarness(t *testing.T, input string, steps ...fake.Step) *harness {
-	h := newHarness(input, steps...)
-	h.dir = t.TempDir()
-	return h
+	return newHarness(t, input, steps...)
 }
 
 func TestSessionResumesAcrossRuns(t *testing.T) {
@@ -267,7 +266,7 @@ func TestSessionsEdgeCases(t *testing.T) {
 
 func TestRecoveredCallIsShown(t *testing.T) {
 	ev := agent.Event{Kind: agent.EventRecovered, Call: &agent.ToolCall{Name: "calculate"}, Output: &agent.ToolResult{}}
-	h := newHarness("")
+	h := newHarness(t, "")
 	if err := h.c.render(ev); err != nil || !strings.Contains(h.err.String(), "calculate was interrupted") {
 		t.Fatalf("render %v %q", err, h.err)
 	}
@@ -275,7 +274,7 @@ func TestRecoveredCallIsShown(t *testing.T) {
 
 func TestContextWindowFlagCompacts(t *testing.T) {
 	long := strings.Repeat("parola ", 400)
-	h := newHarness(long+"\n"+long+"\n"+long+"\n", fake.Reply(long), fake.Reply(long), fake.Reply("ok"))
+	h := newHarness(t, long+"\n"+long+"\n"+long+"\n", fake.Reply(long), fake.Reply(long), fake.Reply("ok"))
 	if code := h.run("--context-window", "1500", "chat"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -297,7 +296,7 @@ func envFile(t *testing.T, mode os.FileMode, text string) string {
 }
 
 func TestEnvFileProvidesSettingsAndKey(t *testing.T) {
-	h := newHarness("", fake.Reply("ok"))
+	h := newHarness(t, "", fake.Reply("ok"))
 	h.c.getenv = func(string) string { return "" }
 	path := envFile(t, 0o600, "RINGIL_BASE_URL=https://from.file/v1 # comment\nRINGIL_MODEL=filemodel\nRINGIL_API_KEY=sk-file\n")
 	if code := h.run("--env-file", path, "run", "x"); code != exitOK {
@@ -309,7 +308,7 @@ func TestEnvFileProvidesSettingsAndKey(t *testing.T) {
 }
 
 func TestEnvironmentWinsOverEnvFile(t *testing.T) {
-	h := newHarness("", fake.Reply("ok"))
+	h := newHarness(t, "", fake.Reply("ok"))
 	path := envFile(t, 0o600, "RINGIL_MODEL=filemodel\nRINGIL_API_KEY=sk-file\n")
 	if code := h.run("--env-file", path, "run", "x"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
@@ -323,7 +322,7 @@ func TestUnsafeEnvFileRefused(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX modes")
 	}
-	h := newHarness("", fake.Reply("ok"))
+	h := newHarness(t, "", fake.Reply("ok"))
 	if code := h.run("--env-file", envFile(t, 0o644, "A=1\n"), "run", "x"); code != exitError || !strings.Contains(h.err.String(), "secrets:") {
 		t.Fatalf("exit %d: %q", code, h.err)
 	}
@@ -391,7 +390,7 @@ func checkSandboxSpec(t *testing.T, spec sandbox.Spec) {
 }
 
 func TestSandboxCommand(t *testing.T) {
-	h := newHarness("")
+	h := newHarness(t, "")
 	stub := &stubSandbox{}
 	h.c.newSandbox = func() (sandbox.Sandbox, error) { return stub, nil }
 	if code := h.run("sandbox", "--mount", "x:/w:rw", "--net", "--dir", "/w", "--", "python3", "-V"); code != exitOK {
@@ -410,7 +409,7 @@ func TestSandboxCommand(t *testing.T) {
 // flash-flags v1.3.0 kept only the last of repeated --mount flags; v1.3.1
 // accumulates them.
 func TestRepeatedMountFlags(t *testing.T) {
-	h := newHarness("")
+	h := newHarness(t, "")
 	stub := &stubSandbox{}
 	h.c.newSandbox = func() (sandbox.Sandbox, error) { return stub, nil }
 	if code := h.run("sandbox", "--mount", "/a", "--mount", "/b:rw", "--", "true"); code != exitOK {
@@ -423,7 +422,7 @@ func TestRepeatedMountFlags(t *testing.T) {
 
 func TestWorkspaceFlagGrantsFileTools(t *testing.T) {
 	dir := t.TempDir()
-	h := newHarness("", fake.Reply("ok"))
+	h := newHarness(t, "", fake.Reply("ok"))
 	if code := h.run("run", "--workspace", dir, "--workspace", t.TempDir(), "x"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -436,7 +435,7 @@ func TestWorkspaceFlagGrantsFileTools(t *testing.T) {
 			t.Errorf("%s not offered: %v", want, names)
 		}
 	}
-	h = newHarness("", fake.Reply("ok"))
+	h = newHarness(t, "", fake.Reply("ok"))
 	if code := h.run("run", "--workspace", "/nonexistent-ringil", "x"); code != exitError || !strings.Contains(h.err.String(), "does not exist") {
 		t.Fatalf("missing dir: %d %q", code, h.err)
 	}
@@ -453,7 +452,7 @@ func readOutside(t *testing.T, answer string) (*harness, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness(answer, fake.Call("read_file", string(input)), fake.Reply("fatto"))
+	h := newHarness(t, answer, fake.Call("read_file", string(input)), fake.Reply("fatto"))
 	h.c.cwd = func() (string, error) { return start, nil }
 	if code := h.run("run", "leggi la nota"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
@@ -496,7 +495,7 @@ func TestHomeIsAccessibleWithoutAsking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness("", fake.Call("read_file", string(input)), fake.Reply("ok"))
+	h := newHarness(t, "", fake.Call("read_file", string(input)), fake.Reply("ok"))
 	h.c.cwd = func() (string, error) { return start, nil }
 	h.c.home = func() (string, error) { return home, nil }
 	if code := h.run("run", "leggi"); code != exitOK {
@@ -505,5 +504,75 @@ func TestHomeIsAccessibleWithoutAsking(t *testing.T) {
 	msgs := h.script.Requests()[1].Messages
 	if strings.Contains(h.err.String(), "wants to access") || !strings.Contains(msgs[len(msgs)-1].Result.Content, "nella home") {
 		t.Fatalf("err %q result %+v", h.err, msgs[len(msgs)-1].Result)
+	}
+}
+
+func TestMemoryOnByDefaultAndCommands(t *testing.T) {
+	h := newHarness(t, "", fake.Call("remember", `{"content":"Il cliente principale è Acme"}`), fake.Reply("ok"))
+	if code := h.run("run", "ricordati che il cliente principale è Acme"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	checkOffered(t, h.script.Requests()[0].Tools, "remember", "recall", "forget")
+	id := listedID(t, h, "search", "acme")
+	if code := h.run("memory", "rm", id); code != exitOK {
+		t.Fatalf("rm %d %q", code, h.err)
+	}
+	h.err.Reset()
+	if code := h.run("memory"); code != exitOK || !strings.Contains(h.err.String(), "nothing remembered") {
+		t.Fatalf("after rm %q", h.err)
+	}
+}
+
+// listedID lists memories and returns the first ID shown.
+func listedID(t *testing.T, h *harness, args ...string) string {
+	t.Helper()
+	h.err.Reset()
+	if code := h.run(append([]string{"memory"}, args...)...); code != exitOK || !strings.Contains(h.err.String(), "Il cliente principale è Acme") {
+		t.Fatalf("memory %v: %d %q", args, code, h.err)
+	}
+	return strings.Fields(h.err.String())[0]
+}
+
+func checkOffered(t *testing.T, specs []agent.ToolSpec, want ...string) {
+	t.Helper()
+	names := map[string]bool{}
+	for _, spec := range specs {
+		names[spec.Name] = true
+	}
+	for _, w := range want {
+		if !names[w] {
+			t.Fatalf("%s not offered: %v", w, names)
+		}
+	}
+}
+
+func TestRecallReachesTheModel(t *testing.T) {
+	h := newHarness(t, "", fake.Call("remember", `{"content":"Il budget 2027 è 50000 euro"}`), fake.Reply("ok"), fake.Reply("50000"))
+	for _, prompt := range []string{"ricorda il budget", "qual è il budget 2027?"} {
+		if code := h.run("run", prompt); code != exitOK {
+			t.Fatalf("exit %d: %s", code, h.err)
+		}
+	}
+	reqs := h.script.Requests()
+	if sys := reqs[len(reqs)-1].System; !strings.Contains(sys, "Il budget 2027 è 50000 euro") {
+		t.Fatalf("not recalled: %q", sys)
+	}
+	if !strings.Contains(h.err.String(), "* recalled 1 memory") {
+		t.Fatalf("recall not shown: %q", h.err)
+	}
+}
+
+func TestNoMemoryFlag(t *testing.T) {
+	h := newHarness(t, "", fake.Reply("ok"))
+	if code := h.run("--no-memory", "run", "x"); code != exitOK {
+		t.Fatalf("exit %d", code)
+	}
+	for _, spec := range h.script.Requests()[0].Tools {
+		if spec.Name == "remember" {
+			t.Fatal("memory tools offered with --no-memory")
+		}
+	}
+	if code := h.run("memory", "rm"); code != exitError {
+		t.Fatal("rm without ids accepted")
 	}
 }

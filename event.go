@@ -15,6 +15,9 @@ const (
 	EventRecovered EventKind = "recovered"
 	// EventText carries a streamed text delta.
 	EventText EventKind = "text"
+	// EventRecalled reports the memories added to this run's context;
+	// Text says how many, Err is set when the memory could not be read.
+	EventRecalled EventKind = "recalled"
 	// EventCompacted precedes a model call that was sent a shortened view
 	// of the conversation; Text says what was left out, Usage what a
 	// summary cost.

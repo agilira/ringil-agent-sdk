@@ -11,15 +11,19 @@ import (
 	"context"
 	"iter"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/memory"
+	"github.com/agilira/ringil-agent-sdk/memory/local"
 	"github.com/agilira/ringil-agent-sdk/provider/budget"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
+	"github.com/agilira/ringil-agent-sdk/tools/files"
 )
 
 type convertIn struct {
@@ -38,7 +42,7 @@ func liveModel(t *testing.T) agent.Provider {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spend, err := budget.New(budget.Limits{Calls: 12})
+	spend, err := budget.New(budget.Limits{Calls: 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,4 +143,65 @@ func watch(t *testing.T, events iter.Seq2[agent.Event, error]) (int, string) {
 		}
 	}
 	return compacted, answer
+}
+
+// TestLiveFileTools: a real model finds and reads a file through the file
+// tools, outside the first granted directory, and answers from it.
+func TestLiveFileTools(t *testing.T) {
+	model := liveModel(t)
+	work, docs := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(docs, "contratto.txt"), []byte("Durata del contratto: 36 mesi.\nPenale di recesso: 4.200 euro.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := files.New(files.Config{Dirs: []string{work, docs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := agent.NewRegistry(ws.ReadTools()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, MaxTurns: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), nil, agent.UserText("Nella cartella "+docs+" c'è un contratto. Qual è la penale di recesso?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ReplaceAll(res.Text, ".", ""), "4200") {
+		t.Fatalf("answer %q", res.Text)
+	}
+}
+
+// TestLiveMemory: a fact remembered through the tools in one run is
+// recalled into a later, separate conversation.
+func TestLiveMemory(t *testing.T) {
+	model := liveModel(t)
+	mem, err := local.New(filepath.Join(t.TempDir(), "memory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := agent.NewRegistry(memory.Tools(mem)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, Memory: mem, MaxTurns: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.Run(ctx, nil, agent.UserText("Ricordati per le prossime volte che il mio fornitore di fiducia è Ferramenta Rossi.")); err != nil {
+		t.Fatal(err)
+	}
+	if recs, err := mem.Search(ctx, "fornitore", 5); err != nil || len(recs) == 0 {
+		t.Fatalf("nothing remembered: %v", err)
+	}
+	res, err := a.Run(ctx, nil, agent.UserText("Qual è il mio fornitore di fiducia?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "Rossi") {
+		t.Fatalf("answer %q", res.Text)
+	}
 }
