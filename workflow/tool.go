@@ -37,7 +37,7 @@ func (r *Runner) runPlan(ctx context.Context, in planIn) (string, error) {
 	id := "wf-" + time.Now().Format("20060102-150405") + "-" + strings.ToLower(rand.Text()[:6])
 	res, err := r.Run(ctx, id, Plan{Steps: in.Steps, Output: in.Output}, in.Brief, false)
 	if err != nil {
-		return "", agent.ToolError(ErrStep, "The workflow stopped: "+err.Error()+" (id "+id+")")
+		return "", agent.ToolError(ErrStep, "The workflow stopped: "+err.Error()+" (id "+id+")."+r.partial(ctx, id))
 	}
 	var b strings.Builder
 	b.WriteString("Workflow " + id + " done.\n\nResult (" + in.Output + "):\n" + res.Output)
@@ -52,4 +52,27 @@ func (r *Runner) runPlan(ctx context.Context, in planIn) (string, error) {
 		b.WriteString("\n\nOther steps done: " + strings.Join(names, ", "))
 	}
 	return b.String(), nil
+}
+
+// partial lists what a stopped run finished, so the model can tell the
+// user what was done and that the run can be resumed.
+func (r *Runner) partial(ctx context.Context, id string) string {
+	if r.Journal == nil {
+		return ""
+	}
+	st, err := r.Journal.Load(ctx, id)
+	if err != nil || st == nil {
+		return ""
+	}
+	var done, open []string
+	for name, s := range st.Steps {
+		if s.Status == Done {
+			done = append(done, name)
+		} else {
+			open = append(open, name)
+		}
+	}
+	sort.Strings(done)
+	sort.Strings(open)
+	return " Steps done: " + strings.Join(done, ", ") + ". Started and not finished: " + strings.Join(open, ", ") + ". The user can check them and resume the workflow."
 }

@@ -308,10 +308,11 @@ func sortedKeys(m map[string]mcpEntry) []string {
 	return keys
 }
 
-// shutdown closes the MCP servers started for this command.
+// shutdown releases what this command started, newest first: workers stop
+// before the MCP servers and notebooks they use.
 func (c *cli) shutdown() {
-	for _, closeFn := range c.closers {
-		if err := closeFn(); err != nil {
+	for i := len(c.closers) - 1; i >= 0; i-- {
+		if err := c.closers[i](); err != nil {
 			c.note("cleanup at exit: " + err.Error())
 		}
 	}

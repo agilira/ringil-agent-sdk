@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,4 +112,23 @@ type hangUntilDone struct{ slow }
 func (h hangUntilDone) Generate(ctx context.Context, _ *agent.Request, _ agent.TextSink) (*agent.Response, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+// Audit 18/11: Close returned before background work stopped and cleaned.
+func TestCloseWaitsForBackground(t *testing.T) {
+	var done atomic.Int32
+	crew, err := NewCrew(Team{Workers: []Worker{{Name: "w", Description: "w", Provider: hangUntilDone{},
+		Prepare: func(context.Context, string) (Setup, error) {
+			return Setup{Done: func() error { done.Add(1); return nil }}, nil
+		}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callTool(t, crew.Tool(), taskIn{Worker: "w", Task: "x", Background: true}); err != nil {
+		t.Fatal(err)
+	}
+	crew.Close()
+	if done.Load() != 1 {
+		t.Fatalf("cleanup after Close: %d", done.Load())
+	}
 }

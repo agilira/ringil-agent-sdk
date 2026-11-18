@@ -186,6 +186,9 @@ type Result struct {
 
 // Run runs plan with id; resume continues a run the journal holds.
 func (r *Runner) Run(ctx context.Context, id string, plan Plan, brief string, resume bool) (*Result, error) {
+	if r.Crew == nil {
+		return nil, errors.New(ErrPlan, "the runner has no crew")
+	}
 	if err := plan.Check(r.Crew.Has); err != nil {
 		return nil, err
 	}
@@ -260,15 +263,44 @@ func pendingSteps(st *State) []string {
 // Resolve records the verified outcome of a step left pending, so that a
 // resume goes on without running it again.
 func Resolve(ctx context.Context, j Journal, id, step, report string) error {
+	return change(ctx, j, id, step, func(s *StepState) {
+		s.Status, s.Report, s.Resolved, s.Finished = Done, report, true, time.Now()
+	})
+}
+
+// Retry clears a step left pending, so that a resume runs it again: for
+// the operator who checked that running it twice is safe (it failed
+// before doing anything, or its effects are idempotent).
+func Retry(ctx context.Context, j Journal, id, step string) error {
+	return change(ctx, j, id, step, nil)
+}
+
+// change edits a pending step while holding the run, so that a live run
+// and the operator never overwrite each other.
+func change(ctx context.Context, j Journal, id, step string, fn func(*StepState)) error {
+	if l, ok := j.(Locker); ok {
+		unlock, err := l.Lock(ctx, id)
+		if err != nil {
+			return err
+		}
+		defer release(unlock)
+	}
 	st, err := j.Load(ctx, id)
-	if err != nil || st == nil {
+	switch {
+	case err != nil:
+		return errors.Wrap(err, ErrJournal, "cannot read the journal of "+id)
+	case st == nil:
 		return errors.New(ErrJournal, "no workflow "+id)
 	}
 	s := st.Steps[step]
 	if s == nil || s.Status != Pending {
 		return errors.New(ErrJournal, "step "+step+" is not pending")
 	}
-	s.Status, s.Report, s.Resolved, s.Finished = Done, report, true, time.Now()
+	if fn == nil {
+		delete(st.Steps, step)
+	} else {
+		fn(s)
+	}
 	return j.Save(ctx, id, st)
 }
 

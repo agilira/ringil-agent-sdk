@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	stderrors "errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -772,5 +773,39 @@ func TestGeneralWorkerRunsAndAsksAsItself(t *testing.T) {
 	}
 	if strings.Contains(h.err.String(), "DELEGATE_CONFIG") || !strings.Contains(h.err.String(), "[general 1] done") {
 		t.Fatalf("general worker did not run: %q", h.err)
+	}
+}
+
+// Audit 18/11: a background worker's question read the same line as the
+// chat prompt. Now the prompt holds the terminal: the user's message goes
+// to the chat, and the question is asked, and answered, after it.
+func TestBackgroundQuestionWaitsForThePrompt(t *testing.T) {
+	pr, pw := io.Pipe()
+	c := newCLI(pr, &bytes.Buffer{}, &bytes.Buffer{})
+	chat := make(chan string, 1)
+	go func() {
+		line, _ := c.promptLine()
+		chat <- line
+	}()
+	time.Sleep(50 * time.Millisecond)
+	approved := make(chan bool, 1)
+	go func() {
+		ok, err := c.approve(context.Background(), agent.ToolCall{Name: "wipe", Input: []byte(`{}`)}, agent.ToolSpec{Annotations: agent.Annotations{Destructive: true}})
+		if err != nil {
+			t.Error(err)
+		}
+		approved <- ok
+	}()
+	time.Sleep(50 * time.Millisecond)
+	for _, line := range []string{"riassumi il repo\n", "y\n"} {
+		if _, err := io.WriteString(pw, line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := <-chat; got != "riassumi il repo" {
+		t.Fatalf("chat got %q", got)
+	}
+	if ok := <-approved; !ok {
+		t.Fatal("the answer after the message did not reach the question")
 	}
 }

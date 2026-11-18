@@ -174,7 +174,7 @@ func (c *Crew) Run(ctx context.Context, worker, taskText string) (string, error)
 		return "", err
 	}
 	defer c.forget(t)
-	return c.work(ctx, t, taskText)
+	return c.workSafely(ctx, t, taskText) // workflow steps run on their own goroutines
 }
 
 // work runs one message of a task on its worker and returns the report.
