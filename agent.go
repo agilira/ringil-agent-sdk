@@ -34,6 +34,13 @@ type Config struct {
 	// MaxTokens is passed to every model call; zero leaves it to the
 	// provider.
 	MaxTokens int
+	// ContextWindow is the model's context size in tokens. Zero takes it
+	// from the provider's ModelInfo; if that is zero too, compaction starts
+	// only when the provider reports the context is full.
+	ContextWindow int
+	// Compaction controls how a conversation that outgrows the context is
+	// shortened; the zero value is on, without model-written summaries.
+	Compaction Compaction
 	// StrictResume refuses a conversation that ended in the middle of tool
 	// calls (ErrSessionIncomplete) instead of telling the model those calls
 	// were interrupted. Either way, the calls are never repeated.
@@ -70,8 +77,8 @@ func New(cfg Config) (Agent, error) {
 	if cfg.Provider == nil {
 		return nil, errors.New(ErrAgentConfig, "a provider is required")
 	}
-	if cfg.MaxTurns < 0 || cfg.MaxTokens < 0 {
-		return nil, errors.New(ErrAgentConfig, "max turns and max tokens cannot be negative")
+	if cfg.MaxTurns < 0 || cfg.MaxTokens < 0 || cfg.ContextWindow < 0 {
+		return nil, errors.New(ErrAgentConfig, "max turns, max tokens and context window cannot be negative")
 	}
 	if cfg.Tools == nil {
 		cfg.Tools = &registry{entries: map[string]entry{}}
@@ -79,11 +86,17 @@ func New(cfg Config) (Agent, error) {
 	if cfg.System == "" {
 		cfg.System = DefaultSystem
 	}
-	return &loop{cfg: cfg}, nil
+	window := cfg.ContextWindow
+	if window == 0 {
+		window = cfg.Provider.Info().ContextWindow
+	}
+	c := &compactor{cfg: cfg.Compaction, window: window, provider: cfg.Provider, summaries: map[string]string{}}
+	return &loop{cfg: cfg, compactor: c}, nil
 }
 
 type loop struct {
-	cfg Config
+	cfg       Config
+	compactor *compactor
 }
 
 func (l *loop) Run(ctx context.Context, conv Conversation, input Message) (*Result, error) {
@@ -114,6 +127,7 @@ func (l *loop) Stream(ctx context.Context, conv Conversation, input Message) ite
 			defer end()
 		}
 		r := newRun(l.cfg, conv, yield)
+		r.compactor = l.compactor
 		err := r.begin(ctx, input)
 		if err == nil {
 			err = r.execute(ctx)
@@ -129,13 +143,16 @@ var errStopped = stderrors.New("event consumer stopped")
 
 // run is the state of one user turn.
 type run struct {
-	cfg     Config
-	conv    Conversation
-	yield   func(Event, error) bool
-	msgs    []Message
-	start   int
-	seenIDs map[string]bool
-	result  Result
+	cfg       Config
+	compactor *compactor
+	est       estimator
+	lastBytes int
+	conv      Conversation
+	yield     func(Event, error) bool
+	msgs      []Message
+	start     int
+	seenIDs   map[string]bool
+	result    Result
 }
 
 func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
@@ -221,13 +238,17 @@ func (r *run) execute(ctx context.Context) error {
 }
 
 func (r *run) callModel(ctx context.Context) (*Response, error) {
-	req := &Request{System: r.cfg.System, Messages: r.msgs, Tools: r.cfg.Tools.Specs(), MaxTokens: r.cfg.MaxTokens}
-	resp, err := r.cfg.Provider.Generate(ctx, req, func(delta string) error {
-		return r.emit(Event{Kind: EventText, Text: delta})
-	})
+	full := &Request{System: r.cfg.System, Messages: r.msgs, Tools: r.cfg.Tools.Specs(), MaxTokens: r.cfg.MaxTokens}
+	resp, err := r.generate(ctx, full, r.compactor.budget())
+	if errors.HasCode(err, ErrProviderContext) && !r.cfg.Compaction.Disabled {
+		// The estimate was wrong or the window unknown: compact harder,
+		// to half of what was just refused, and try once more.
+		resp, err = r.generate(ctx, full, r.est.tokens(r.lastBytes)/2)
+	}
 	if err != nil {
 		return nil, err
 	}
+	r.est.learn(r.lastBytes, resp.Usage.Input)
 	r.result.Turns++
 	r.result.Usage = r.result.Usage.Add(resp.Usage)
 	msg := resp.Message.Clone()
@@ -240,6 +261,27 @@ func (r *run) callModel(ctx context.Context) (*Response, error) {
 	}
 	resp.Message = msg
 	return resp, r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop})
+}
+
+// generate sends full, compacted to budget tokens, and streams the answer.
+func (r *run) generate(ctx context.Context, full *Request, budget int) (*Response, error) {
+	req := *full
+	if !r.cfg.Compaction.Disabled {
+		msgs, what, err := r.compactor.view(ctx, full, &r.est, budget)
+		if err != nil {
+			return nil, err
+		}
+		if what != "" {
+			if err := r.emit(Event{Kind: EventCompacted, Text: what}); err != nil {
+				return nil, err
+			}
+		}
+		req.Messages = msgs
+	}
+	r.lastBytes = requestBytes(&req)
+	return r.cfg.Provider.Generate(ctx, &req, func(delta string) error {
+		return r.emit(Event{Kind: EventText, Text: delta})
+	})
 }
 
 // uniqueIDs renames call IDs that repeat an earlier one: some servers reuse

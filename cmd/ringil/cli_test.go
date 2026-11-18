@@ -254,3 +254,14 @@ func TestRecoveredCallIsShown(t *testing.T) {
 		t.Fatalf("render %v %q", err, h.err)
 	}
 }
+
+func TestContextWindowFlagCompacts(t *testing.T) {
+	long := strings.Repeat("parola ", 400)
+	h := newHarness(long+"\n"+long+"\n"+long+"\n", fake.Reply(long), fake.Reply(long), fake.Reply("ok"))
+	if code := h.run("--context-window", "1500", "chat"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if !strings.Contains(h.err.String(), "~ context compacted:") {
+		t.Fatalf("err %q", h.err)
+	}
+}

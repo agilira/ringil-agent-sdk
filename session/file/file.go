@@ -46,18 +46,27 @@ func New(dir string) (agent.Store, error) {
 	if err := checkPrivate(info); err != nil {
 		return nil, err
 	}
-	// Every file operation goes through the root, which cannot reach
-	// outside dir whatever a name or a planted link says.
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, ioError(err, "cannot open the session directory")
-	}
-	return &store{dir: dir, root: root}, nil
+	return &store{dir: dir}, nil
 }
 
 type store struct {
-	dir  string
-	root *os.Root
+	dir string
+}
+
+// withRoot runs fn with the directory opened as an os.Root, which cannot
+// reach outside dir whatever a name or a planted link says. The root is
+// held only for the operation: a directory left open cannot be deleted or
+// renamed on Windows.
+func (s *store) withRoot(fn func(*os.Root) error) error {
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return ioError(err, "cannot open the session directory")
+	}
+	err = fn(root)
+	if cerr := root.Close(); err == nil && cerr != nil {
+		err = ioError(cerr, "cannot close the session directory")
+	}
+	return err
 }
 
 func name(id, ext string) string { return id + ext }
@@ -66,11 +75,19 @@ func ioError(err error, msg string) error { return errors.Wrap(err, agent.ErrSes
 
 // openFile opens a file of the store, refusing symlinks even inside the
 // directory: session files are always regular files the store created.
-func (s *store) openFile(name string, flag int) (*os.File, error) {
-	if info, err := s.root.Lstat(name); err == nil && info.Mode()&os.ModeSymlink != 0 {
+func (s *store) openFile(name string, flag int) (f *os.File, err error) {
+	err = s.withRoot(func(root *os.Root) error {
+		f, err = openIn(root, name, flag)
+		return err
+	})
+	return f, err
+}
+
+func openIn(root *os.Root, name string, flag int) (*os.File, error) {
+	if info, err := root.Lstat(name); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New(agent.ErrSessionIO, "session file is a symlink")
 	}
-	f, err := s.root.OpenFile(name, flag|openFlags, 0o600)
+	f, err := root.OpenFile(name, flag|openFlags, 0o600)
 	if err != nil {
 		return nil, ioError(err, "cannot open session file")
 	}
@@ -226,7 +243,8 @@ func (s *store) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.root.Remove(name(id, dataExt)); err != nil && !os.IsNotExist(err) {
+	err = s.withRoot(func(root *os.Root) error { return root.Remove(name(id, dataExt)) })
+	if err != nil && !os.IsNotExist(errors.RootCause(err)) {
 		return joinClose(ioError(err, "cannot delete session"), lock)
 	}
 	if err := lock.Close(); err != nil {
