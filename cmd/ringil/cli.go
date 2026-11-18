@@ -104,7 +104,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
 		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
 		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key").
-		AddGlobalIntFlag("workflow-calls", "", 0, "most model calls one workflow may make, across resumes; 0 is no limit").
+		AddGlobalIntFlag("workflow-calls", "", 0, "most successful model calls one workflow may make, across resumes; 0 is no limit").
 		AddGlobalIntFlag("workflow-tokens", "", 0, "most tokens one workflow may use, across resumes; 0 is no limit").
 		AddGlobalFlag("embed-model", "", "", "embedding model for memory by meaning (or RINGIL_EMBED_MODEL); same endpoint and key as the chat model").
 		AddGlobalFlag("agents-config", "", "", "remote A2A agents file ({\"agents\": ...}); default <config>/ringil/agents.json").
@@ -133,6 +133,13 @@ func (c *cli) app() *orpheus.App {
 		AddSubcommand(orpheus.NewCommand("resolve", "Record the checked outcome of an uncertain step, from standard input").SetHandler(c.cmdWorkflowResolve).SetUsage("workflow resolve <id> <step>")).
 		AddSubcommand(orpheus.NewCommand("retry", "Let resume run an uncertain step again").SetHandler(c.cmdWorkflowRetry).SetUsage("workflow retry <id> <step>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete workflows' journals").SetHandler(c.cmdWorkflowRemove).SetUsage("workflow rm <id...>")))
+	app.AddCommand(orpheus.NewCommand("artifact", "List this project's artifacts").SetHandler(c.cmdArtifacts).
+		AddSubcommand(orpheus.NewCommand("show", "Print an artifact").SetHandler(c.cmdArtifactShow).SetUsage("artifact show <name>")).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete artifacts").SetHandler(c.cmdArtifactRemove).SetUsage("artifact rm <name...>")))
+	app.AddCommand(orpheus.NewCommand("state", "Back up, check and restore the agent's state").SetHandler(c.cmdStateHelp).
+		AddSubcommand(orpheus.NewCommand("backup", "Save the agent's state to a new archive").SetHandler(c.cmdStateBackup).SetUsage("state backup <file.tar.gz>")).
+		AddSubcommand(orpheus.NewCommand("verify", "Check an archive without extracting it").SetHandler(c.cmdStateVerify).SetUsage("state verify <file.tar.gz>")).
+		AddSubcommand(orpheus.NewCommand("restore", "Restore an archive into a new directory, in quarantine").SetHandler(c.cmdStateRestore).SetUsage("state restore <file.tar.gz> <dir>")))
 	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.cmdRules))
 	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.cmdSkills).
 		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.cmdSkillInstall).SetUsage("skill install <dir>")).
@@ -327,7 +334,7 @@ func (c *cli) cmdRules(*orpheus.Context) error {
 
 // extraTools: memory and skill tools, when there is something to use.
 func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
-	extra := []agent.Tool{todo.Tool()}
+	extra := append([]agent.Tool{todo.Tool()}, c.artifactTools("agent")...)
 	if c.notes != nil {
 		extra = append(extra, c.notes.Tool())
 	}

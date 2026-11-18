@@ -132,3 +132,32 @@ func TestCloseWaitsForBackground(t *testing.T) {
 		t.Fatalf("cleanup after Close: %d", done.Load())
 	}
 }
+
+// halfPanic answers once with usage, then panics.
+type halfPanic struct{ calls atomic.Int32 }
+
+func (h *halfPanic) Info() agent.ModelInfo { return agent.ModelInfo{Name: "h"} }
+func (h *halfPanic) Generate(context.Context, *agent.Request, agent.TextSink) (*agent.Response, error) {
+	if h.calls.Add(1) == 2 {
+		panic("provider bug")
+	}
+	return &agent.Response{Message: agent.Message{Role: agent.RoleAssistant, Calls: []agent.ToolCall{{ID: "c1", Name: "noop", Input: []byte(`{}`)}}}, Usage: agent.Usage{Input: 100, Output: 10}, Stop: agent.StopToolUse}, nil
+}
+
+// Audit 18/11: a panic lost the spend of calls already paid.
+func TestPanicKeepsSpend(t *testing.T) {
+	noop := agent.NewTool("noop", "x", func(context.Context, struct{}) (string, error) { return "", nil }, agent.ReadOnly())
+	tools, err := agent.NewRegistry(noop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crew, err := NewCrew(Team{Workers: []Worker{{Name: "w", Description: "w", Tools: tools, Provider: &halfPanic{}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer crew.Close()
+	_, spent, err := crew.RunCounted(bg, "w", "x")
+	if err == nil || spent.Calls != 1 || spent.Usage.Input != 100 {
+		t.Fatalf("spent %+v err %v", spent, err)
+	}
+}

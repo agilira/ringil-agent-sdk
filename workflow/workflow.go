@@ -181,15 +181,16 @@ type Runner struct {
 	Parallel int
 	// OnStep reports progress: a step started, done or failed.
 	OnStep func(step, status string, err error)
-	// Budget bounds what a run may spend in total, across resumes; zero
-	// fields are unbounded. A step starts only while the run is within
-	// it, so the last step may go past it by its own cost.
+	// Budget bounds what a run may spend in total, across resumes and
+	// retries; zero fields are unbounded. A step starts only while the
+	// run is within it, and spending is counted when a step ends: the
+	// steps already running may go past it by their own cost.
 	Budget Budget
 }
 
 // Budget limits a run.
 type Budget struct {
-	Calls  int // model calls
+	Calls  int // model calls that succeeded (retries inside a provider are not counted)
 	Tokens int // input plus output tokens
 }
 

@@ -223,6 +223,27 @@ distruttivo, quindi l'host mostra il piano prima di eseguirlo.
 CLI: il piano compare con i passaggi e chiede conferma; `ringil workflow`,
 `ringil workflow resume <id>`, `ringil workflow resolve <id> <passaggio>` (esito da stdin).
 
+## Artifact
+
+`artifact` conserva i risultati che gli agenti producono (un rapporto, una tabella, un
+file) perché altri compiti, sessioni successive o l'utente li usino. Un artifact ha un nome
+in uno scope scelto dall'host e delle versioni: ripubblicare un nome aggiunge una versione,
+non sovrascrive mai. Ogni versione è salvata per SHA-256 e controllata a ogni lettura.
+`artifact.Tools` dà al modello `list_artifacts`, `read_artifact` e, con il permesso,
+`publish_artifact`; altri scope si possono concedere in sola lettura.
+CLI: scope = progetto della cartella di lancio, condiviso da agente, sub-agenti e
+workflow; `ringil artifact`, `artifact show <nome>`, `artifact rm <nome>`.
+
+## Backup e ripristino
+
+`backup.Create` salva in un tar.gz le cartelle di stato indicate dall'host, con un manifest
+di digest; `backup.Verify` controlla un archivio senza estrarlo; `backup.Restore` lo
+ripristina solo in una cartella nuova, marcata `QUARANTINE.md`: un'istantanea non dice nulla
+di ciò che è successo dopo (effetti già fatti, spese già fatte), quindi niente viene
+riattivato da solo. CLI: `ringil state backup <file>`, `state verify <file>`,
+`state restore <file> <cartella nuova>`; sono esclusi le skill installate e i token di
+login.
+
 ## Regole di progetto
 
 `rules` legge le istruzioni che le persone scrivono per gli agenti, così un agente

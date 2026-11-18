@@ -185,7 +185,8 @@ func (c *Crew) RunCounted(ctx context.Context, worker, taskText string) (report 
 			err = errors.New(agent.ErrToolPanic, "the worker panicked")
 		}
 	}()
-	return c.counted(ctx, t, taskText)
+	report, err = c.countInto(ctx, t, taskText, &spent) // spent survives a panic
+	return report, spent, err
 }
 
 // work runs one message of a task on its worker and returns the report.
@@ -208,19 +209,29 @@ func (s Spend) Add(o Spend) Spend {
 
 // counted runs one message of a task and reports what it cost.
 func (c *Crew) counted(ctx context.Context, t *task, message string) (string, Spend, error) {
-	ctx = context.WithValue(ctx, infoKey{}, Info{Task: t.id, Worker: t.worker.Name})
 	var spent Spend
+	report, err := c.countInto(ctx, t, message, &spent)
+	return report, spent, err
+}
+
+// countInto runs one message of a task, adding what it costs to *spent
+// as calls happen, so a caller that recovers a panic keeps the count.
+func (c *Crew) countInto(ctx context.Context, t *task, message string, spent *Spend) (string, error) {
+	ctx = context.WithValue(ctx, infoKey{}, Info{Task: t.id, Worker: t.worker.Name})
 	a, err := c.agentFor(t.worker, t.setup)
 	if err != nil {
-		return "", spent, err
+		return "", err
 	}
 	var res *agent.Result
 	for ev, err := range a.Stream(ctx, t.conv, agent.UserText(message)) {
 		if err != nil {
-			return "", spent, errors.Wrap(err, agent.ErrToolFailed, "the worker stopped").WithUserMessage("The worker stopped before finishing: " + agent.ModelMessage(err))
+			return "", errors.Wrap(err, agent.ErrToolFailed, "the worker stopped").WithUserMessage("The worker stopped before finishing: " + agent.ModelMessage(err))
 		}
-		if ev.Kind == agent.EventModel {
+		switch ev.Kind {
+		case agent.EventModel:
 			spent.Calls++
+			spent.Usage = spent.Usage.Add(ev.Usage)
+		case agent.EventCompacted: // a summary is a model call too
 			spent.Usage = spent.Usage.Add(ev.Usage)
 		}
 		if c.OnEvent != nil {
@@ -231,9 +242,9 @@ func (c *Crew) counted(ctx context.Context, t *task, message string) (string, Sp
 		}
 	}
 	if res == nil {
-		return "", spent, agent.ToolError(agent.ErrToolFailed, "The worker ended without a report.")
+		return "", agent.ToolError(agent.ErrToolFailed, "The worker ended without a report.")
 	}
-	return c.report(res), spent, nil
+	return c.report(res), nil
 }
 
 func (c *Crew) agentFor(w Worker, setup Setup) (agent.Agent, error) {

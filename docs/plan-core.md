@@ -410,7 +410,7 @@ prima del commit dopo:
 | 10 | Ruolo e provider per profilo, regole di progetto, `AGENTS.md` automatico (0.13-0.15) | REGOLE FATTE 18/11: pacchetto rules (AGENTS.md + CLAUDE/GEMINI/Copilot/Cursor/Windsurf, dalla radice del repo, globale utente) via Config.Context; files.DefaultProtected per la scrittura (18). Ruolo/provider per profilo: con serve |
 | 11 | Lettura selettiva della storia citata dalle sintesi (0.16) | FATTO 18/11: riassunti e stub numerati, read_history offerto dopo la compattazione, eseguito dal ciclo |
 | 12 | Budget durevole per i workflow (0.17) | FATTO 18/11: spesa per passaggio (anche fallito) nel journal, Runner.Budget calls/token, ripresa che continua il conto |
-| 13 | Artefatti, backup e ripristino in quarantena (0.20-0.24) | |
+| 13 | Artefatti, backup e ripristino in quarantena (0.20-0.24) | FATTO 18/11: artifact (scope, versioni immutabili, digest, tool con scope concessi), backup tar.gz con manifest, verify, restore solo in cartella nuova in quarantena |
 | 14 | Rilevatore di loop (0.27) | default avviso; argomenti alterni e cicli di 3 |
 | 15 | Bus di eventi e adapter slog solo metadati (0.29) | una sola sequenza |
 | 16 | Controller, API HTTP loopback, `serve` (0.30-0.32) | TTL dei run conclusi, lock per job, `omitzero` |
