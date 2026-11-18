@@ -135,6 +135,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
 		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools").
 		AddGlobalBoolFlag("accept-edits", "", false, "write and edit files without asking (files holding your rules and settings are still confirmed)").
+		AddGlobalFlag("allow-domains", "", "", "domains bash commands reach without asking, comma-separated (pypi.org,*.github.com); others are asked about").
 		AddGlobalBoolFlag("no-memory", "", false, "do not recall or keep memories across conversations").
 		AddGlobalIntFlag("context-window", "", 0, "model context size in tokens; compaction starts near it (0: only when the model reports it is full)").
 		AddGlobalBoolFlag("summarize", "", false, "summarize left-out turns with the model instead of dropping them (costs a call)").
@@ -265,7 +266,11 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 		return nil, err
 	}
 	c.readTools = ws.ReadTools()
-	return reg.With(append(c.readTools, ws.WriteTools()...)...)
+	sh, err := c.bashTool(ctx, dirs)
+	if err != nil {
+		return nil, err
+	}
+	return reg.With(append(append(c.readTools, ws.WriteTools()...), sh)...)
 }
 
 // addEach adds remote tools one by one: a name that clashes with another
@@ -498,6 +503,9 @@ func (c *cli) serveApprove(ctx context.Context, call agent.ToolCall, spec agent.
 }
 
 func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) bool {
+	if call.Name == "bash" {
+		return false // the tool asks itself: outside the sandbox, and dangerous commands
+	}
 	if writesFiles[call.Name] {
 		return !c.acceptEdits // protected files are confirmed apart, always
 	}

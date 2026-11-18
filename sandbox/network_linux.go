@@ -1,4 +1,5 @@
-// network_linux.go: an isolated network through slirp4netns
+// network_linux.go: an isolated network through slirp4netns, or only a
+// proxy through a socat bridge
 //
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,18 +50,23 @@ func (l *launch) networkArgs(n Network) ([]string, error) {
 		return nil, errors.Wrap(err, ErrStart, "cannot create the block pipe")
 	}
 	l.extra = append(l.extra, blockW)
-	resolv, err := dataFile(resolvConf)
+	text, at := resolvConf, "/etc/resolv.conf"
+	if n == ProxiedNetwork {
+		// No DNS: clients hand the proxy names, not addresses.
+		text, at = hostsFile, "/etc/hosts"
+	}
+	data, err := dataFile(text)
 	if err != nil {
 		l.extra = append(l.extra, infoW, blockR)
 		return nil, err
 	}
 	return []string{
 		"--info-fd", l.add(infoW), "--block-fd", l.add(blockR),
-		"--ro-bind-data", l.add(resolv), "/etc/resolv.conf",
-		"--ro-bind-try", "/etc/ssl", "/etc/ssl",
-		"--ro-bind-try", "/etc/ca-certificates", "/etc/ca-certificates",
+		"--ro-bind-data", l.add(data), at,
 	}, nil
 }
+
+const hostsFile = "127.0.0.1 localhost\n::1 localhost\n"
 
 // dataFile returns an unlinked file holding text, for --ro-bind-data.
 func dataFile(text string) (*os.File, error) {
@@ -87,12 +94,15 @@ func closeWith(err *errors.Error, f *os.File) error {
 	return err
 }
 
-// connect attaches slirp4netns to the started sandbox and releases it.
-func (l *launch) connect(ctx context.Context, p *process) error {
+// connect attaches the network to the started sandbox and releases it.
+func (l *launch) connect(ctx context.Context, p *process, spec Spec) error {
 	infoR, blockW := l.extra[0], l.extra[1]
 	pid, err := childPID(infoR)
 	if err != nil {
 		return err
+	}
+	if spec.Network == ProxiedNetwork {
+		return l.bridge(ctx, p, pid, spec.Proxy, blockW)
 	}
 	readyR, readyW, err := os.Pipe()
 	if err != nil {
@@ -213,4 +223,72 @@ func release(block *os.File) error {
 		return errors.Wrap(err, ErrStart, "cannot release the sandbox")
 	}
 	return nil
+}
+
+// bridge starts socat inside the sandbox's network namespace, but in the
+// host's filesystem: it listens on ProxyAddr there and carries each
+// connection to the proxy's Unix socket. The sandboxed program needs no
+// Unix socket of its own, and its namespace has nothing else to reach.
+func (l *launch) bridge(ctx context.Context, p *process, pid int, proxy string, blockW *os.File) error {
+	netns, userns, err := namespaces(pid)
+	if err != nil {
+		return err
+	}
+	l.extra = append(l.extra, netns, userns)
+	logR, logW, err := os.Pipe()
+	if err != nil {
+		return errors.Wrap(err, ErrStart, "cannot create the bridge's log pipe")
+	}
+	l.extra = append(l.extra, logR)
+	// #nosec G204 -- fixed binaries; the socket path is the host's own
+	cmd := exec.CommandContext(ctx, nsenterPath, "--preserve-credentials",
+		"--user=/proc/self/fd/3", "--net=/proc/self/fd/4", "--",
+		socatPath, "-d", "-d", "TCP-LISTEN:"+proxyPort()+",bind=127.0.0.1,fork,reuseaddr",
+		"UNIX-CONNECT:"+proxy)
+	cmd.ExtraFiles = []*os.File{userns, netns}
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	cmd.Stderr = logW
+	p.net, p.bridge = cmd, true
+	err = cmd.Start()
+	// The child has its copy: ours goes now, so that a bridge dying early
+	// ends the wait at once.
+	if cerr := logW.Close(); err == nil && cerr != nil {
+		err = cerr
+	}
+	if err != nil {
+		p.net = nil
+		return errors.Wrap(err, ErrStart, "cannot start the proxy bridge")
+	}
+	if err := waitListening(logR); err != nil {
+		return err
+	}
+	go drain(logR) // socat logs every connection: keep its pipe flowing
+	return release(blockW)
+}
+
+func proxyPort() string { return ProxyAddr[strings.LastIndexByte(ProxyAddr, ':')+1:] }
+
+// waitListening reads socat's log until it listens.
+func waitListening(log *os.File) error {
+	if err := log.SetReadDeadline(time.Now().Add(netStartTimeout)); err != nil {
+		return errors.Wrap(err, ErrStart, "cannot wait on the proxy bridge")
+	}
+	sc := bufio.NewScanner(log)
+	var last string
+	for sc.Scan() {
+		last = sc.Text()
+		if strings.Contains(last, " listening on ") {
+			return log.SetReadDeadline(time.Time{})
+		}
+	}
+	return errors.New(ErrStart, "the proxy bridge did not come up").WithContext("socat", last)
+}
+
+func drain(r *os.File) {
+	buf := make([]byte, 4096)
+	for {
+		if _, err := r.Read(buf); err != nil {
+			return
+		}
+	}
 }

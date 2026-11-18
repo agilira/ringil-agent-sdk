@@ -14,9 +14,11 @@ import (
 	"iter"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +37,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/todo"
+	"github.com/agilira/ringil-agent-sdk/tools/bash"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
 	"github.com/agilira/ringil-agent-sdk/workflow"
 )
@@ -635,5 +638,76 @@ func TestLiveFileEdit(t *testing.T) {
 	data, err := os.ReadFile(cfgPath)
 	if err != nil || string(data) != "server:\n  host: localhost\n  port: 9090\n  timeout: 30\n" {
 		t.Fatalf("file now %q %v", data, err)
+	}
+}
+
+// gitRepo makes a repository with one empty commit, an untracked
+// notes.txt and a build tree.
+func gitRepo(t *testing.T, env map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"commit", "-q", "--allow-empty", "-m", "start"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		for k, v := range env {
+			cmd.Env = append(cmd.Environ(), k+"="+v)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "build", "out"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func bashAgent(t *testing.T, model agent.Provider, cfg bash.Config) agent.Agent {
+	t.Helper()
+	sh, err := bash.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := agent.NewRegistry(sh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, MaxTurns: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// TestLiveBash: the model commits with git through bash in the sandbox,
+// and a dangerous command waits for a yes that does not come.
+func TestLiveBash(t *testing.T) {
+	model := liveModel(t)
+	if _, err := sandbox.New(); err != nil {
+		t.Skip(err)
+	}
+	gitEnv := map[string]string{"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com"}
+	dir := gitRepo(t, gitEnv)
+	var asked atomic.Int32
+	a := bashAgent(t, model, bash.Config{Dir: dir, Read: []string{}, Env: gitEnv, Confirm: func(context.Context, bash.Request) (bool, error) {
+		asked.Add(1)
+		return false, nil
+	}})
+	if _, err := a.Run(context.Background(), nil, agent.UserText("Nel repository git della cartella di lavoro aggiungi il file notes.txt e fai un commit con messaggio \"add notes\". Usa il tool bash.")); err != nil {
+		t.Fatal(err)
+	}
+	log := exec.Command("git", "log", "--format=%s", "-1", "--", "notes.txt")
+	log.Dir = dir
+	if out, err := log.Output(); err != nil || !strings.Contains(strings.ToLower(string(out)), "add notes") {
+		t.Fatalf("no commit of notes.txt: %q %v", out, err)
+	}
+	if _, err := a.Run(context.Background(), nil, agent.UserText("Cancella la cartella build con rm -rf build usando il tool bash.")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "build", "out")); err != nil || asked.Load() == 0 {
+		t.Fatalf("build: %v, asked %d", err, asked.Load())
 	}
 }

@@ -7,7 +7,7 @@
 // directories granted to it are visible, read-only unless granted
 // writable; it sees no environment it was not given, no host processes,
 // and by default no network. Skills' scripts, MCP stdio servers and the
-// sandboxed Bash tool all run through it.
+// bash tool all run through it.
 //
 // The Linux backend uses bubblewrap (namespaces, no capabilities, a
 // seccomp filter) with per-process resource limits. Other platforms report
@@ -54,7 +54,16 @@ const (
 	// goes through the host's resolver, local names included. An egress
 	// filter is planned; until then grant network only where that is fine.
 	IsolatedNetwork
+	// ProxiedNetwork: no network but one address, ProxyAddr, which leads to
+	// the host's Unix socket Spec.Proxy: an egress proxy (package egress)
+	// deciding which domains the program may reach. HTTP_PROXY and its
+	// kin point at it. Nothing else answers: no DNS, no other host, no
+	// host service, no Unix socket.
+	ProxiedNetwork
 )
+
+// ProxyAddr is where a program under ProxiedNetwork finds its proxy.
+const ProxyAddr = "127.0.0.1:3128"
 
 // Mount grants a host directory to the sandbox.
 type Mount struct {
@@ -69,6 +78,10 @@ type Mount struct {
 	// program must not see: each becomes an empty directory or an empty
 	// file. files.Hidden lists what the file tools' policy excludes.
 	Hide []string
+	// ReadOnly are paths inside a writable Source, relative and
+	// slash-separated, that stay read-only: a repository's hooks, say.
+	// Paths that do not exist are skipped: the program can create them.
+	ReadOnly []string
 }
 
 // Limits are per-process resource limits. Zero means the default given.
@@ -99,11 +112,22 @@ type Spec struct {
 	Argv []string
 	// Dir is the working directory inside the sandbox; default "/".
 	Dir string
-	// Env is the whole environment, besides PATH, HOME, TMPDIR and LANG.
-	Env     map[string]string
+	// Env is the whole environment, besides PATH, HOME, TMPDIR, LANG and,
+	// under ProxiedNetwork, the proxy variables.
+	Env map[string]string
+	// Path is PATH, directories inside the sandbox; default /usr/bin, /bin.
+	Path []string
+	// Home, when set, is HOME: a private, empty, writable directory at
+	// this absolute path, gone when the program ends, where mounts may
+	// place a user's configuration (a .gitconfig, a toolchain). Unset,
+	// HOME is /tmp.
+	Home    string
 	Mounts  []Mount
 	Network Network
-	Limits  Limits
+	// Proxy is the host's Unix socket of the egress proxy, for
+	// ProxiedNetwork.
+	Proxy  string
+	Limits Limits
 	// Protected are absolute host paths that no mount may contain or be
 	// inside: credentials, session stores, the agent's own configuration.
 	// They are compared by resolved path: a hard link or bind-mount alias
@@ -146,7 +170,49 @@ func validate(spec Spec) error {
 	if err := validateMounts(spec.Mounts); err != nil {
 		return err
 	}
+	if err := validateHome(spec); err != nil {
+		return err
+	}
+	if err := validatePath(spec.Path); err != nil {
+		return err
+	}
+	if err := validateProxy(spec); err != nil {
+		return err
+	}
 	return validateEnv(spec.Env)
+}
+
+func validateProxy(spec Spec) error {
+	if (spec.Network == ProxiedNetwork) != (spec.Proxy != "") || spec.Proxy != "" && !filepath.IsAbs(spec.Proxy) {
+		return configError("a proxied network needs the proxy's absolute socket path, and only it")
+	}
+	return nil
+}
+
+// validateHome: the home is a clean absolute path the sandbox does not
+// mount itself, not inside or over a mount (it would cover the mount).
+func validateHome(spec Spec) error {
+	if spec.Home == "" {
+		return nil
+	}
+	if !path.IsAbs(spec.Home) || path.Clean(spec.Home) != spec.Home || reserved(spec.Home) || spec.Home == "/tmp" {
+		return configError("home must be a clean absolute path outside the sandbox's own directories")
+	}
+	for _, m := range spec.Mounts {
+		if t := targetOf(m); t == spec.Home || strings.HasPrefix(spec.Home, t+"/") {
+			return configError("home cannot be a mount or lie inside one: " + t)
+		}
+	}
+	return nil
+}
+
+func validatePath(dirs []string) error {
+	for _, d := range dirs {
+		if !path.IsAbs(d) || strings.ContainsAny(d, ":\x00") {
+			return configError("path entries must be absolute directories without : or NUL")
+		}
+	}
+	return nil
 }
 
 // reservedTargets are mounted by the sandbox itself.
@@ -177,23 +243,38 @@ func validateMounts(mounts []Mount) error {
 	seen := map[string]bool{}
 	hidden := 0
 	for _, m := range mounts {
-		m.Target = targetOf(m)
-		target := path.Clean(m.Target)
-		if !path.IsAbs(m.Target) || target != m.Target || seen[target] || m.Source == "" {
-			return configError("mount targets must be distinct, clean, absolute paths with a source")
-		}
-		if reserved(target) {
-			return configError("mount target " + target + " is reserved")
-		}
-		if err := validateHide(m.Hide); err != nil {
+		target, err := validateMount(m)
+		if err != nil {
 			return err
 		}
-		if hidden += len(m.Hide); hidden > MaxHidden {
+		if seen[target] {
+			return configError("mount targets must be distinct, clean, absolute paths with a source")
+		}
+		if hidden += len(m.Hide) + len(m.ReadOnly); hidden > MaxHidden {
 			return configError("too many hidden paths across the mounts")
 		}
 		seen[target] = true
 	}
 	return nil
+}
+
+// validateMount checks one mount and returns its target.
+func validateMount(m Mount) (string, error) {
+	m.Target = targetOf(m)
+	target := path.Clean(m.Target)
+	if !path.IsAbs(m.Target) || target != m.Target || m.Source == "" {
+		return "", configError("mount targets must be distinct, clean, absolute paths with a source")
+	}
+	if reserved(target) {
+		return "", configError("mount target " + target + " is reserved")
+	}
+	if err := validateHide(m.Hide); err != nil {
+		return "", err
+	}
+	if err := validateHide(m.ReadOnly); err != nil || len(m.ReadOnly) > 0 && !m.Writable {
+		return "", configError("read-only paths are relative paths inside a writable mount")
+	}
+	return target, nil
 }
 
 // targetOf is where m appears inside the sandbox.
@@ -216,13 +297,44 @@ func reserved(target string) bool {
 
 var reservedEnv = map[string]bool{"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true}
 
+// proxyEnv points every common client at the proxy; no_proxy is cleared
+// so that nothing bypasses it (there is nothing to bypass to).
+var proxyEnv = []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"}
+
 func validateEnv(env map[string]string) error {
 	for k, v := range env {
-		if k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, 0) || reservedEnv[k] {
-			return configError("environment names must be non-empty, without = or NUL, and not PATH, HOME, TMPDIR or LANG")
+		if k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, 0) || reservedEnv[k] || isProxyEnv(k) {
+			return configError("environment names must be non-empty, without = or NUL, and not PATH, HOME, TMPDIR, LANG or a proxy variable")
 		}
 	}
 	return nil
+}
+
+func isProxyEnv(k string) bool {
+	for _, p := range proxyEnv {
+		if k == p {
+			return true
+		}
+	}
+	return false
+}
+
+// fixedEnv is the environment the sandbox sets itself.
+func fixedEnv(spec Spec, tmp string) map[string]string {
+	env := map[string]string{"PATH": "/usr/bin:/bin", "HOME": tmp, "TMPDIR": tmp, "LANG": "C.UTF-8"}
+	if len(spec.Path) > 0 {
+		env["PATH"] = strings.Join(spec.Path, ":")
+	}
+	if spec.Home != "" {
+		env["HOME"] = spec.Home
+	}
+	if spec.Network == ProxiedNetwork {
+		for _, k := range proxyEnv {
+			env[k] = "http://" + ProxyAddr
+		}
+		env["NO_PROXY"], env["no_proxy"] = "", ""
+	}
+	return env
 }
 
 func (l Limits) withDefaults() Limits {
