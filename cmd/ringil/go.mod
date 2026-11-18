@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/agilira/go-errors v1.1.3
-	github.com/agilira/orpheus v1.6.0
+	github.com/agilira/orpheus v1.6.1
 	github.com/agilira/ringil-agent-sdk v0.0.0
 	github.com/agilira/ringil-agent-sdk/a2a v0.0.0
 	github.com/agilira/ringil-agent-sdk/mcp v0.0.0
@@ -12,7 +12,7 @@ require (
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.8.0 // indirect
-	github.com/agilira/flash-flags v1.3.1 // indirect
+	github.com/agilira/flash-flags v1.3.2 // indirect
 	github.com/agilira/go-timecache v1.0.4 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
