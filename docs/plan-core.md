@@ -408,8 +408,8 @@ prima del commit dopo:
 | 8 | Workflow locali + journal durevole (+ workflow scritti dall'agente) | FATTO 18/11: workflow.Runner (passaggi pronti in parallelo, journal intent-before-run, ripresa senza replay, Resolve), FileJournal con lock, run_workflow per i piani del modello; delega in background e continue_task |
 | 9 | Scratchpad e memoria di progetto Markdown (0.10) + todo dell'agente | FATTO 18/11: tool notes (semantica memory tool), scope scelti dall'host anche read-only, INDEX.md nel contesto via Config.Context; todo_write con lista nella conversazione |
 | 10 | Ruolo e provider per profilo, regole di progetto, `AGENTS.md` automatico (0.13-0.15) | REGOLE FATTE 18/11: pacchetto rules (AGENTS.md + CLAUDE/GEMINI/Copilot/Cursor/Windsurf, dalla radice del repo, globale utente) via Config.Context; files.DefaultProtected per la scrittura (18). Ruolo/provider per profilo: con serve |
-| 11 | Lettura selettiva della storia citata dalle sintesi (0.16) | |
-| 12 | Budget durevole per i workflow (0.17) | |
+| 11 | Lettura selettiva della storia citata dalle sintesi (0.16) | FATTO 18/11: riassunti e stub numerati, read_history offerto dopo la compattazione, eseguito dal ciclo |
+| 12 | Budget durevole per i workflow (0.17) | FATTO 18/11: spesa per passaggio (anche fallito) nel journal, Runner.Budget calls/token, ripresa che continua il conto |
 | 13 | Artefatti, backup e ripristino in quarantena (0.20-0.24) | |
 | 14 | Rilevatore di loop (0.27) | default avviso; argomenti alterni e cicli di 3 |
 | 15 | Bus di eventi e adapter slog solo metadati (0.29) | una sola sequenza |

@@ -1,0 +1,54 @@
+// budget_test.go: a workflow's spending, kept across resumes
+//
+// Copyright (c) 2026 AGILira - A. Giordano
+// SPDX-License-Identifier: MPL-2.0
+
+package workflow
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/agilira/go-errors"
+)
+
+func TestBudgetStopsAndResumeKeepsCounting(t *testing.T) {
+	j := &memJournal{}
+	r := runner(t, &echo{}, j)
+	r.Budget = Budget{Calls: 2}
+	if _, err := r.Run(bg, "b", diamond, "", false); !errors.HasCode(err, ErrBudget) {
+		t.Fatalf("over budget: %v", err)
+	}
+	st, err := j.Load(bg, "b")
+	if err != nil || st.Spent.Calls != 3 || st.Steps["d"] != nil {
+		t.Fatalf("spent %+v, d %+v", st.Spent, st.Steps["d"])
+	}
+	checkBudgetResume(t, j)
+}
+
+// checkBudgetResume: with a larger budget only d runs, and the count goes
+// on from the first attempt.
+func checkBudgetResume(t *testing.T, j Journal) {
+	t.Helper()
+	model := &echo{}
+	r := runner(t, model, j)
+	r.Budget = Budget{Calls: 10}
+	if _, err := r.Run(bg, "b", diamond, "", true); err != nil || strings.Join(model.started, ",") != "D" {
+		t.Fatalf("resume ran %v: %v", model.started, err)
+	}
+	if st, err := j.Load(bg, "b"); err != nil || st.Spent.Calls != 4 || st.Steps["d"].Spent.Calls != 1 {
+		t.Fatalf("spent after resume %+v", st.Spent)
+	}
+}
+
+// A failed step stays pending, its spending saved: a failed model call
+// reports no usage, so here nothing was spent.
+func TestFailedStepIsSaved(t *testing.T) {
+	j := &memJournal{}
+	if _, err := runner(t, &echo{fail: "A"}, j).Run(bg, "f", diamond, "", false); err == nil {
+		t.Fatal("expected failure")
+	}
+	if st, err := j.Load(bg, "f"); err != nil || st.Spent.Calls != 0 || st.Steps["a"].Status != Pending {
+		t.Fatalf("state %+v %v", st, err)
+	}
+}

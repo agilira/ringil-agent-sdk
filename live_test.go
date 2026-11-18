@@ -432,3 +432,40 @@ func TestLiveWorkflowAndBackground(t *testing.T) {
 		t.Fatalf("background %+v %v", f, ok)
 	}
 }
+
+// TestLiveReadHistory: a detail of an early result, left out of a small
+// context, is still found by a real model (through read_history or by
+// fetching again).
+func TestLiveReadHistory(t *testing.T) {
+	model := liveModel(t)
+	type noArgs struct{}
+	n := 0
+	fetch := agent.NewTool("fetch_page", "Fetch the next page of the report.", func(context.Context, noArgs) (string, error) {
+		n++
+		body := strings.Repeat("filler text about nothing in particular. ", 120)
+		if n == 1 {
+			return "PAGE 1. The access code of the vault is 7391. " + body, nil
+		}
+		return "PAGE " + strconv.Itoa(n) + ". " + body, nil
+	}, agent.ReadOnly())
+	tools, err := agent.NewRegistry(fetch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, ContextWindow: 7000, MaxTurns: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv := agent.NewConversation()
+	ctx := context.Background()
+	if _, err := a.Run(ctx, conv, agent.UserText("Call fetch_page four times, one after the other, then say only 'done'.")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(ctx, conv, agent.UserText("What is the access code of the vault written on page 1?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "7391") {
+		t.Fatalf("answer %q", res.Text)
+	}
+}
