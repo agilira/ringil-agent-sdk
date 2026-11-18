@@ -60,12 +60,18 @@ func (c *cli) workflowDir() (string, error) {
 
 // workflowTool lets the agent run plans it writes, journaled so that an
 // interrupted one can be resumed with `ringil workflow resume`.
-func (c *cli) workflowTool() (agent.Tool, error) {
+func (c *cli) workflowTool(ctx *orpheus.Context) (agent.Tool, error) {
 	r, err := c.runner()
 	if err != nil {
 		return nil, err
 	}
+	r.Budget = c.workflowBudget(ctx)
 	return r.Tool(), nil
+}
+
+// workflowBudget: what one workflow may spend in total, across resumes.
+func (c *cli) workflowBudget(ctx *orpheus.Context) workflow.Budget {
+	return workflow.Budget{Calls: ctx.GetGlobalFlagInt("workflow-calls"), Tokens: ctx.GetGlobalFlagInt("workflow-tokens")}
 }
 
 func (c *cli) runner() (*workflow.Runner, error) {
@@ -151,7 +157,8 @@ func summary(st *workflow.State) string {
 			pending++
 		}
 	}
-	text := strconv.Itoa(done) + "/" + strconv.Itoa(len(st.Plan.Steps)) + " steps done"
+	text := strconv.Itoa(done) + "/" + strconv.Itoa(len(st.Plan.Steps)) + " steps done, " +
+		strconv.Itoa(st.Spent.Calls) + " model calls, " + strconv.Itoa(st.Spent.Usage.Input+st.Spent.Usage.Output) + " tokens"
 	if pending > 0 {
 		text += ", " + strconv.Itoa(pending) + " uncertain (see: ringil workflow resolve)"
 	}
@@ -183,6 +190,7 @@ func (c *cli) cmdWorkflowResume(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
+	r.Budget = c.workflowBudget(ctx)
 	res, err := r.Run(ctx.Context(), id, st.Plan, st.Brief, true)
 	if err != nil {
 		return err

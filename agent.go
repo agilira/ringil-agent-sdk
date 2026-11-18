@@ -178,8 +178,11 @@ type run struct {
 	start     int
 	seenIDs   map[string]bool
 	result    Result
-	tools     Registry   // the configured tools, plus tool_search when deferring
+	tools     Registry   // the configured tools, plus tool_search and read_history
 	disc      *discovery // nil when every schema is sent
+	histMu    sync.Mutex // guards msgs against read_history running in parallel
+	compacted bool       // the view has left messages out: read_history is offered
+	hist      Tool       // read_history, nil when compaction is off or the host has its own
 }
 
 func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
@@ -192,9 +195,12 @@ func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
 	}
 	r.start = len(r.msgs)
 	r.tools = cfg.Tools
+	if !cfg.Compaction.Disabled && r.tools != nil && !r.tools.Has(HistoryToolName) {
+		r.hist = r.historyTool() // run by the loop itself: the host's registry stays as it is
+	}
 	if d := newDiscovery(cfg, r.msgs); d != nil {
 		// A host tool already named tool_search keeps every schema visible.
-		if reg, err := cfg.Tools.With(d.searchTool()); err == nil {
+		if reg, err := r.tools.With(d.searchTool()); err == nil {
 			r.tools, r.disc = reg, d
 		}
 	}
@@ -290,7 +296,9 @@ func (r *run) add(ctx context.Context, msg Message) error {
 	if err := r.conv.Append(context.WithoutCancel(ctx), msg); err != nil {
 		return err
 	}
+	r.histMu.Lock()
 	r.msgs = append(r.msgs, msg)
+	r.histMu.Unlock()
 	return nil
 }
 
@@ -361,7 +369,11 @@ func (r *run) generate(ctx context.Context, full *Request, budget int) (*Respons
 			}
 		}
 		req.Messages = view.msgs
+		if view.what != "" {
+			r.compacted = true
+		}
 	}
+	req.Tools = r.withHistory(req.Tools)
 	r.lastBytes = requestBytes(&req)
 	streamed := false
 	resp, err := r.cfg.Provider.Generate(ctx, &req, func(delta string) error {
@@ -441,7 +453,7 @@ func (r *run) runBatch(ctx context.Context, calls []ToolCall) error {
 func (r *run) runCalls(ctx context.Context, calls []ToolCall, run []bool, out []outcome) {
 	if len(calls) == 1 {
 		if run[0] {
-			res, err := r.tools.Execute(ctx, calls[0])
+			res, err := r.runOne(ctx, calls[0])
 			out[0] = outcome{res, err}
 		}
 		return
@@ -454,7 +466,7 @@ func (r *run) runCalls(ctx context.Context, calls []ToolCall, run []bool, out []
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res, err := r.tools.Execute(ctx, calls[i])
+			res, err := r.runOne(ctx, calls[i])
 			out[i] = outcome{res, err}
 		}()
 	}
@@ -508,6 +520,35 @@ func (r *run) gate(ctx context.Context, call ToolCall) (ToolResult, error, bool)
 	return ToolResult{CallID: call.ID, Content: "The user did not approve this call. Ask before trying again.", IsError: true}, denied, false
 }
 
+// withHistory offers read_history once the view has left something out.
+func (r *run) withHistory(specs []ToolSpec) []ToolSpec {
+	if !r.compacted || r.hist == nil {
+		return specs
+	}
+	for _, s := range specs {
+		if s.Name == HistoryToolName {
+			return specs
+		}
+	}
+	return append(append([]ToolSpec(nil), specs...), r.hist.Spec())
+}
+
+// runOne runs one call: read_history in the loop, the rest in the host's
+// registry.
+func (r *run) runOne(ctx context.Context, call ToolCall) (ToolResult, error) {
+	if r.hist == nil || call.Name != HistoryToolName {
+		return r.tools.Execute(ctx, call)
+	}
+	if ctx.Err() != nil {
+		return ToolResult{}, ctx.Err()
+	}
+	out, err := r.hist.Call(ctx, call.Input)
+	if err != nil {
+		return ToolResult{CallID: call.ID, Content: ModelMessage(err), IsError: true}, err
+	}
+	return ToolResult{CallID: call.ID, Content: out.Content}, nil
+}
+
 // toolSpecs are the schemas sent with a request.
 func (r *run) toolSpecs() []ToolSpec {
 	switch {
@@ -520,6 +561,9 @@ func (r *run) toolSpecs() []ToolSpec {
 }
 
 func (r *run) spec(name string) (ToolSpec, bool) {
+	if r.hist != nil && name == HistoryToolName {
+		return r.hist.Spec(), true
+	}
 	for _, s := range r.tools.Specs() {
 		if s.Name == name {
 			return s, true

@@ -104,6 +104,8 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
 		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
 		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key").
+		AddGlobalIntFlag("workflow-calls", "", 0, "most model calls one workflow may make, across resumes; 0 is no limit").
+		AddGlobalIntFlag("workflow-tokens", "", 0, "most tokens one workflow may use, across resumes; 0 is no limit").
 		AddGlobalFlag("embed-model", "", "", "embedding model for memory by meaning (or RINGIL_EMBED_MODEL); same endpoint and key as the chat model").
 		AddGlobalFlag("agents-config", "", "", "remote A2A agents file ({\"agents\": ...}); default <config>/ringil/agents.json").
 		AddGlobalFlag("mcp-config", "", "", "MCP servers file ({\"mcpServers\": ...}); default <config>/ringil/mcp.json").
@@ -261,7 +263,7 @@ func (c *cli) withDelegate(ctx *orpheus.Context, model agent.Provider, tools age
 	if err != nil {
 		return nil, err
 	}
-	wt, err := c.workflowTool()
+	wt, err := c.workflowTool(ctx)
 	if err != nil {
 		return nil, err
 	}

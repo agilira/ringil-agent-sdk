@@ -169,25 +169,59 @@ func prepare(ctx context.Context, w Worker, task string) (Setup, error) {
 // Run runs one task on a new worker of the given kind and returns its
 // report: what the delegate tool does, for hosts and workflows.
 func (c *Crew) Run(ctx context.Context, worker, taskText string) (string, error) {
+	report, _, err := c.RunCounted(ctx, worker, taskText)
+	return report, err
+}
+
+// RunCounted is Run that also reports what the task cost, failed or not.
+func (c *Crew) RunCounted(ctx context.Context, worker, taskText string) (report string, spent Spend, err error) {
 	t, err := c.task(ctx, taskIn{Worker: worker, Task: taskText})
 	if err != nil {
-		return "", err
+		return "", spent, err
 	}
 	defer c.forget(t)
-	return c.workSafely(ctx, t, taskText) // workflow steps run on their own goroutines
+	defer func() { // workflow steps run on their own goroutines
+		if r := recover(); r != nil {
+			err = errors.New(agent.ErrToolPanic, "the worker panicked")
+		}
+	}()
+	return c.counted(ctx, t, taskText)
 }
 
 // work runs one message of a task on its worker and returns the report.
 func (c *Crew) work(ctx context.Context, t *task, message string) (string, error) {
+	report, _, err := c.counted(ctx, t, message)
+	return report, err
+}
+
+// Spend is what a task cost: model calls and tokens, counted as they
+// happen, so a task that fails still reports what it spent.
+type Spend struct {
+	Calls int         `json:"calls"`
+	Usage agent.Usage `json:"usage"`
+}
+
+// Add returns the sum of s and o.
+func (s Spend) Add(o Spend) Spend {
+	return Spend{Calls: s.Calls + o.Calls, Usage: s.Usage.Add(o.Usage)}
+}
+
+// counted runs one message of a task and reports what it cost.
+func (c *Crew) counted(ctx context.Context, t *task, message string) (string, Spend, error) {
 	ctx = context.WithValue(ctx, infoKey{}, Info{Task: t.id, Worker: t.worker.Name})
+	var spent Spend
 	a, err := c.agentFor(t.worker, t.setup)
 	if err != nil {
-		return "", err
+		return "", spent, err
 	}
 	var res *agent.Result
 	for ev, err := range a.Stream(ctx, t.conv, agent.UserText(message)) {
 		if err != nil {
-			return "", errors.Wrap(err, agent.ErrToolFailed, "the worker stopped").WithUserMessage("The worker stopped before finishing: " + agent.ModelMessage(err))
+			return "", spent, errors.Wrap(err, agent.ErrToolFailed, "the worker stopped").WithUserMessage("The worker stopped before finishing: " + agent.ModelMessage(err))
+		}
+		if ev.Kind == agent.EventModel {
+			spent.Calls++
+			spent.Usage = spent.Usage.Add(ev.Usage)
 		}
 		if c.OnEvent != nil {
 			c.OnEvent(t.id, t.worker.Name, ev)
@@ -197,9 +231,9 @@ func (c *Crew) work(ctx context.Context, t *task, message string) (string, error
 		}
 	}
 	if res == nil {
-		return "", agent.ToolError(agent.ErrToolFailed, "The worker ended without a report.")
+		return "", spent, agent.ToolError(agent.ErrToolFailed, "The worker ended without a report.")
 	}
-	return c.report(res), nil
+	return c.report(res), spent, nil
 }
 
 func (c *Crew) agentFor(w Worker, setup Setup) (agent.Agent, error) {

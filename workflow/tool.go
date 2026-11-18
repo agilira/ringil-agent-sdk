@@ -74,5 +74,12 @@ func (r *Runner) partial(ctx context.Context, id string) string {
 	}
 	sort.Strings(done)
 	sort.Strings(open)
-	return " Steps done: " + strings.Join(done, ", ") + ". Started and not finished: " + strings.Join(open, ", ") + ". The user can check them and resume the workflow."
+	text := ""
+	if len(done) > 0 {
+		text += " Steps done: " + strings.Join(done, ", ") + "."
+	}
+	if len(open) > 0 {
+		text += " Started and not finished: " + strings.Join(open, ", ") + " (the user checks them before resuming)."
+	}
+	return text + " The workflow can be resumed."
 }

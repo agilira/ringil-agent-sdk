@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/agilira/go-errors"
+
+	"github.com/agilira/ringil-agent-sdk/delegate"
 )
 
 // maxInputReports bounds the reports a step receives, so a step needing
@@ -20,6 +22,7 @@ const maxInputReports = 128 << 10
 type stepDone struct {
 	name   string
 	report string
+	spent  delegate.Spend
 	err    error
 }
 
@@ -59,6 +62,9 @@ func (e *execution) startReady(ctx context.Context, running map[string]bool, res
 		if len(running) >= e.parallel() {
 			return nil
 		}
+		if e.overBudget() {
+			return errors.New(ErrBudget, "the workflow's budget is spent; raise it and resume to go on")
+		}
 		if running[s.Name] || e.status(s.Name) != "" || !e.ready(s) {
 			continue
 		}
@@ -83,7 +89,7 @@ func (e *execution) runStep(ctx context.Context, s Step) (d stepDone) {
 			d.err = errors.New(ErrStep, "step "+s.Name+" panicked")
 		}
 	}()
-	d.report, d.err = e.r.Crew.Run(ctx, s.Worker, e.input(s))
+	d.report, d.spent, d.err = e.r.Crew.RunCounted(ctx, s.Worker, e.input(s))
 	return d
 }
 
@@ -132,16 +138,29 @@ func (e *execution) mark(ctx context.Context, name string) error {
 // finish records a step's report, or leaves it pending when it failed:
 // a failed step may have done part of its work.
 func (e *execution) finish(ctx context.Context, d stepDone) error {
+	e.mu.Lock()
+	s := e.st.Steps[d.name]
+	s.Spent = s.Spent.Add(d.spent)
+	e.st.Spent = e.st.Spent.Add(d.spent)
+	if d.err == nil {
+		s.Status, s.Report, s.Finished = Done, d.report, time.Now()
+	}
+	e.mu.Unlock()
+	if err := e.save(ctx); err != nil {
+		return err
+	}
 	if d.err != nil {
 		e.report(d.name, "failed", d.err)
 		return errors.Wrap(d.err, ErrStep, "step "+d.name+" failed")
 	}
-	e.mu.Lock()
-	s := e.st.Steps[d.name]
-	s.Status, s.Report, s.Finished = Done, d.report, time.Now()
-	e.mu.Unlock()
 	e.report(d.name, "done", nil)
-	return e.save(ctx)
+	return nil
+}
+
+func (e *execution) overBudget() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.r.Budget.exceeded(e.st.Spent)
 }
 
 func (e *execution) save(ctx context.Context) error {

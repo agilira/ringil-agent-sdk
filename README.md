@@ -214,6 +214,10 @@ passaggio avviato e non finito ferma la ripresa (`WORKFLOW_UNCERTAIN`), perché 
 effetti potrebbero esserci già: si verifica e si registra l'esito con `workflow.Resolve`.
 Il journal non riesegue mai nulla di sua iniziativa.
 
+`Runner.Budget` limita chiamate e token di un workflow nel suo insieme: la spesa di ogni
+passaggio si salva nel journal, quindi la ripresa continua a contare; un passaggio parte
+solo finché il budget non è esaurito. CLI: `--workflow-calls`, `--workflow-tokens`.
+
 `Runner.Tool()` dà al modello `run_workflow`, per i piani che scrive lui: è marcato
 distruttivo, quindi l'host mostra il piano prima di eseguirlo.
 CLI: il piano compare con i passaggi e chiede conferma; `ringil workflow`,
@@ -323,6 +327,13 @@ Per un server locale `"sandbox": true` con `"network"` e `"mounts"` lo isola;
 lettura; `"disabled": true` lo tiene spento. Alla conferma, `a` consente quel tool per
 tutta la sessione.
 Esempio di server: `mcp/examples/notes`.
+
+## Cronologia dopo la compattazione
+
+La compattazione cambia solo ciò che si manda al modello: la conversazione resta intera.
+Riassunti e risultati accorciati dicono quali messaggi coprono («messaggi 1-18»,
+«messaggio 7»), e da quando la vista ha tolto qualcosa il ciclo offre `read_history`, che
+restituisce gli originali per numero, entro un limite per lettura.
 
 ## Discovery dei tool
 

@@ -40,6 +40,7 @@ const (
 	ErrUncertain errors.ErrorCode = "WORKFLOW_UNCERTAIN"
 	ErrStep      errors.ErrorCode = "WORKFLOW_STEP"
 	ErrJournal   errors.ErrorCode = "WORKFLOW_JOURNAL"
+	ErrBudget    errors.ErrorCode = "WORKFLOW_BUDGET"
 )
 
 // Step is one task of a plan.
@@ -144,15 +145,19 @@ type State struct {
 	Plan  Plan                  `json:"plan"`
 	Brief string                `json:"brief,omitempty"`
 	Steps map[string]*StepState `json:"steps"`
+	// Spent is what the run cost so far, over every attempt: a resume
+	// goes on counting.
+	Spent delegate.Spend `json:"spent"`
 }
 
 // StepState is one step's record.
 type StepState struct {
-	Status   string    `json:"status"`
-	Report   string    `json:"report,omitempty"`
-	Resolved bool      `json:"resolved,omitempty"` // recorded by the operator
-	Started  time.Time `json:"started"`
-	Finished time.Time `json:"finished,omitzero"`
+	Status   string         `json:"status"`
+	Report   string         `json:"report,omitempty"`
+	Resolved bool           `json:"resolved,omitempty"` // recorded by the operator
+	Started  time.Time      `json:"started"`
+	Finished time.Time      `json:"finished,omitzero"`
+	Spent    delegate.Spend `json:"spent"`
 }
 
 // Journal keeps runs' states durably. Load returns nil when the run is
@@ -176,6 +181,20 @@ type Runner struct {
 	Parallel int
 	// OnStep reports progress: a step started, done or failed.
 	OnStep func(step, status string, err error)
+	// Budget bounds what a run may spend in total, across resumes; zero
+	// fields are unbounded. A step starts only while the run is within
+	// it, so the last step may go past it by its own cost.
+	Budget Budget
+}
+
+// Budget limits a run.
+type Budget struct {
+	Calls  int // model calls
+	Tokens int // input plus output tokens
+}
+
+func (b Budget) exceeded(s delegate.Spend) bool {
+	return (b.Calls > 0 && s.Calls >= b.Calls) || (b.Tokens > 0 && s.Usage.Input+s.Usage.Output >= b.Tokens)
 }
 
 // Result is a finished run.

@@ -241,17 +241,18 @@ func (c *compactor) reserve() int {
 }
 
 func countNote(n int) string {
-	return "[" + plural(n, "earlier message") + " of this conversation omitted to fit the context.]"
+	return "[" + plural(n, "earlier message") + " of this conversation omitted to fit the context (messages 1-" + strconv.Itoa(n) + "; " + HistoryToolName + " shows them).]"
 }
 
 // sized is a view under construction with the byte size of every message,
 // so trying cuts does not re-encode the whole conversation each time.
 type sized struct {
-	c     *compactor
-	base  int
-	msgs  []Message
-	sizes []int
-	total int
+	c      *compactor
+	base   int
+	msgs   []Message
+	sizes  []int
+	total  int
+	offset int // messages dropped from the front: msgs[i] is message offset+i+1
 }
 
 func newSized(req *Request, c *compactor) *sized {
@@ -303,7 +304,7 @@ func (v *sized) stub(keep int) int {
 			continue
 		}
 		res := *m.Result
-		res.Content = stub(res.Content)
+		res.Content = stub(res.Content, v.offset+i+1)
 		v.msgs[i] = ToolMessage(res)
 		v.resize(i)
 		stubbed++
@@ -315,9 +316,9 @@ const stubPrefix = "[Tool result omitted to fit the context: "
 
 func isStub(s string) bool { return strings.HasPrefix(s, stubPrefix) }
 
-func stub(content string) string {
+func stub(content string, number int) string {
 	return stubPrefix + strconv.Itoa(len(content)) + " bytes, sha256 " + shortHash(content) +
-		". Run a read-only tool again if you need it.]"
+		". It is message " + strconv.Itoa(number) + ": " + HistoryToolName + " shows it, or run a read-only tool again.]"
 }
 
 // cut returns where to cut so the rest fits half the budget, or else the
@@ -362,6 +363,7 @@ func cutPoints(msgs []Message) []int {
 // drop removes the first cut messages and prepends note to the first kept
 // message, as its own part.
 func (v *sized) drop(cut int, note string) {
+	v.offset += cut
 	v.msgs = v.msgs[cut:]
 	for _, s := range v.sizes[:cut] {
 		v.total -= s
