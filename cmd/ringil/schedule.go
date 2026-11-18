@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -39,7 +40,7 @@ func (c *cli) cmdSchedule(*orpheus.Context) error {
 		return err
 	}
 	if len(jobs) == 0 {
-		return c.line("No scheduled jobs. Add one with: ringil schedule add NAME --when \"0 8 * * 1-5\" PROMPT...")
+		return c.line("No scheduled jobs. Add one with: ringil schedule add NAME --when \"0 8 * * 1-5\" PROMPT... (or - for standard input)")
 	}
 	status, err := store.Status()
 	if err != nil {
@@ -99,13 +100,16 @@ func oneLine(s string, max int) string {
 }
 
 // cmdScheduleAdd adds or replaces a job; the prompt is the rest of the
-// line.
+// line, or standard input with "-".
 func (c *cli) cmdScheduleAdd(ctx *orpheus.Context) error {
 	args := ctx.Positional()
 	if len(args) < 2 {
 		return errors.New(ErrUsage, "usage: ringil schedule add NAME --when SPEC [--profile P] [--conversation C] PROMPT...")
 	}
-	input := strings.Join(args[1:], " ")
+	input, err := c.jobPrompt(args[1:])
+	if err != nil {
+		return err
+	}
 	job := schedule.Job{
 		Name: args[0], When: ctx.GetFlagString("when"), TimeZone: ctx.GetFlagString("time-zone"),
 		Profile: ctx.GetFlagString("profile"), Conversation: ctx.GetFlagString("conversation"),
@@ -129,6 +133,19 @@ func (c *cli) cmdScheduleAdd(ctx *orpheus.Context) error {
 		return err
 	}
 	return c.line("Scheduled " + job.Name + ": next run " + nextRun(job, time.Now()) + ". Jobs run while `ringil serve` is running.")
+}
+
+// jobPrompt is the words given, or standard input for "-".
+func (c *cli) jobPrompt(words []string) (string, error) {
+	input := strings.Join(words, " ")
+	if input != "-" {
+		return input, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(c.in, schedule.MaxInput+1))
+	if err != nil {
+		return "", errors.Wrap(err, ErrUsage, "cannot read the prompt from standard input")
+	}
+	return string(data), nil
 }
 
 func (c *cli) cmdScheduleRemove(ctx *orpheus.Context) error {
