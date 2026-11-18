@@ -30,6 +30,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/rules"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
+	"github.com/agilira/ringil-agent-sdk/serve"
 	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/todo"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
@@ -81,6 +82,15 @@ type cli struct {
 	home func() (string, error)
 	// lines reads the terminal; see readLine.
 	lines *bufio.Scanner
+	// server, under `ringil serve`, decides the calls the chat would ask
+	// about, through its API; there is no terminal.
+	server *serve.Server
+	// remote are the MCP and remote agents' tools, connected once when
+	// shared (under serve) for every run.
+	remote []agent.Tool
+	shared bool
+	// events observe every run (serve logs their metadata).
+	events []agent.Observer
 }
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
@@ -120,6 +130,10 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("session", "S", "", "save the conversation under this name and resume it next time").
 		AddGlobalFlag("sessions-dir", "", "", "where sessions are stored (default: the user config directory)")
 	app.AddCommand(withWorkspace(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.cmdChat)))
+	app.AddCommand(withWorkspace(orpheus.NewCommand("serve", "Answer a local HTTP API (loopback only, bearer token) until Ctrl-C; each run gets its own agent").SetHandler(c.cmdServe).
+		AddFlag("listen", "", "127.0.0.1:8765", "loopback address and port to listen on").
+		AddIntFlag("max-runs", "", 4, "runs going at once").
+		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token")))
 	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
 		SetUsage("run <prompt...>")))
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).
@@ -197,6 +211,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		MaxTurns:      ctx.GetGlobalFlagInt("max-turns"),
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
 		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
+		Observers:     c.events,
 	})
 }
 
@@ -254,6 +269,9 @@ func (c *cli) addEach(reg agent.Registry, tools []agent.Tool) agent.Registry {
 
 // remoteTools are the tools of MCP servers and remote A2A agents.
 func (c *cli) remoteTools(ctx *orpheus.Context) ([]agent.Tool, error) {
+	if c.shared {
+		return c.remote, nil
+	}
 	mcpTools, err := c.connectMCP(ctx)
 	if err != nil {
 		return nil, err
@@ -367,6 +385,9 @@ func (c *cli) defaultDirs() ([]string, error) {
 // askAccess asks in the terminal whether the agent may use dir. No answer
 // (end of input) is a no.
 func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
+	if c.server != nil {
+		return false, nil // no terminal to ask: only the granted directories
+	}
 	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
 	return c.confirm("\n  ? " + asker(ctx) + " wants to access " + clean(dir) + " — allow? [y/N] ")
@@ -377,6 +398,9 @@ func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
 // without interrupting the user. "a" allows that tool for the rest of
 // the session.
 func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+	if c.server != nil {
+		return c.serveApprove(ctx, call, spec)
+	}
 	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
 	// "always" is remembered per asker: a worker's yes is not the
@@ -392,14 +416,19 @@ func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 		c.showPlan(call)
 	}
 	answer, err := c.ask("\n  ? " + who + " wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
+	return c.answered(key, answer), err
+}
+
+// answered reads a yes, no or always; always is remembered for key.
+func (c *cli) answered(key, answer string) bool {
 	if answer == "a" || answer == "always" || answer == "sempre" {
 		if c.allowed == nil {
 			c.allowed = map[string]bool{}
 		}
 		c.allowed[key] = true
-		return true, err
+		return true
 	}
-	return yes(answer), err
+	return yes(answer)
 }
 
 // holdTerminal takes the terminal for a question; when the chat prompt
@@ -424,6 +453,15 @@ func asker(ctx context.Context) string {
 
 // mustAsk: destructive tools, and the notes changes their scope wants
 // confirmed (project notes, deletions).
+// serveApprove: under serve, the API's caller decides what the chat
+// would ask the user.
+func (c *cli) serveApprove(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+	if !c.mustAsk(ctx, call, spec) {
+		return true, nil
+	}
+	return c.server.Approve(ctx, call, spec)
+}
+
 func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) bool {
 	if call.Name != notes.DefaultName {
 		return spec.Annotations.Destructive

@@ -41,7 +41,7 @@ func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools a
 		Provider:  p,
 		Approve:   c.approve,
 		MaxTurns:  ctx.GetGlobalFlagInt("max-turns"),
-		Observers: []agent.Observer{c.showWorker},
+		Observers: append([]agent.Observer{c.showWorker}, c.events...),
 		Workers: []delegate.Worker{
 			{Name: "explore", Description: "searches and reads files, read-only; for questions like where is X, how does Y work", System: exploreSystem, Tools: explore, Prepare: c.prepareWorker},
 			{Name: "general", Description: "does a self-contained task with the same tools as you, except delegating and your own notes, task list and memory", System: generalSystem, Tools: general, Prepare: c.prepareWorker},
