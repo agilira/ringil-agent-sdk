@@ -26,7 +26,7 @@ func boxOrSkip(t *testing.T) sandbox.Sandbox {
 	t.Helper()
 	s, err := sandbox.New()
 	if err != nil {
-		if os.Getenv("RINGIL_REQUIRE_SANDBOX") != "" && runtime.GOOS == "linux" {
+		if os.Getenv("RINGIL_REQUIRE_SANDBOX") != "" && runtime.GOOS != "windows" {
 			t.Fatal(err)
 		}
 		t.Skip(err)
@@ -76,13 +76,13 @@ func TestSandboxedCommandRunsWithoutAsking(t *testing.T) {
 		return false, nil
 	}})
 	out, err := call(t, tl, map[string]any{"command": `pwd; cat a.txt; echo; cat .env 2>/dev/null; echo new > b.txt && echo wrote;
-(echo x >> CLAUDE.md) 2>&1 | grep -o Read-only; (echo x > .git/hooks/post-commit) 2>&1 | grep -o Read-only;
-(echo x > .git/config) 2>&1 | grep -o Read-only; echo obj > .git/objects-ok && echo git-writable;
-touch /etc/x 2>/dev/null || echo etc-ro; ls ~ | wc -l`})
+(echo x >> CLAUDE.md) 2>/dev/null || echo denied; (echo x > .git/hooks/post-commit) 2>/dev/null || echo denied;
+(echo x > .git/config) 2>/dev/null || echo denied; echo obj > .git/objects-ok && echo git-writable;
+touch /etc/x 2>/dev/null || echo etc-ro; ls ~ 2>/dev/null | wc -l | tr -d ' '`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := dir + "\nhello\nwrote\nRead-only\nRead-only\nRead-only\ngit-writable\netc-ro\n0\n"
+	want := dir + "\nhello\nwrote\ndenied\ndenied\ndenied\ngit-writable\netc-ro\n0\n"
 	if out != want {
 		t.Fatalf("got\n%s\nwant\n%s", out, want)
 	}
@@ -218,7 +218,7 @@ func TestReadPathsAndHome(t *testing.T) {
 	t.Setenv("PATH", filepath.Join(home, "sdk/go/bin")+":/usr/bin:/bin:/opt/missing")
 	tl := newBash(t, Config{Dir: work, Sandbox: box, Home: home,
 		Read: []string{filepath.Join(home, ".gitconfig"), filepath.Join(home, "sdk/go")}})
-	out, err := call(t, tl, map[string]any{"command": `echo "$HOME"; head -1 ~/.gitconfig; tool; cat ~/sdk/go/.env 2>/dev/null; ls ~/other 2>&1 | grep -c "No such"; echo "$PATH"`})
+	out, err := call(t, tl, map[string]any{"command": `echo "$HOME"; head -1 ~/.gitconfig; tool; cat ~/sdk/go/.env 2>/dev/null; ls ~/other 2>&1 | grep -cE "No such|not permitted"; echo "$PATH"`})
 	if err != nil {
 		t.Fatal(err)
 	}

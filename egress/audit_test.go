@@ -9,6 +9,8 @@ import (
 	"context"
 	"io"
 	"net"
+	"runtime/pprof"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,7 +57,9 @@ func TestAuditStopWaitsForAnotherCommandsQuestion(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-time.After(3 * time.Second):
-		t.Error("stopping a finished command's proxy waits for another command's question")
+		var dump strings.Builder
+		_ = pprof.Lookup("goroutine").WriteTo(&dump, 1)
+		t.Errorf("stopping a finished command's proxy waits for another command's question; goroutines:\n%s", dump.String())
 		cancelA()
 		<-stopped
 	}

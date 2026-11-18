@@ -130,7 +130,7 @@ func (t *tool) spec(ctx context.Context, command string, out *capture) (sandbox.
 		env[k] = v
 	}
 	return sandbox.Spec{
-		Argv:      []string{"/usr/bin/bash", "-c", command},
+		Argv:      []string{"/bin/bash", "-c", command},
 		Dir:       filepath.ToSlash(t.cfg.Dir),
 		Env:       env,
 		Path:      t.path,
