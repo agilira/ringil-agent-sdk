@@ -18,6 +18,9 @@ const (
 	// EventRecalled reports the memories added to this run's context;
 	// Text says how many, Err is set when the memory could not be read.
 	EventRecalled EventKind = "recalled"
+	// EventContext reports that Config.Context failed (Err); the run goes
+	// on without that context.
+	EventContext EventKind = "context"
 	// EventCompacted precedes a model call that was sent a shortened view
 	// of the conversation; Text says what was left out, Usage what a
 	// summary cost.

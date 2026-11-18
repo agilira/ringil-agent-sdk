@@ -173,6 +173,29 @@ marcati come dati, mai nella conversazione salvata. Nella CLI la memoria è atti
 default (`--no-memory` per toglierla), per significato con `--embed-model` o
 `RINGIL_EMBED_MODEL`; `ringil memory`, `memory search`, `memory rm`.
 
+## Todo e note
+
+`todo.Tool()` dà al modello una lista di compiti per il lavoro lungo: la riscrive intera
+a ogni passo, una voce in corso alla volta. La lista vive nella conversazione (gli
+argomenti dell'ultima chiamata) e `todo.Current` la rilegge.
+
+`notes` dà quaderni Markdown con un solo tool, `notes`, come il memory tool su cui i
+modelli sono addestrati: `view`, `create`, `str_replace`, `insert`, `delete`, `rename`
+su percorsi come `/scratchpad/plan.md` o `/project/decisions.md`. Ogni scope è una
+cartella scelta dall'host, anche in sola lettura; i file restano Markdown che l'utente
+apre e modifica. L'`INDEX.md` di ogni scope entra nel contesto a ogni turno tramite
+`Config.Context`, un aggancio per il contesto che cambia tra un turno e l'altro.
+
+```go
+nb, err := notes.New(notes.Scope{Name: "scratchpad", Dir: scratch}, notes.Scope{Name: "project", Dir: proj})
+cfg.Context = nb.Context
+tools, err = tools.With(nb.Tool(), todo.Tool())
+```
+
+CLI: la todo list compare a ogni aggiornamento; lo scratchpad vale per la sessione
+(`--session`) o per l'esecuzione, le note di progetto per la cartella di lancio, in
+`<config>/ringil/projects/`.
+
 ## Skill
 
 Formato standard Agent Skills: una cartella con `SKILL.md` (front matter `name`,

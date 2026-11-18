@@ -47,6 +47,12 @@ type Config struct {
 	// approve it. Which calls to ask about is the host's choice: the CLI
 	// asks for tools marked Destructive, an app may ask for more or none.
 	Approve func(ctx context.Context, call ToolCall, spec ToolSpec) (bool, error)
+	// Context, when set, is called at the start of every run and its text
+	// is added to the system prompt for that run: what changes between
+	// turns, such as the index of the project notes or the project's
+	// rules. Return "" for nothing; an error is reported as an event and
+	// the run goes on without it.
+	Context func(ctx context.Context) (string, error)
 	// Discovery lists deferrable tools by name only once their schemas
 	// exceed DiscoveryThreshold bytes (default 16 KiB); the model loads
 	// the ones it needs with tool_search.
@@ -208,8 +214,29 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	if err := r.recall(ctx, input.Text()); err != nil {
 		return err
 	}
+	if err := r.addContext(ctx); err != nil {
+		return err
+	}
 	if r.disc != nil {
 		r.system += r.disc.block()
+	}
+	return nil
+}
+
+// addContext appends the host's per-run context to the system prompt.
+func (r *run) addContext(ctx context.Context) error {
+	if r.cfg.Context == nil {
+		return nil
+	}
+	text, err := r.cfg.Context(ctx)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return r.emit(Event{Kind: EventContext, Err: err})
+	}
+	if text != "" {
+		r.system += "\n\n" + text
 	}
 	return nil
 }

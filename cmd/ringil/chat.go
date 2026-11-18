@@ -14,6 +14,7 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/todo"
 )
 
 // maxLine bounds one line typed at the prompt.
@@ -112,11 +113,7 @@ func (c *cli) render(ev agent.Event) error {
 	case agent.EventToolStart:
 		err = c.line(fmt.Sprintf("\n  -> %s %s", ev.Call.Name, short(string(ev.Call.Input))))
 	case agent.EventToolEnd:
-		mark := "<-"
-		if ev.Output.IsError {
-			mark = "<- error:"
-		}
-		err = c.line(fmt.Sprintf("  %s %s", mark, short(ev.Output.Content)))
+		err = c.toolEnd(ev)
 	case agent.EventRecalled:
 		err = c.recalled(ev)
 	case agent.EventCompacted:
@@ -175,6 +172,17 @@ func printable(r rune) bool {
 }
 
 // recalled shows recalled memories, and a memory that could not be read.
+func (c *cli) toolEnd(ev agent.Event) error {
+	if ev.Call.Name == todo.ToolName && !ev.Output.IsError {
+		return c.showTodos(ev.Call)
+	}
+	mark := "<-"
+	if ev.Output.IsError {
+		mark = "<- error:"
+	}
+	return c.line(fmt.Sprintf("  %s %s", mark, short(ev.Output.Content)))
+}
+
 func (c *cli) recalled(ev agent.Event) error {
 	switch {
 	case errors.HasCode(ev.Err, agent.ErrMemoryPartial):
