@@ -29,7 +29,18 @@ func (c *cli) cmdRun(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.turn(ctx.Context(), a, nil, prompt)
+	conv, release, err := c.conversation(ctx)
+	if err != nil {
+		return err
+	}
+	return closing(c.turn(ctx.Context(), a, conv, prompt), release)
+}
+
+// closing returns err, or the release error when err is nil.
+func closing(err error, release func() error) error {
+	if rerr := release(); err == nil {
+		return rerr
+	}
 	return err
 }
 
@@ -38,35 +49,32 @@ func (c *cli) cmdChat(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
+	conv, release, err := c.conversation(ctx)
+	if err != nil {
+		return err
+	}
+	return closing(c.chat(ctx.Context(), a, conv), release)
+}
+
+func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) error {
 	scanner := bufio.NewScanner(c.in)
 	scanner.Buffer(make([]byte, 0, 4096), maxLine)
-	var history []agent.Message
 	for c.prompt() && scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		switch line {
 		case "":
-			continue
 		case "/exit", "/quit":
 			return nil
 		case "/reset":
-			history = nil
-			c.note("history cleared")
-			continue
+			c.note("history cleared for this chat; a saved session is left as it was and no longer updated")
+			conv = agent.NewConversation()
+		default:
+			if err := c.turn(ctx, a, conv, line); err != nil {
+				c.note("error: " + describe(err))
+			}
 		}
-		history = c.chatTurn(ctx.Context(), a, history, line)
 	}
 	return scanner.Err()
-}
-
-// chatTurn runs one prompt; a failed turn is reported and the chat goes on
-// with the history it had before.
-func (c *cli) chatTurn(ctx context.Context, a agent.Agent, history []agent.Message, line string) []agent.Message {
-	added, err := c.turn(ctx, a, history, line)
-	if err != nil {
-		c.note("error: " + describe(err))
-		return history
-	}
-	return append(history, added...)
 }
 
 func (c *cli) prompt() bool {
@@ -74,22 +82,20 @@ func (c *cli) prompt() bool {
 	return err == nil
 }
 
-// turn sends one prompt and renders its events.
-func (c *cli) turn(ctx context.Context, a agent.Agent, history []agent.Message, prompt string) ([]agent.Message, error) {
+// turn sends one prompt and renders its events. Everything the run produced
+// is already in conv, whether or not it finished.
+func (c *cli) turn(ctx context.Context, a agent.Agent, conv agent.Conversation, prompt string) error {
 	ctx, cancel := c.turnContext(ctx)
 	defer cancel()
-	for ev, err := range a.Stream(ctx, history, agent.UserText(prompt)) {
+	for ev, err := range a.Stream(ctx, conv, agent.UserText(prompt)) {
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := c.render(ev); err != nil {
-			return nil, err
-		}
-		if ev.Kind == agent.EventDone {
-			return ev.Result.Messages, nil
+			return err
 		}
 	}
-	return nil, context.Canceled
+	return nil
 }
 
 func (c *cli) render(ev agent.Event) error {
@@ -105,6 +111,8 @@ func (c *cli) render(ev agent.Event) error {
 			mark = "<- error:"
 		}
 		err = c.line(fmt.Sprintf("  %s %s", mark, short(ev.Output.Content)))
+	case agent.EventRecovered:
+		err = c.line("  ! " + ev.Call.Name + " was interrupted earlier; the model was told, it was not run again")
 	case agent.EventDone:
 		u := ev.Result.Usage
 		err = c.line(fmt.Sprintf("\n  [%s, %d model calls, %d in / %d out tokens]", ev.Stop, ev.Result.Turns, u.Input, u.Output))

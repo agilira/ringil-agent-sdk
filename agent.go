@@ -34,24 +34,29 @@ type Config struct {
 	// MaxTokens is passed to every model call; zero leaves it to the
 	// provider.
 	MaxTokens int
+	// StrictResume refuses a conversation that ended in the middle of tool
+	// calls (ErrSessionIncomplete) instead of telling the model those calls
+	// were interrupted. Either way, the calls are never repeated.
+	StrictResume bool
 }
 
 // Agent runs conversations: it calls the model, executes the tools it asks
 // for, gives it the results and repeats until the model answers.
 type Agent interface {
-	// Run executes one user turn and returns its outcome.
-	Run(ctx context.Context, history []Message, input Message) (*Result, error)
-	// Stream executes one user turn and yields its events as they happen.
-	// Breaking out of the loop cancels the run. The last event of a
-	// successful run is EventDone, carrying the Result.
-	Stream(ctx context.Context, history []Message, input Message) iter.Seq2[Event, error]
+	// Run executes one user turn on conv and returns its outcome. A nil
+	// conv runs on an empty, throwaway conversation.
+	Run(ctx context.Context, conv Conversation, input Message) (*Result, error)
+	// Stream is Run yielding events as they happen. Breaking out of the
+	// loop cancels the run. The last event of a successful run is
+	// EventDone, carrying the Result.
+	Stream(ctx context.Context, conv Conversation, input Message) iter.Seq2[Event, error]
 }
 
 // Result is the outcome of one user turn.
 type Result struct {
-	// Messages are the messages this turn added: the input, every model
-	// message and every tool result. Append them to the history to continue
-	// the conversation.
+	// Messages are the messages this turn added to the conversation: any
+	// recovered results of an interrupted turn, the input, every model
+	// message and every tool result.
 	Messages []Message
 	// Text is the model's final answer.
 	Text  string
@@ -81,8 +86,8 @@ type loop struct {
 	cfg Config
 }
 
-func (l *loop) Run(ctx context.Context, history []Message, input Message) (*Result, error) {
-	for ev, err := range l.Stream(ctx, history, input) {
+func (l *loop) Run(ctx context.Context, conv Conversation, input Message) (*Result, error) {
+	for ev, err := range l.Stream(ctx, conv, input) {
 		if err != nil {
 			return nil, err
 		}
@@ -93,12 +98,27 @@ func (l *loop) Run(ctx context.Context, history []Message, input Message) (*Resu
 	return nil, errors.New(ErrAgentConfig, "run ended without a result")
 }
 
-func (l *loop) Stream(ctx context.Context, history []Message, input Message) iter.Seq2[Event, error] {
+func (l *loop) Stream(ctx context.Context, conv Conversation, input Message) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		r := newRun(l.cfg, history, input, yield)
-		if err := r.execute(ctx); err != nil && !stderrors.Is(err, errStopped) {
+		if conv == nil {
+			conv = NewConversation()
+		}
+		if guard, ok := conv.(RunGuard); ok {
+			end, err := guard.BeginRun()
+			if err != nil {
+				yield(Event{}, err)
+				return
+			}
+			defer end()
+		}
+		r := newRun(l.cfg, conv, yield)
+		err := r.begin(ctx, input)
+		if err == nil {
+			err = r.execute(ctx)
+		}
+		if err != nil && !stderrors.Is(err, errStopped) {
 			yield(Event{}, err)
 		}
 	}
@@ -110,6 +130,7 @@ var errStopped = stderrors.New("event consumer stopped")
 // run is the state of one user turn.
 type run struct {
 	cfg     Config
+	conv    Conversation
 	yield   func(Event, error) bool
 	msgs    []Message
 	start   int
@@ -117,17 +138,60 @@ type run struct {
 	result  Result
 }
 
-func newRun(cfg Config, history []Message, input Message, yield func(Event, error) bool) *run {
-	r := &run{cfg: cfg, yield: yield, seenIDs: map[string]bool{}}
-	for _, msg := range history {
-		r.msgs = append(r.msgs, msg.Clone())
+func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
+	r := &run{cfg: cfg, conv: conv, yield: yield, seenIDs: map[string]bool{}}
+	r.msgs = conv.Messages()
+	for _, msg := range r.msgs {
 		for _, call := range msg.Calls {
 			r.seenIDs[call.ID] = true
 		}
 	}
 	r.start = len(r.msgs)
-	r.msgs = append(r.msgs, input.Clone())
 	return r
+}
+
+// begin closes an interrupted turn, then records the input.
+func (r *run) begin(ctx context.Context, input Message) error {
+	if err := ValidateHistory(r.msgs); err != nil {
+		return err
+	}
+	if err := r.recover(ctx); err != nil {
+		return err
+	}
+	return r.add(ctx, input.Clone())
+}
+
+// recover answers the calls a previous run left without results. They are
+// never executed again: they may have had their effect already.
+func (r *run) recover(ctx context.Context) error {
+	pending := pendingCalls(r.msgs)
+	if len(pending) == 0 {
+		return nil
+	}
+	if r.cfg.StrictResume {
+		return errors.New(ErrSessionIncomplete, "the conversation ended in the middle of tool calls")
+	}
+	for _, call := range pending {
+		res := ToolResult{CallID: call.ID, Content: interruptedResult, IsError: true}
+		if err := r.add(ctx, ToolMessage(res)); err != nil {
+			return err
+		}
+		if err := r.emit(Event{Kind: EventRecovered, Call: &call, Output: &res}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// add records a message in the conversation before the run goes on. It
+// survives cancellation: what happened must be written down even when the
+// caller has stopped waiting.
+func (r *run) add(ctx context.Context, msg Message) error {
+	if err := r.conv.Append(context.WithoutCancel(ctx), msg); err != nil {
+		return err
+	}
+	r.msgs = append(r.msgs, msg)
+	return nil
 }
 
 func (r *run) emit(ev Event) error {
@@ -169,7 +233,11 @@ func (r *run) callModel(ctx context.Context) (*Response, error) {
 	msg := resp.Message.Clone()
 	msg.Role = RoleAssistant
 	r.uniqueIDs(msg.Calls)
-	r.msgs = append(r.msgs, msg)
+	// Recorded before any tool runs: after a crash the record shows what
+	// was about to be done.
+	if err := r.add(ctx, msg); err != nil {
+		return nil, err
+	}
 	resp.Message = msg
 	return resp, r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop})
 }
@@ -192,11 +260,22 @@ func (r *run) runTools(ctx context.Context, calls []ToolCall) error {
 			return err
 		}
 		res, toolErr := r.cfg.Tools.Execute(ctx, call)
+		if res.CallID == "" {
+			// Execute's contract: an empty CallID means the tool did not run
+			// (the context ended first). Nothing to record; the call stays
+			// pending and the next run reports it as interrupted.
+			if toolErr == nil {
+				toolErr = errors.New(ErrAgentConfig, "registry returned a result without a call ID")
+			}
+			return toolErr
+		}
+		res.CallID = call.ID
+		if err := r.add(ctx, ToolMessage(res)); err != nil {
+			return err
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		res.CallID = call.ID
-		r.msgs = append(r.msgs, ToolMessage(res))
 		if err := r.emit(Event{Kind: EventToolEnd, Call: &call, Output: &res, Err: toolErr}); err != nil {
 			return err
 		}

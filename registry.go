@@ -31,7 +31,9 @@ type Registry interface {
 	Select(names ...string) (Registry, error)
 	// Execute runs one tool call and returns the result for the model.
 	// The error, when not nil, is the full failure for the host; the
-	// result already holds the part the model may see.
+	// result already holds the part the model may see. A result with an
+	// empty CallID means the tool was not run at all (the context had
+	// ended); any other outcome carries the call's ID.
 	Execute(ctx context.Context, call ToolCall) (ToolResult, error)
 }
 
@@ -158,7 +160,9 @@ func (r *registry) Execute(ctx context.Context, call ToolCall) (ToolResult, erro
 	if err != nil {
 		return failed(call, err)
 	}
-	return ToolResult{CallID: call.ID, Content: out.Content}, nil
+	// Stored conversations are JSON, which cannot carry invalid UTF-8:
+	// fix it here so the model sees exactly what is recorded.
+	return ToolResult{CallID: call.ID, Content: strings.ToValidUTF8(out.Content, "\uFFFD")}, nil
 }
 
 func failed(call ToolCall, err error) (ToolResult, error) {

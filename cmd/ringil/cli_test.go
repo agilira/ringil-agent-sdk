@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	stderrors "errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -25,10 +26,11 @@ type harness struct {
 	out, err *bytes.Buffer
 	script   fake.Script
 	config   openai.Config
+	dir      string
 }
 
 func newHarness(input string, steps ...fake.Step) *harness {
-	h := &harness{out: &bytes.Buffer{}, err: &bytes.Buffer{}, script: fake.New(steps...)}
+	h := &harness{out: &bytes.Buffer{}, err: &bytes.Buffer{}, script: fake.New(steps...), dir: os.TempDir()}
 	h.c = newCLI(strings.NewReader(input), h.out, h.err)
 	h.c.getenv = func(k string) string {
 		return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "RINGIL_API_KEY": "k"}[k]
@@ -38,6 +40,7 @@ func newHarness(input string, steps ...fake.Step) *harness {
 		return h.script, nil
 	}
 	h.c.turnContext = func(ctx context.Context) (context.Context, context.CancelFunc) { return context.WithCancel(ctx) }
+	h.c.configDir = func() (string, error) { return h.dir, nil }
 	return h
 }
 
@@ -123,7 +126,8 @@ func TestChatSurvivesAFailedTurn(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	reqs := h.script.Requests()
-	if !strings.Contains(h.err.String(), "error: boom") || len(reqs) != 2 || len(reqs[1].Messages) != 1 {
+	// The failed prompt stays in the conversation, so the model sees both.
+	if !strings.Contains(h.err.String(), "error: boom") || len(reqs) != 2 || len(reqs[1].Messages) != 2 {
 		t.Fatalf("err %q requests %d", h.err, len(reqs))
 	}
 }
@@ -173,5 +177,80 @@ func TestBuiltinTools(t *testing.T) {
 		if res.IsError != (err != nil) || !strings.Contains(res.Content, want) {
 			t.Errorf("%s %s = %q, want %q", name, input, res.Content, want)
 		}
+	}
+}
+
+func sessionHarness(t *testing.T, input string, steps ...fake.Step) *harness {
+	h := newHarness(input, steps...)
+	h.dir = t.TempDir()
+	return h
+}
+
+func TestSessionResumesAcrossRuns(t *testing.T) {
+	dir := t.TempDir()
+	first := sessionHarness(t, "", fake.Reply("ti chiami Antonio"))
+	first.dir = dir
+	if code := first.run("--session", "lavoro", "run", "mi chiamo Antonio"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, first.err)
+	}
+	second := sessionHarness(t, "", fake.Reply("Antonio"))
+	second.dir = dir
+	if code := second.run("-S", "lavoro", "run", "come mi chiamo?"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, second.err)
+	}
+	msgs := second.script.Requests()[0].Messages
+	if len(msgs) != 3 || msgs[0].Text() != "mi chiamo Antonio" || !strings.Contains(second.err.String(), "resumed session lavoro (2 messages)") {
+		t.Fatalf("messages %+v err %q", msgs, second.err)
+	}
+}
+
+func TestSessionsListAndRemove(t *testing.T) {
+	dir := t.TempDir()
+	for _, id := range []string{"uno", "due"} {
+		h := sessionHarness(t, "", fake.Reply("ok"))
+		h.dir = dir
+		if code := h.run("--session", id, "run", "x"); code != exitOK {
+			t.Fatalf("exit %d: %s", code, h.err)
+		}
+	}
+	h := sessionHarness(t, "")
+	h.dir = dir
+	if code := h.run("sessions"); code != exitOK || !strings.Contains(h.err.String(), "uno") || !strings.Contains(h.err.String(), "due") {
+		t.Fatalf("list %d %q", code, h.err)
+	}
+	if code := h.run("sessions", "rm", "uno"); code != exitOK {
+		t.Fatalf("rm %d %q", code, h.err)
+	}
+	h.err.Reset()
+	if code := h.run("sessions"); code != exitOK || strings.Contains(h.err.String(), "uno") {
+		t.Fatalf("after rm %q", h.err)
+	}
+}
+
+func TestSessionsEdgeCases(t *testing.T) {
+	h := sessionHarness(t, "")
+	if code := h.run("sessions"); code != exitOK || !strings.Contains(h.err.String(), "no saved sessions") {
+		t.Fatalf("empty list %q", h.err)
+	}
+	if code := h.run("sessions", "rm"); code != exitError {
+		t.Fatal("rm without names")
+	}
+	if code := h.run("--session", "../evil", "run", "x"); code != exitError || !strings.Contains(h.err.String(), "session ID") {
+		t.Fatalf("bad id %q", h.err)
+	}
+	h.c.configDir = func() (string, error) { return "", stderrors.New("no home") }
+	if code := h.run("sessions"); code != exitError || !strings.Contains(h.err.String(), "--sessions-dir") {
+		t.Fatalf("no config dir %q", h.err)
+	}
+	if code := h.run("--sessions-dir", t.TempDir(), "sessions"); code != exitOK {
+		t.Fatalf("explicit dir %q", h.err)
+	}
+}
+
+func TestRecoveredCallIsShown(t *testing.T) {
+	ev := agent.Event{Kind: agent.EventRecovered, Call: &agent.ToolCall{Name: "calculate"}, Output: &agent.ToolResult{}}
+	h := newHarness("")
+	if err := h.c.render(ev); err != nil || !strings.Contains(h.err.String(), "calculate was interrupted") {
+		t.Fatalf("render %v %q", err, h.err)
 	}
 }

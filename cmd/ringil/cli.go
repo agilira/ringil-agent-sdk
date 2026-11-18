@@ -34,6 +34,8 @@ type cli struct {
 	// turnContext scopes one user turn, so Ctrl-C stops the answer, not the
 	// chat.
 	turnContext func(context.Context) (context.Context, context.CancelFunc)
+	// configDir is where sessions live by default.
+	configDir func() (string, error)
 }
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
@@ -43,6 +45,7 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
+		configDir: os.UserConfigDir,
 	}
 }
 
@@ -56,10 +59,15 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("system", "s", "", "system prompt (default: the SDK's)").
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
-		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools")
+		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools").
+		AddGlobalFlag("session", "S", "", "save the conversation under this name and resume it next time").
+		AddGlobalFlag("sessions-dir", "", "", "where sessions are stored (default: the user config directory)")
 	app.AddCommand(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.cmdChat))
 	app.AddCommand(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
 		SetUsage("run <prompt...>"))
+	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.cmdSessionRemove).
+			SetUsage("sessions rm <name...>")))
 	app.SetDefaultCommand("chat")
 	return app
 }

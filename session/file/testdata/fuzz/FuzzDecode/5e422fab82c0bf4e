@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"formAt\":\"ringil-session\",\"version\":1}\n{\"seq\":1,\"msg\":{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"quanto fa 2+2?\"}]},\"HAsh\":\"2bd8619d30057dac16a47e85773230c98dd9cc63b154651e4e1ba9f35c492278\"}")

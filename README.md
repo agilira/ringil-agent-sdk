@@ -11,7 +11,43 @@ go get github.com/agilira/ringil-agent-sdk
 
 Richiede Go 1.27.
 
-## Uso
+## CLI
+
+```sh
+make chat                                   # chat con l'endpoint del .env (RINGIL_*)
+./cmd/ringil/ringil run "che ore sono a Tokyo?"
+./cmd/ringil/ringil -S lavoro chat          # sessione salvata: la riapri e riprende
+./cmd/ringil/ringil sessions                # elenco; "sessions rm <nome>" per cancellare
+```
+
+Flag principali: `--base`, `--model`, `--key-env`, `--system`, `--max-turns`,
+`--allow-http`, `--no-tools`, `--session`/`-S`, `--sessions-dir`.
+
+## Agente
+
+```go
+a, err := agent.New(agent.Config{Provider: model, Tools: tools})
+
+store, err := file.New(dir)                 // session/file
+sess, err := store.Open(ctx, "lavoro")      // un solo aperto alla volta
+defer sess.Close()
+
+for ev, err := range a.Stream(ctx, sess, agent.UserText("ciao")) {
+    // EventText, EventToolStart, EventToolEnd, EventRecovered, EventDone
+}
+```
+
+Il ciclo scrive ogni messaggio nella conversazione appena esiste: la richiesta
+dell'utente, il messaggio del modello prima che parta qualunque tool, ogni
+risultato dopo. Se il processo muore a metà di un tool, alla ripresa la chiamata
+non viene rieseguita: il modello riceve un risultato «interrotto, verifica prima
+di ripetere» (con `StrictResume` la sessione viene invece rifiutata).
+
+Le sessioni su file sono JSON Lines in sola aggiunta, con una catena di hash che
+rivela righe modificate, tolte o riordinate; una riga a metà lasciata da un crash
+viene scartata. Nessun limite di lunghezza.
+
+## Uso del provider
 
 Una chiamata in streaming verso qualunque server compatibile OpenAI:
 

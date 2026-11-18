@@ -10,6 +10,9 @@ type EventKind string
 
 // Event kinds, in the order they occur within a turn.
 const (
+	// EventRecovered reports a call of an interrupted earlier run that was
+	// answered as interrupted, not executed again.
+	EventRecovered EventKind = "recovered"
 	// EventText carries a streamed text delta.
 	EventText EventKind = "text"
 	// EventModel follows every model call, with its usage.

@@ -1,7 +1,7 @@
 v0.1.0 — unreleased
 
 First increments of the SDK core: data model and providers (N1), tool API
-(N2).
+(N2), agent loop (N3, base) and sessions (N4), with the ringil CLI.
 
 FEATURES
 
@@ -37,6 +37,19 @@ FEATURES
   - Registry: immutable, sorted specs, With and Select for worker subsets,
     Execute returning the model-facing result and the full host error.
   - ToolError and ModelMessage: a tool decides what the model may read.
+  - Agent loop: model, tools, results, until the model answers. Stream
+    yields typed events (text, model, tool start/end, recovered, done) as an
+    iterator; breaking out cancels the run. MaxTurns optional, default none.
+  - Conversation interface; every message is recorded as soon as it exists,
+    the model's tool calls before any tool runs.
+  - Interrupted runs: unanswered calls are reported to the model as
+    interrupted and never executed again; StrictResume refuses instead.
+  - session/file: append-only JSON Lines with a SHA-256 hash chain, one
+    file per session, exclusive lock, partial last line cut after a crash,
+    no length limit. In-memory conversations with NewConversation.
+  - cmd/ringil: chat and one-shot run on any OpenAI-compatible endpoint,
+    streaming, built-in read-only tools (now, calculate), saved sessions
+    (--session, sessions, sessions rm).
 
 SECURITY
 
@@ -56,5 +69,11 @@ SECURITY
     tools are recovered and their value goes to the host only.
   - Registered specs are frozen copies; tools receive a copy of their
     input; Select can only narrow a registry.
+  - Tool arguments are validated, then the re-encoded validated form is
+    decoded: duplicate JSON keys cannot carry values past the schema.
+  - Session files: IDs restricted to [A-Za-z0-9_-], all access through
+    os.Root, symlinks refused, 0600 files in a 0700 directory, damaged or
+    edited lines reported as SESSION_CORRUPT.
+  - The CLI strips terminal control sequences from model and tool output.
   - Fuzz targets for the SSE decoder, the response parser, the argument
-    validator and typed tool calls.
+    validator, typed tool calls and the session file loader.
