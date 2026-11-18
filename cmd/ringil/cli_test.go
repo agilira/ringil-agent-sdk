@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"os"
 	"path/filepath"
@@ -44,6 +45,7 @@ func newHarness(input string, steps ...fake.Step) *harness {
 	}
 	h.c.turnContext = func(ctx context.Context) (context.Context, context.CancelFunc) { return context.WithCancel(ctx) }
 	h.c.configDir = func() (string, error) { return h.dir, nil }
+	h.c.home = func() (string, error) { return "", os.ErrNotExist }
 	return h
 }
 
@@ -416,5 +418,86 @@ func TestRepeatedMountFlags(t *testing.T) {
 	}
 	if len(stub.spec.Mounts) != 2 || stub.spec.Mounts[0].Source != abs(t, "/a") || stub.spec.Mounts[1].Source != abs(t, "/b") {
 		t.Fatalf("mounts %+v", stub.spec.Mounts)
+	}
+}
+
+func TestWorkspaceFlagGrantsFileTools(t *testing.T) {
+	dir := t.TempDir()
+	h := newHarness("", fake.Reply("ok"))
+	if code := h.run("run", "--workspace", dir, "--workspace", t.TempDir(), "x"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	names := map[string]bool{}
+	for _, spec := range h.script.Requests()[0].Tools {
+		names[spec.Name] = true
+	}
+	for _, want := range []string{"read_file", "list_directory", "glob", "grep", "now", "calculate"} {
+		if !names[want] {
+			t.Errorf("%s not offered: %v", want, names)
+		}
+	}
+	h = newHarness("", fake.Reply("ok"))
+	if code := h.run("run", "--workspace", "/nonexistent-ringil", "x"); code != exitError || !strings.Contains(h.err.String(), "does not exist") {
+		t.Fatalf("missing dir: %d %q", code, h.err)
+	}
+}
+
+// readOutside scripts a model that reads a file outside the start folder.
+func readOutside(t *testing.T, answer string) (*harness, string) {
+	t.Helper()
+	start, other := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "nota.txt"), []byte("contenuto riservato"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(map[string]string{"path": filepath.Join(other, "nota.txt")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(answer, fake.Call("read_file", string(input)), fake.Reply("fatto"))
+	h.c.cwd = func() (string, error) { return start, nil }
+	if code := h.run("run", "leggi la nota"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	return h, other
+}
+
+func TestOutsideFolderAskedAndAllowed(t *testing.T) {
+	h, other := readOutside(t, "s\n")
+	if !strings.Contains(h.err.String(), "wants to access "+other) {
+		t.Fatalf("not asked: %q", h.err)
+	}
+	if msgs := h.script.Requests()[1].Messages; !strings.Contains(msgs[len(msgs)-1].Result.Content, "contenuto riservato") {
+		t.Fatalf("not read: %+v", msgs[len(msgs)-1].Result)
+	}
+}
+
+func TestOutsideFolderDeniedByDefault(t *testing.T) {
+	for _, answer := range []string{"\n", "n\n", ""} {
+		h, _ := readOutside(t, answer)
+		res := h.script.Requests()[1].Messages
+		if got := res[len(res)-1].Result; !got.IsError || strings.Contains(got.Content, "riservato") {
+			t.Fatalf("answer %q: %+v", answer, got)
+		}
+	}
+}
+
+func TestHomeIsAccessibleWithoutAsking(t *testing.T) {
+	start, home := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "doc.txt"), []byte("nella home"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(map[string]string{"path": filepath.Join(home, "doc.txt")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness("", fake.Call("read_file", string(input)), fake.Reply("ok"))
+	h.c.cwd = func() (string, error) { return start, nil }
+	h.c.home = func() (string, error) { return home, nil }
+	if code := h.run("run", "leggi"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	msgs := h.script.Requests()[1].Messages
+	if strings.Contains(h.err.String(), "wants to access") || !strings.Contains(msgs[len(msgs)-1].Result.Content, "nella home") {
+		t.Fatalf("err %q result %+v", h.err, msgs[len(msgs)-1].Result)
 	}
 }

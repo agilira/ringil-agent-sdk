@@ -400,7 +400,7 @@ prima del commit dopo:
 |---|---|---|
 | 1 | Segreti: `Resolver`, ambiente, env file privato, catena senza fallback silenziosi (0.28) — FATTO 18/11. Adapter Vault KV v2, file cifrato, keyring OS (da eos-legacy) dopo: si attaccano a `Resolver` | il `# commento` inline non entra nel valore; la chiave API passa da qui, mai flag |
 | 2 | Sandbox condiviso (`sandbox`: bwrap, seccomp, prlimit) per script, MCP stdio e Bash — FATTO 18/11, audit corretto. Da aggiungere sulla stessa interfaccia: tetto totale con cgroup, filtro egress per la rete isolata, backend macOS (seatbelt) e Windows (AppContainer) | rete in netns propria; seccomp anche bpf/perf_event_open/userfaultfd |
-| 3 | Tool filesystem in lettura con grant `--workspace` (primo tool di studio) | os.Root, no symlink/traversal, nessun byte di file nei log |
+| 3 | Tool filesystem in lettura con grant `--workspace` (primo tool di studio) — FATTO 18/11: read_file, list_directory, glob, grep; percorsi assoluti in più cartelle | os.Root, no symlink/traversal, nessun byte di file nei log |
 | 4 | Memoria ricercabile `Memory` (scope dall'host) | richiamo nella vista, mai nella sessione; `VectorStore` + Chroma più avanti |
 | 5 | Skills (nomi sempre esposti, corpi e script al bisogno, script solo nel sandbox) | |
 | 6 | MCP stdio/HTTP + OAuth | stdio nel sandbox; nessun replay dopo `MCP_UNCERTAIN`; consenso solo da operatore |

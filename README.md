@@ -33,6 +33,9 @@ make chat                                   # chat con l'endpoint del .env (RING
 ./cmd/ringil/ringil run "che ore sono a Tokyo?"
 ./cmd/ringil/ringil -S lavoro chat          # sessione salvata: la riapri e riprende
 ./cmd/ringil/ringil sessions                # elenco; "sessions rm <nome>" per cancellare
+./cmd/ringil/ringil run "trova dove è definito X"   # tool sui file nella cartella di lancio;
+                                                   # per altre cartelle l'agente chiede il permesso
+./cmd/ringil/ringil sandbox --mount ~/dati -- python3 script.py               # esecuzione isolata
 ```
 
 Flag principali: `--base`, `--model`, `--key-env`, `--system`, `--max-turns`,
@@ -131,6 +134,19 @@ un tool diventa un errore e non ferma l'agente.
 
 Per tool con schema noto solo a runtime (MCP, tool generati) si implementa
 direttamente l'interfaccia `agent.Tool`.
+
+## Tool sui file
+
+```go
+ws, err := files.New(files.Config{Dirs: []string{"/home/me/progetto", "/home/me/documenti"}})
+tools, err := agent.NewRegistry(ws.ReadTools()...)   // read_file, list_directory, glob, grep
+```
+
+Percorsi assoluti dentro qualunque cartella concessa, o relativi alla prima. Con
+`Config.Ask` l'host decide al momento sulle altre cartelle (la CLI chiede nel
+terminale, un'app mostra una finestra); senza, sono rifiutate. Nessuna
+uscita dalle cartelle (`..`, symlink); file dei segreti (`.env`, chiavi SSH, `*.pem`,
+credenziali cloud) esclusi di default, modificabile con `Config.Exclude`.
 
 ## Decoratori
 

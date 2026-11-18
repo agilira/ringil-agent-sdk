@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"strings"
@@ -57,10 +56,12 @@ func (c *cli) cmdChat(ctx *orpheus.Context) error {
 }
 
 func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) error {
-	scanner := bufio.NewScanner(c.in)
-	scanner.Buffer(make([]byte, 0, 4096), maxLine)
-	for c.prompt() && scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for c.prompt() {
+		raw, ok := c.readLine()
+		if !ok {
+			break
+		}
+		line := strings.TrimSpace(raw)
 		switch line {
 		case "":
 		case "/exit", "/quit":
@@ -74,7 +75,10 @@ func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) 
 			}
 		}
 	}
-	return scanner.Err()
+	if c.lines != nil {
+		return c.lines.Err()
+	}
+	return nil
 }
 
 func (c *cli) prompt() bool {
