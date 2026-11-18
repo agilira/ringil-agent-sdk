@@ -35,6 +35,17 @@ func tree(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// resolved resolves a test directory the way the workspace does (macOS
+// /var -> /private/var, Windows 8.3 short names).
+func resolved(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 func open(t *testing.T, cfg Config) agent.Registry {
 	t.Helper()
 	w, err := New(cfg)
@@ -140,7 +151,7 @@ func TestPathsAbsoluteRelativeAndOutside(t *testing.T) {
 	outside := tree(t, map[string]string{"secret.txt": "no"})
 	for _, p := range []string{filepath.Join(outside, "secret.txt"), "../" + filepath.Base(outside) + "/secret.txt", "a/../../x"} {
 		msg := failCall(t, r, "read_file", map[string]any{"path": p}, ErrOutside)
-		if !strings.Contains(msg, first) {
+		if !strings.Contains(msg, resolved(t, first)) {
 			t.Fatalf("model not told where it can read: %q", msg)
 		}
 	}
@@ -289,7 +300,7 @@ func TestOutsidePathAsksAndGrants(t *testing.T) {
 	if out := mustCall(t, r, "list_directory", map[string]any{"path": filepath.Join(other, "sub")}); !strings.Contains(out, "b.txt") {
 		t.Fatalf("list %q", out)
 	}
-	if len(a.asked) != 1 || a.asked[0] != filepath.Join(other, "sub") {
+	if len(a.asked) != 1 || a.asked[0] != resolved(t, filepath.Join(other, "sub")) {
 		t.Fatalf("asked %v", a.asked)
 	}
 }

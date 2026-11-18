@@ -10,6 +10,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	stderrors "errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -48,6 +49,10 @@ func runCtx(ctx context.Context, t *testing.T, s Sandbox, spec Spec) (string, st
 	spec.Stdout, spec.Stderr = &out, &errOut
 	p, err := s.Start(ctx, spec)
 	if err != nil {
+		var coded *errors.Error
+		if stderrors.As(err, &coded) {
+			t.Fatalf("start: %v (context %v)", err, coded.Context)
+		}
 		t.Fatalf("start: %v", err)
 	}
 	werr := p.Wait()

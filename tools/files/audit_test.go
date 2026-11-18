@@ -63,8 +63,13 @@ func TestSwapRaceDoesNotLeak(t *testing.T) {
 		t.Skip("symlinks need privileges on Windows")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go swapLoop(ctx, dir)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		swapLoop(ctx, dir)
+	}()
+	// The swapper must be gone before the test's directory is removed.
+	defer func() { cancel(); <-stopped }()
 	r := open(t, Config{Dirs: []string{dir}})
 	for range 300 {
 		out, err := call(t, r, "grep", map[string]any{"pattern": "SECRET"})
