@@ -8,6 +8,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,10 +20,16 @@ import (
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 )
 
-// big returns a tool that answers with n bytes of distinctive text.
+// big returns a tool that answers with n bytes of distinctive text, a
+// different document each time (the same one would be a loop).
 func big(n int) agent.Tool {
+	var mu sync.Mutex
+	doc := 0
 	return agent.NewTool("fetch", "Fetch a document", func(context.Context, struct{}) (string, error) {
-		return "DOC:" + strings.Repeat("x", n), nil
+		mu.Lock()
+		defer mu.Unlock()
+		doc++
+		return fmt.Sprintf("D%03d", doc%1000) + strings.Repeat("x", n), nil
 	}, agent.ReadOnly())
 }
 

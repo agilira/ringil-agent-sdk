@@ -67,6 +67,9 @@ type Config struct {
 	// Recall is how many records join the context; zero means 5, a
 	// negative value turns automatic recall off.
 	Recall int
+	// Loop configures the loop detector; the zero value warns the model
+	// when the same calls keep giving the same results.
+	Loop Loop
 	// StrictResume refuses a conversation that ended in the middle of tool
 	// calls (ErrSessionIncomplete) instead of telling the model those calls
 	// were interrupted. Either way, the calls are never repeated.
@@ -105,6 +108,9 @@ func New(cfg Config) (Agent, error) {
 	}
 	if cfg.MaxTurns < 0 || cfg.MaxTokens < 0 || cfg.ContextWindow < 0 {
 		return nil, errors.New(ErrAgentConfig, "max turns, max tokens and context window cannot be negative")
+	}
+	if err := cfg.Loop.validate(); err != nil {
+		return nil, err
 	}
 	if cfg.Tools == nil {
 		cfg.Tools = &registry{entries: map[string]entry{}}
@@ -179,15 +185,18 @@ type run struct {
 	start     int
 	seenIDs   map[string]bool
 	result    Result
-	tools     Registry   // the configured tools, plus tool_search and read_history
-	disc      *discovery // nil when every schema is sent
-	histMu    sync.Mutex // guards msgs against read_history running in parallel
-	compacted bool       // the view has left messages out: read_history is offered
-	hist      Tool       // read_history, nil when compaction is off or the host has its own
+	tools     Registry      // the configured tools, plus tool_search and read_history
+	disc      *discovery    // nil when every schema is sent
+	histMu    sync.Mutex    // guards msgs against read_history running in parallel
+	compacted bool          // the view has left messages out: read_history is offered
+	hist      Tool          // read_history, nil when compaction is off or the host has its own
+	loops     *loopDetector // nil when disabled
+	loopStop  bool          // LoopStop refused a call: the run ends after this batch
+	batch     *loopDetector // the detector plus the calls admitted in the current batch
 }
 
 func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
-	r := &run{cfg: cfg, conv: conv, yield: yield, seenIDs: map[string]bool{}, system: cfg.System}
+	r := &run{cfg: cfg, conv: conv, yield: yield, seenIDs: map[string]bool{}, system: cfg.System, loops: newLoopDetector(cfg.Loop, cfg.Tools)}
 	r.msgs = conv.Messages()
 	for _, msg := range r.msgs {
 		for _, call := range msg.Calls {
@@ -327,6 +336,9 @@ func (r *run) execute(ctx context.Context) error {
 		if err := r.runTools(ctx, resp.Message.Calls); err != nil {
 			return err
 		}
+		if r.loopStop {
+			return r.finish(StopLoop)
+		}
 	}
 }
 
@@ -456,21 +468,31 @@ func (r *run) parallel(call ToolCall) bool {
 }
 
 type outcome struct {
-	res ToolResult
-	err error
+	res  ToolResult
+	err  error
+	loop string // what the loop detector did, for EventLoop
 }
 
 func (r *run) runBatch(ctx context.Context, calls []ToolCall) error {
 	out := make([]outcome, len(calls))
 	run := make([]bool, len(calls))
+	r.batch = r.loops.clone() // calls run together are checked against each other too
 	for i := range calls {
 		if err := r.emit(Event{Kind: EventToolStart, Call: &calls[i]}); err != nil {
 			return err
 		}
 		res, err, ok := r.gate(ctx, calls[i])
-		out[i], run[i] = outcome{res, err}, ok
+		out[i], run[i] = outcome{res: res, err: err, loop: r.loopNote(err)}, ok
+		if ok {
+			r.batch.admit(calls[i])
+		}
 	}
 	r.runCalls(ctx, calls, run, out)
+	for i := range calls {
+		if run[i] {
+			r.watch(calls[i], &out[i])
+		}
+	}
 	// Every call that ran is recorded before any stop: a result lost after
 	// its effect would make the next run tell the model it may not have
 	// happened.
@@ -489,7 +511,7 @@ func (r *run) runCalls(ctx context.Context, calls []ToolCall, run []bool, out []
 	if len(calls) == 1 {
 		if run[0] {
 			res, err := r.runOne(ctx, calls[0])
-			out[0] = outcome{res, err}
+			out[0] = outcome{res: res, err: err}
 		}
 		return
 	}
@@ -502,7 +524,7 @@ func (r *run) runCalls(ctx context.Context, calls []ToolCall, run []bool, out []
 		go func() {
 			defer wg.Done()
 			res, err := r.runOne(ctx, calls[i])
-			out[i] = outcome{res, err}
+			out[i] = outcome{res: res, err: err}
 		}()
 	}
 	wg.Wait()
@@ -525,17 +547,19 @@ func (r *run) record(ctx context.Context, call *ToolCall, o outcome, quiet bool)
 	if ctxErr := ctx.Err(); ctxErr != nil || quiet {
 		return ctxErr
 	}
+	if o.loop != "" {
+		if err := r.emit(Event{Kind: EventLoop, Call: call, Text: o.loop}); err != nil {
+			return err
+		}
+	}
 	return r.emit(Event{Kind: EventToolEnd, Call: call, Output: &res, Err: toolErr})
 }
 
 // gate decides whether a call runs: an unknown tool or the host's refusal
 // answers it at once (ok false) with the result to record.
 func (r *run) gate(ctx context.Context, call ToolCall) (ToolResult, error, bool) {
-	if ctx.Err() != nil {
-		return ToolResult{}, ctx.Err(), false // not run: recorded as pending, no question asked
-	}
-	if _, known := r.spec(call.Name); !known && r.disc != nil {
-		return r.disc.unknown(call), errors.New(ErrToolUnknown, "the model called an unknown tool"), false
+	if res, err, refused := r.precheck(ctx, call); refused {
+		return res, err, false
 	}
 	if r.cfg.Approve == nil {
 		return ToolResult{}, nil, true
@@ -553,6 +577,62 @@ func (r *run) gate(ctx context.Context, call ToolCall) (ToolResult, error, bool)
 		denied = errors.Wrap(err, ErrToolDenied, "approval failed")
 	}
 	return ToolResult{CallID: call.ID, Content: "The user did not approve this call. Ask before trying again.", IsError: true}, denied, false
+}
+
+// precheck answers, without asking anyone, a call that cannot or must
+// not run: the run is cancelled, the tool is unknown, or the call would
+// only repeat a loop (checked before approval: the user is not asked).
+func (r *run) precheck(ctx context.Context, call ToolCall) (ToolResult, error, bool) {
+	if ctx.Err() != nil {
+		return ToolResult{}, ctx.Err(), true // not run: recorded as pending, no question asked
+	}
+	if _, known := r.spec(call.Name); !known && r.disc != nil {
+		return r.disc.unknown(call), errors.New(ErrToolUnknown, "the model called an unknown tool"), true
+	}
+	return r.loopGate(call)
+}
+
+// loopGate refuses a call that would continue a loop, under LoopBlock
+// and LoopStop; after LoopStop nothing more runs.
+func (r *run) loopGate(call ToolCall) (ToolResult, error, bool) {
+	refuse := func(text, why string) (ToolResult, error, bool) {
+		return ToolResult{CallID: call.ID, Content: text, IsError: true}, errors.New(ErrToolLoop, why), true
+	}
+	switch {
+	case r.loopStop:
+		return refuse("Not run: the run was stopped by the loop detector.", "stopped")
+	case r.cfg.Loop.Action == LoopWarn || !r.batch.continues(call):
+		return ToolResult{}, nil, false
+	case r.cfg.Loop.Action == LoopStop:
+		r.loopStop = true
+		return refuse("Not run: the run was stopped because the same calls kept giving the same results.", "stopped")
+	}
+	return refuse(loopRefusal, "blocked")
+}
+
+// loopNote names what the loop detector did to a call it refused.
+func (r *run) loopNote(err error) string {
+	switch {
+	case !errors.HasCode(err, ErrToolLoop):
+		return ""
+	case r.loopStop:
+		return "stopped"
+	}
+	return "blocked"
+}
+
+// watch records a call that ran and warns the model, in its result, when
+// the call repeats a loop.
+func (r *run) watch(call ToolCall, o *outcome) {
+	if stderrors.Is(o.err, context.Canceled) || stderrors.Is(o.err, context.DeadlineExceeded) {
+		return // cut short: says nothing about what the call gives
+	}
+	times, period := r.loops.add(call, o.res)
+	if times == 0 {
+		return
+	}
+	o.res.Content = loopWarning(times, period) + o.res.Content
+	o.loop = "warned"
 }
 
 // offersHistory: read_history exists when compaction is on, the agent has

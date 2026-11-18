@@ -140,4 +140,5 @@ const (
 	StopFiltered  StopReason = "filtered"   // the provider withheld content
 	StopMaxTurns  StopReason = "max_turns"  // the host's turn limit was reached
 	StopCancelled StopReason = "cancelled"  // the context was cancelled
+	StopLoop      StopReason = "loop"       // the loop detector stopped the run (LoopStop)
 )

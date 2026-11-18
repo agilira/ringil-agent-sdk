@@ -180,3 +180,19 @@ func fields(spec ToolSpec, lead string) string {
 	}
 	return strings.TrimSuffix(b.String(), ";") + "."
 }
+
+// canonical is the input as the function receives it, encoded again:
+// unknown fields and nulls dropped, defaults written out or left out
+// alike. Two calls with equal canonical forms do the same thing; the loop
+// detector compares these.
+func (t *funcTool[In, Out]) canonical(input json.RawMessage) ([]byte, bool) {
+	if t.err != nil {
+		return nil, false
+	}
+	in, _, err := t.decode(input)
+	if err != nil {
+		return nil, false
+	}
+	data, err := json.Marshal(in)
+	return data, err == nil
+}

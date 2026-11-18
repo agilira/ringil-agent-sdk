@@ -123,6 +123,26 @@ func (r *registry) clone() *registry {
 	return c
 }
 
+// canonicalizer is a tool that can say what its input means; see
+// funcTool.canonical.
+type canonicalizer interface {
+	canonical(input json.RawMessage) ([]byte, bool)
+}
+
+// canonicalArgs is the meaning of a call's arguments, when its tool can
+// tell.
+func (r *registry) canonicalArgs(call ToolCall) ([]byte, bool) {
+	e, ok := r.entries[call.Name]
+	if !ok {
+		return nil, false
+	}
+	c, ok := e.tool.(canonicalizer)
+	if !ok {
+		return nil, false
+	}
+	return c.canonical(call.Input)
+}
+
 func (r *registry) With(tools ...Tool) (Registry, error) {
 	c := r.clone()
 	if err := c.add(tools); err != nil {
