@@ -42,6 +42,11 @@ type Config struct {
 	// Compaction controls how a conversation that outgrows the context is
 	// shortened; the zero value is on, without model-written summaries.
 	Compaction Compaction
+	// Approve, when set, is asked before every tool call; false or an
+	// error refuses the call, and the model is told the user did not
+	// approve it. Which calls to ask about is the host's choice: the CLI
+	// asks for tools marked Destructive, an app may ask for more or none.
+	Approve func(ctx context.Context, call ToolCall, spec ToolSpec) (bool, error)
 	// Memory, when set, recalls the records relevant to each user turn
 	// into that run's system prompt. Writing memories is up to the host,
 	// or to the model through the tools in package memory.
@@ -335,7 +340,7 @@ func (r *run) runTools(ctx context.Context, calls []ToolCall) error {
 		if err := r.emit(Event{Kind: EventToolStart, Call: &call}); err != nil {
 			return err
 		}
-		res, toolErr := r.cfg.Tools.Execute(ctx, call)
+		res, toolErr := r.callTool(ctx, call)
 		if res.CallID == "" {
 			// Execute's contract: an empty CallID means the tool did not run
 			// (the context ended first). Nothing to record; the call stays
@@ -357,6 +362,32 @@ func (r *run) runTools(ctx context.Context, calls []ToolCall) error {
 		}
 	}
 	return nil
+}
+
+// callTool runs one call after the host's approval, if the host asks for
+// one. A refusal, or a failure to ask, is answered like a failed tool.
+func (r *run) callTool(ctx context.Context, call ToolCall) (ToolResult, error) {
+	if r.cfg.Approve != nil {
+		if spec, ok := r.spec(call.Name); ok {
+			if allowed, err := r.cfg.Approve(ctx, call, spec); err != nil || !allowed {
+				denied := errors.New(ErrToolDenied, "the user did not approve the call")
+				if err != nil {
+					denied = errors.Wrap(err, ErrToolDenied, "approval failed")
+				}
+				return ToolResult{CallID: call.ID, Content: "The user did not approve this call. Ask before trying again.", IsError: true}, denied
+			}
+		}
+	}
+	return r.cfg.Tools.Execute(ctx, call)
+}
+
+func (r *run) spec(name string) (ToolSpec, bool) {
+	for _, s := range r.cfg.Tools.Specs() {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return ToolSpec{}, false
 }
 
 func (r *run) finish(stop StopReason) error {

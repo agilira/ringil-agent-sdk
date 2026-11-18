@@ -149,16 +149,27 @@ func short(s string) string {
 	return s
 }
 
-// clean removes control characters except newlines and tabs. Model output
-// and tool results are untrusted: an escape sequence printed raw could
-// rewrite the terminal, fake a prompt or hide text.
+// clean removes control characters except newlines and tabs, and the
+// bidirectional overrides that reorder text on screen. Model output and
+// tool results are untrusted: an escape sequence printed raw could rewrite
+// the terminal, fake a prompt or hide text.
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' || (r >= 0x20 && r != 0x7f && (r < 0x80 || r > 0x9f)) {
+		if r == '\n' || r == '\t' || printable(r) {
 			return r
 		}
 		return -1
 	}, s)
+}
+
+func printable(r rune) bool {
+	switch {
+	case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+		return false
+	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069, r == 0x200e, r == 0x200f:
+		return false
+	}
+	return true
 }
 
 // recalled shows recalled memories, and a memory that could not be read.

@@ -576,3 +576,26 @@ func TestNoMemoryFlag(t *testing.T) {
 		t.Fatal("rm without ids accepted")
 	}
 }
+
+func TestDestructiveToolsAskFirst(t *testing.T) {
+	for answer, wantRun := range map[string]bool{"y\n": true, "n\n": false, "": false} {
+		h := newHarness(t, answer, fake.Call("forget", `{"id":"nope"}`), fake.Reply("ok"))
+		if code := h.run("run", "dimentica"); code != exitOK {
+			t.Fatalf("exit %d: %s", code, h.err)
+		}
+		if !strings.Contains(h.err.String(), "wants to run forget") {
+			t.Fatalf("not asked: %q", h.err)
+		}
+		msgs := h.script.Requests()[1].Messages
+		got := msgs[len(msgs)-1].Result.Content
+		if ran := !strings.Contains(got, "did not approve"); ran != wantRun {
+			t.Errorf("answer %q: result %q", answer, got)
+		}
+	}
+}
+
+func TestCleanStripsBidiOverrides(t *testing.T) {
+	if got := clean("a\u202eb\u2066c\u200fd"); got != "abcd" {
+		t.Fatalf("clean %q", got)
+	}
+}

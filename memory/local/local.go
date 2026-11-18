@@ -19,7 +19,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -107,19 +109,67 @@ func (s *store) withLock(ctx context.Context, root *os.Root, lock *os.File, fn f
 }
 
 func read(root *os.Root) (*document, error) {
-	data, err := root.ReadFile(dataFile)
+	data, err := readFile(root)
 	if os.IsNotExist(err) {
 		return &document{Version: version}, nil
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, agent.ErrMemoryIO, "cannot read the memory")
 	}
+	return decode(data)
+}
+
+// maxFile bounds the memory file read into memory; far above real use.
+const maxFile = 1 << 30
+
+// readFile opens without blocking and reads only a regular file: a FIFO
+// planted at the memory's name must not hang every operation.
+func readFile(root *os.Root) ([]byte, error) {
+	f, err := root.OpenFile(dataFile, os.O_RDONLY|nonBlock|lockfile.NoFollow, 0)
+	if err != nil {
+		return nil, err
+	}
+	data, err := readRegular(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return data, err
+}
+
+func readRegular(f *os.File) ([]byte, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxFile {
+		return nil, errors.New(agent.ErrMemoryIO, "the memory file is not a regular file of sane size")
+	}
+	return io.ReadAll(io.LimitReader(f, maxFile))
+}
+
+// decode parses the memory file and checks every record, keeping the last
+// of any duplicated ID.
+func decode(data []byte) (*document, error) {
 	doc := &document{}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(doc); err != nil || doc.Version != version {
 		return nil, errors.New(agent.ErrMemoryIO, "the memory file is damaged or from another version")
 	}
+	seen := map[string]int{}
+	var recs []agent.MemoryRecord
+	for _, r := range doc.Records {
+		if validate(r) != nil || r.ID == "" {
+			return nil, errors.New(agent.ErrMemoryIO, "the memory file holds an invalid record")
+		}
+		if i, dup := seen[r.ID]; dup {
+			recs[i] = r
+			continue
+		}
+		seen[r.ID] = len(recs)
+		recs = append(recs, r)
+	}
+	doc.Records = recs
 	return doc, nil
 }
 
@@ -182,6 +232,8 @@ func (s *store) Put(ctx context.Context, rec agent.MemoryRecord) (agent.MemoryRe
 	return rec, err
 }
 
+var validID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 func validate(rec agent.MemoryRecord) error {
 	switch {
 	case rec.Content == "":
@@ -190,8 +242,8 @@ func validate(rec agent.MemoryRecord) error {
 		return agent.ToolError(agent.ErrMemoryInput, "A memory is one fact: keep it under 32 KiB.")
 	case !utf8.ValidString(rec.Content) || strings.ContainsRune(rec.Content, 0):
 		return agent.ToolError(agent.ErrMemoryInput, "A memory must be text.")
-	case len(rec.ID) > 64 || strings.ContainsAny(rec.ID, " \t\n/"):
-		return agent.ToolError(agent.ErrMemoryInput, "Memory IDs are short words without spaces.")
+	case rec.ID != "" && !validID.MatchString(rec.ID):
+		return agent.ToolError(agent.ErrMemoryInput, "Memory IDs are 1-64 letters, digits, _ or -.")
 	}
 	return nil
 }
@@ -200,6 +252,13 @@ func validate(rec agent.MemoryRecord) error {
 // or appends a new one.
 func (s *store) upsert(doc *document, rec agent.MemoryRecord) agent.MemoryRecord {
 	if rec.ID == "" {
+		// The same fact remembered twice stays one record: a model that
+		// repeats itself does not grow the memory.
+		for _, old := range doc.Records {
+			if old.Content == rec.Content {
+				return old
+			}
+		}
 		rec.ID = newID()
 	}
 	for i, old := range doc.Records {
@@ -228,11 +287,23 @@ func (s *store) Delete(ctx context.Context, id string) error {
 	})
 }
 
+// Search reads a snapshot without taking the lock: writes replace the file
+// by rename, so a reader always sees one whole version, and a slow search
+// never holds up other processes.
 func (s *store) Search(ctx context.Context, query string, limit int) ([]agent.MemoryRecord, error) {
-	var out []agent.MemoryRecord
-	err := s.locked(ctx, func(doc *document) (bool, error) {
-		out = rank(doc.Records, query, limit)
-		return false, nil
-	})
-	return out, err
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return nil, errors.Wrap(err, agent.ErrMemoryIO, "cannot open the memory directory")
+	}
+	doc, err := read(root)
+	if cerr := root.Close(); err == nil && cerr != nil {
+		err = errors.Wrap(cerr, agent.ErrMemoryIO, "cannot close the memory directory")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return rank(doc.Records, query, limit), nil
 }

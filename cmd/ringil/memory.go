@@ -43,7 +43,7 @@ func (c *cli) cmdMemory(ctx *orpheus.Context) error {
 		return c.line("nothing remembered")
 	}
 	for _, r := range recs {
-		if err := c.line(fmt.Sprintf("%s  %s  %s", r.ID, r.Created.Format("2006-01-02"), clean(r.Content))); err != nil {
+		if err := c.line(fmt.Sprintf("%s  %s  %s", clean(r.ID), r.Created.Format("2006-01-02"), short(r.Content))); err != nil {
 			return err
 		}
 	}

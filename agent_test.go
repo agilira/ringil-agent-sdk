@@ -437,3 +437,42 @@ func TestInvalidUTF8ToolOutputIsRepaired(t *testing.T) {
 		t.Fatalf("content %q err %v", res.Content, err)
 	}
 }
+
+func TestApproveHook(t *testing.T) {
+	calls := 0
+	var asked []string
+	approve := func(_ context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+		asked = append(asked, call.Name+":"+map[bool]string{true: "ro", false: "rw"}[spec.Annotations.ReadOnly])
+		return false, nil
+	}
+	p := fake.New(fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
+	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), Approve: approve}).Run(context.Background(), nil, agent.UserText("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := res.Messages[2].Result
+	if calls != 0 || len(asked) != 1 || asked[0] != "add:ro" || !result.IsError || !strings.Contains(result.Content, "did not approve") {
+		t.Fatalf("calls %d asked %v result %+v", calls, asked, result)
+	}
+}
+
+func TestApproveErrorRefuses(t *testing.T) {
+	calls := 0
+	approve := func(context.Context, agent.ToolCall, agent.ToolSpec) (bool, error) {
+		return true, stderrors.New("dialog closed")
+	}
+	p := fake.New(fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
+	var denied error
+	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), Approve: approve})
+	for ev, err := range a.Stream(context.Background(), nil, agent.UserText("x")) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.Kind == agent.EventToolEnd {
+			denied = ev.Err
+		}
+	}
+	if calls != 0 || !errors.HasCode(denied, agent.ErrToolDenied) {
+		t.Fatalf("calls %d err %v", calls, denied)
+	}
+}
