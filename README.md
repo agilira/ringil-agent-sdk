@@ -11,6 +11,21 @@ go get github.com/agilira/ringil-agent-sdk
 
 Richiede Go 1.27.
 
+## Un agente completo
+
+Modello, tool tipizzato, conversazione salvata su disco, risposta in streaming:
+[`examples/agent`](examples/agent/main.go), una sessantina di righe.
+
+```sh
+export RINGIL_BASE_URL=http://localhost:11434/v1 RINGIL_MODEL=qwen2.5:3b
+go run ./examples/agent "Ricorda che il mio colore preferito è il verde"
+go run ./examples/agent "Qual è il mio colore preferito, e che ore sono a New York?"
+```
+
+Le protezioni sono accese di default (argomenti dei tool validati, errori dei tool
+filtrati, sessioni con ripresa sicura, compattazione); limiti e politiche sono
+opzioni, non obblighi.
+
 ## CLI
 
 ```sh

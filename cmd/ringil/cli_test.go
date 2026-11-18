@@ -330,10 +330,25 @@ func TestUnsafeEnvFileRefused(t *testing.T) {
 	}
 }
 
+func abs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
 func checkSamePath(t *testing.T, got []sandbox.Mount) {
 	t.Helper()
-	if got[0].Target != "" || got[0].Writable || got[1].Source != "/same/rw" || !got[1].Writable {
+	if got[0].Target != "" || got[0].Writable || got[1].Source != abs(t, "/same/rw") || !got[1].Writable {
 		t.Fatalf("same-path mounts %+v", got)
+	}
+}
+
+func TestParseMountDriveLetter(t *testing.T) {
+	if m, err := parseMount(`C:\data:/in:rw`); err != nil || m.Target != "/in" || !m.Writable || !strings.HasSuffix(m.Source, "data") {
+		t.Fatalf("drive-letter source: %+v %v", m, err)
 	}
 }
 
@@ -343,7 +358,7 @@ func TestParseMounts(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 	checkSamePath(t, got[2:])
-	for _, bad := range []string{"", ":/b", "a:/b:ro", "a:/b:c:rw"} {
+	for _, bad := range []string{"", ":/b", "a:/b:ro", ":rw"} {
 		if _, err := parseMounts([]string{bad}); !errors.HasCode(err, ErrUsage) {
 			t.Errorf("%q accepted: %v", bad, err)
 		}
@@ -399,7 +414,7 @@ func TestRepeatedMountFlags(t *testing.T) {
 	if code := h.run("sandbox", "--mount", "/a", "--mount", "/b:rw", "--", "true"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
-	if len(stub.spec.Mounts) != 2 || stub.spec.Mounts[0].Source != "/a" || stub.spec.Mounts[1].Source != "/b" {
+	if len(stub.spec.Mounts) != 2 || stub.spec.Mounts[0].Source != abs(t, "/a") || stub.spec.Mounts[1].Source != abs(t, "/b") {
 		t.Fatalf("mounts %+v", stub.spec.Mounts)
 	}
 }
