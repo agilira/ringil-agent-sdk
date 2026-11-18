@@ -6,11 +6,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	stderrors "errors"
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -20,6 +22,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
+	"github.com/agilira/ringil-agent-sdk/tools/files"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -40,6 +43,12 @@ type cli struct {
 	configDir func() (string, error)
 	// newSandbox returns the platform sandbox; tests may replace it.
 	newSandbox func() (sandbox.Sandbox, error)
+	// cwd is where the CLI was started, home the user's home; tests
+	// replace them.
+	cwd  func() (string, error)
+	home func() (string, error)
+	// lines reads the terminal; see readLine.
+	lines *bufio.Scanner
 }
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
@@ -51,6 +60,8 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		},
 		configDir:  os.UserConfigDir,
 		newSandbox: sandbox.New,
+		cwd:        os.Getwd,
+		home:       os.UserHomeDir,
 	}
 }
 
@@ -70,9 +81,9 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalBoolFlag("summarize", "", false, "summarize left-out turns with the model instead of dropping them (costs a call)").
 		AddGlobalFlag("session", "S", "", "save the conversation under this name and resume it next time").
 		AddGlobalFlag("sessions-dir", "", "", "where sessions are stored (default: the user config directory)")
-	app.AddCommand(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.cmdChat))
-	app.AddCommand(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
-		SetUsage("run <prompt...>"))
+	app.AddCommand(withWorkspace(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.cmdChat)))
+	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
+		SetUsage("run <prompt...>")))
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.cmdSessionRemove).
 			SetUsage("sessions rm <name...>")))
@@ -93,11 +104,9 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	var tools agent.Registry
-	if !ctx.GetGlobalFlagBool("no-tools") {
-		if tools, err = builtinTools(); err != nil {
-			return nil, err
-		}
+	tools, err := c.tools(ctx)
+	if err != nil {
+		return nil, err
 	}
 	return agent.New(agent.Config{
 		Provider:      retry.Wrap(p, retry.Config{}),
@@ -107,6 +116,80 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
 		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
 	})
+}
+
+// withWorkspace adds the flag granting directories to the file tools.
+func withWorkspace(cmd *orpheus.Command) *orpheus.Command {
+	return cmd.AddStringSliceFlag("workspace", "w", nil,
+		"grant a directory to the file tools (read_file, list_directory, glob, grep); repeatable, the first is the base for relative paths")
+}
+
+// tools grants the built-in tools and, with --workspace, the file tools.
+func (c *cli) tools(ctx *orpheus.Context) (agent.Registry, error) {
+	if ctx.GetGlobalFlagBool("no-tools") {
+		return nil, nil
+	}
+	reg, err := builtinTools()
+	if err != nil {
+		return nil, err
+	}
+	dirs := ctx.GetFlagStringSlice("workspace")
+	if len(dirs) == 0 {
+		var err error
+		if dirs, err = c.defaultDirs(); err != nil {
+			return nil, err
+		}
+	}
+	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess})
+	if err != nil {
+		return nil, err
+	}
+	return reg.With(ws.ReadTools()...)
+}
+
+// defaultDirs are the start directory and the user's home: the agent moves
+// freely across the user's own files, as the user would, with secrets
+// excluded by the file tools' policy. Anything else is asked for.
+func (c *cli) defaultDirs() ([]string, error) {
+	cwd, err := c.cwd()
+	if err != nil {
+		return nil, errors.Wrap(err, ErrUsage, "cannot read the current directory")
+	}
+	dirs := []string{cwd}
+	if home, err := c.home(); err == nil && home != "" && home != cwd {
+		dirs = append(dirs, home)
+	}
+	return dirs, nil
+}
+
+// askAccess asks in the terminal whether the agent may use dir. No answer
+// (end of input) is a no.
+func (c *cli) askAccess(_ context.Context, dir string) (bool, error) {
+	if err := c.line("\n  ? The agent wants to access " + clean(dir) + " — allow? [y/N] "); err != nil {
+		return false, err
+	}
+	answer, ok := c.readLine()
+	if !ok {
+		return false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes", "s", "si", "sì":
+		return true, nil
+	}
+	return false, nil
+}
+
+// readLine reads one line from the terminal, shared by the chat prompt and
+// the access questions so neither steals the other's input.
+func (c *cli) readLine() (string, bool) {
+	if c.lines == nil {
+		c.lines = bufio.NewScanner(c.in)
+		c.lines.Buffer(make([]byte, 0, 4096), maxLine)
+	}
+	if !c.lines.Scan() {
+		return "", false
+	}
+	return c.lines.Text(), true
 }
 
 func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
