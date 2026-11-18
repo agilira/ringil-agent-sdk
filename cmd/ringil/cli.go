@@ -134,7 +134,8 @@ func (c *cli) app() *orpheus.App {
 		AddSubcommand(orpheus.NewCommand("retry", "Let resume run an uncertain step again").SetHandler(c.cmdWorkflowRetry).SetUsage("workflow retry <id> <step>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete workflows' journals").SetHandler(c.cmdWorkflowRemove).SetUsage("workflow rm <id...>")))
 	app.AddCommand(orpheus.NewCommand("artifact", "List this project's artifacts").SetHandler(c.cmdArtifacts).
-		AddSubcommand(orpheus.NewCommand("show", "Print an artifact").SetHandler(c.cmdArtifactShow).SetUsage("artifact show <name>")).
+		AddSubcommand(orpheus.NewCommand("show", "Print an artifact (control characters removed; --raw for the exact bytes)").SetHandler(c.cmdArtifactShow).SetUsage("artifact show <name>").
+			AddBoolFlag("raw", "", false, "write the exact bytes, for redirecting to a file")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete artifacts").SetHandler(c.cmdArtifactRemove).SetUsage("artifact rm <name...>")))
 	app.AddCommand(orpheus.NewCommand("state", "Back up, check and restore the agent's state").SetHandler(c.cmdStateHelp).
 		AddSubcommand(orpheus.NewCommand("backup", "Save the agent's state to a new archive").SetHandler(c.cmdStateBackup).SetUsage("state backup <file.tar.gz>")).
@@ -334,7 +335,7 @@ func (c *cli) cmdRules(*orpheus.Context) error {
 
 // extraTools: memory and skill tools, when there is something to use.
 func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
-	extra := append([]agent.Tool{todo.Tool()}, c.artifactTools("agent")...)
+	extra := append([]agent.Tool{todo.Tool()}, c.artifactTools(false)...)
 	if c.notes != nil {
 		extra = append(extra, c.notes.Tool())
 	}

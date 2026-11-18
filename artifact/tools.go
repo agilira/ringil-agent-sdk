@@ -120,16 +120,34 @@ func (t *tools) read(ctx context.Context, in readIn) (string, error) {
 	if in.Offset >= len(data) && len(data) > 0 {
 		return "", agent.ToolError(ErrInput, "offset is past the end ("+strconv.Itoa(len(data))+" bytes).")
 	}
-	part := data[min(in.Offset, len(data)):]
-	text := string(part)
-	if len(part) > maxRead {
-		cut := maxRead
-		for cut > 0 && !utf8.RuneStart(part[cut]) {
-			cut--
-		}
-		text = string(part[:cut]) + "\n[more: read again with offset " + strconv.Itoa(in.Offset+cut) + "]"
+	return heading(info) + slice(data, in.Offset), nil
+}
+
+// heading says which version this is and who published it: the latest
+// may not be the one the reader expects.
+func heading(info Info) string {
+	head := "[" + info.Name + " v" + strconv.Itoa(info.Version) + ", " + info.MediaType
+	if info.By != "" {
+		head += ", by " + info.By
 	}
-	return text, nil
+	return head + "]\n"
+}
+
+// slice returns up to maxRead bytes from offset, on character boundaries.
+func slice(data []byte, offset int) string {
+	start := min(offset, len(data))
+	for start < len(data) && !utf8.RuneStart(data[start]) {
+		start++ // an offset inside a character moves to the next one
+	}
+	part := data[start:]
+	if len(part) <= maxRead {
+		return string(part)
+	}
+	cut := maxRead
+	for cut > 0 && !utf8.RuneStart(part[cut]) {
+		cut--
+	}
+	return string(part[:cut]) + "\n[more: read again with offset " + strconv.Itoa(start+cut) + "]"
 }
 
 func (t *tools) publish(ctx context.Context, in publishIn) (string, error) {

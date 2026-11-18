@@ -59,6 +59,8 @@ type Manifest struct {
 var sourceName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 // Create writes the directories of sources (name -> directory) into w.
+// Stores are read file by file, not frozen: back up while the agent is
+// not running for a consistent copy.
 // Regular files only; links, sockets and lock files are left out, as are
 // names the skip function refuses. A missing directory is skipped.
 func Create(ctx context.Context, w io.Writer, sources map[string]string, skip func(rel string) bool) (*Manifest, error) {
@@ -113,9 +115,11 @@ func addSource(ctx context.Context, tw *tar.Writer, m *Manifest, name, dir strin
 	})
 }
 
+// isLock: lock files and the temporary files of atomic writes are not
+// state.
 func isLock(p string) bool {
 	base := path.Base(p)
-	return strings.HasSuffix(base, ".lock") || base == ".lock"
+	return strings.HasSuffix(base, ".lock") || base == ".lock" || (strings.HasPrefix(base, ".") && strings.HasSuffix(base, ".tmp"))
 }
 
 func addFile(tw *tar.Writer, m *Manifest, root *os.Root, archived, p string) error {

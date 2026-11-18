@@ -18,8 +18,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/agilira/go-errors"
 )
@@ -38,38 +40,60 @@ func walk(ctx context.Context, r io.Reader, each func(name string, body io.Reade
 		return nil, errors.Wrap(err, ErrDamaged, "not a backup archive")
 	}
 	defer closeFile(gz)
-	tr := tar.NewReader(gz)
-	seen := map[string]string{}
-	var m *Manifest
+	w := &walker{tr: tar.NewReader(gz), seen: map[string]string{}, each: each}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		hdr, err := tr.Next()
+		hdr, err := w.tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, errors.Wrap(err, ErrDamaged, "the archive is damaged")
 		}
-		if hdr.Name == manifestName {
-			if m, err = readManifest(tr, hdr.Size); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		sum, err := entry(hdr, tr, each)
-		if err != nil {
+		if err := w.next(hdr); err != nil {
 			return nil, err
 		}
-		seen[hdr.Name] = sum
 	}
-	return m, match(m, seen)
+	return w.m, match(w.m, w.seen)
+}
+
+type walker struct {
+	tr    *tar.Reader
+	seen  map[string]string
+	m     *Manifest
+	total int64
+	each  func(string, io.Reader) error
+}
+
+// next takes one entry: the manifest, which must come last, or a file
+// seen once, within the total bound.
+func (w *walker) next(hdr *tar.Header) error {
+	var err error
+	switch {
+	case w.m != nil:
+		return errors.New(ErrDamaged, "the archive goes on after its manifest")
+	case hdr.Name == manifestName:
+		w.m, err = readManifest(w.tr, hdr.Size)
+		return err
+	case w.seen[hdr.Name] != "":
+		return errors.New(ErrDamaged, "the archive repeats "+strconv.Quote(hdr.Name))
+	}
+	if w.total += hdr.Size; w.total > MaxTotal {
+		return errors.New(ErrDamaged, "the archive is larger than a restore allows")
+	}
+	sum, err := entry(hdr, w.tr, w.each)
+	if err != nil {
+		return err
+	}
+	w.seen[hdr.Name] = sum
+	return nil
 }
 
 func entry(hdr *tar.Header, tr io.Reader, each func(string, io.Reader) error) (string, error) {
 	if hdr.Typeflag != tar.TypeReg || !safePath(hdr.Name) || hdr.Size < 0 || hdr.Size > maxEntry {
-		return "", errors.New(ErrDamaged, "the archive holds an entry it should not: "+strings.ToValidUTF8(hdr.Name, "?"))
+		return "", errors.New(ErrDamaged, "the archive holds an entry it should not: "+strconv.Quote(hdr.Name))
 	}
 	h := sha256.New()
 	body := io.TeeReader(io.LimitReader(tr, hdr.Size), h)
@@ -82,10 +106,16 @@ func entry(hdr *tar.Header, tr io.Reader, each func(string, io.Reader) error) (s
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// safePath accepts relative slash paths of plain components.
+// safePath accepts relative slash paths of plain components, without
+// control characters.
 func safePath(p string) bool {
-	return fs.ValidPath(p) && p != "." && !strings.Contains(p, "\\") && path.Clean(p) == p
+	return fs.ValidPath(p) && p != "." && !strings.Contains(p, "\\") && path.Clean(p) == p &&
+		!strings.ContainsFunc(p, unicode.IsControl)
 }
+
+// MaxTotal bounds what one restore writes: a small archive cannot fill
+// the disk.
+var MaxTotal int64 = 16 << 30
 
 func readManifest(r io.Reader, size int64) (*Manifest, error) {
 	if size > 64<<20 {
@@ -107,7 +137,7 @@ func match(m *Manifest, seen map[string]string) error {
 	}
 	for name, sum := range m.Files {
 		if seen[name] != sum {
-			return errors.New(ErrDamaged, "the archive's file "+name+" does not match its digest")
+			return errors.New(ErrDamaged, "the archive's file "+strconv.Quote(name)+" does not match its digest")
 		}
 	}
 	return nil
@@ -117,6 +147,7 @@ func match(m *Manifest, seen map[string]string) error {
 // go to a hidden building directory first; only a fully verified archive
 // is renamed into place, with a QUARANTINE.md that says what it is.
 func Restore(ctx context.Context, r io.Reader, dest string) (*Manifest, error) {
+	dest = filepath.Clean(dest) // "out/" names the directory out
 	if _, err := os.Lstat(dest); err == nil {
 		return nil, errors.New(ErrExists, dest+" already exists: restore into a new directory")
 	}
@@ -146,19 +177,19 @@ func extract(ctx context.Context, r io.Reader, dir string) (*Manifest, error) {
 	return walk(ctx, r, func(name string, body io.Reader) error {
 		if d := path.Dir(name); d != "." {
 			if err := root.MkdirAll(d, 0o700); err != nil {
-				return errors.Wrap(err, ErrIO, "cannot restore "+name)
+				return errors.Wrap(err, ErrIO, "cannot restore "+strconv.Quote(name))
 			}
 		}
 		f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
-			return errors.Wrap(err, ErrDamaged, "the archive repeats or misplaces "+name)
+			return errors.Wrap(err, ErrDamaged, "the archive repeats or misplaces "+strconv.Quote(name))
 		}
 		_, err = io.Copy(f, body)
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
 		if err != nil {
-			return errors.Wrap(err, ErrIO, "cannot restore "+name)
+			return errors.Wrap(err, ErrIO, "cannot restore "+strconv.Quote(name))
 		}
 		return nil
 	})
