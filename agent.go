@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	stderrors "errors"
 	"iter"
+	"strconv"
 
 	"github.com/agilira/go-errors"
 )
@@ -41,6 +42,13 @@ type Config struct {
 	// Compaction controls how a conversation that outgrows the context is
 	// shortened; the zero value is on, without model-written summaries.
 	Compaction Compaction
+	// Memory, when set, recalls the records relevant to each user turn
+	// into that run's system prompt. Writing memories is up to the host,
+	// or to the model through the tools in package memory.
+	Memory Memory
+	// Recall is how many records join the context; zero means 5, a
+	// negative value turns automatic recall off.
+	Recall int
 	// StrictResume refuses a conversation that ended in the middle of tool
 	// calls (ErrSessionIncomplete) instead of telling the model those calls
 	// were interrupted. Either way, the calls are never repeated.
@@ -144,6 +152,7 @@ var errStopped = stderrors.New("event consumer stopped")
 // run is the state of one user turn.
 type run struct {
 	cfg       Config
+	system    string
 	compactor *compactor
 	lastBytes int
 	conv      Conversation
@@ -155,7 +164,7 @@ type run struct {
 }
 
 func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
-	r := &run{cfg: cfg, conv: conv, yield: yield, seenIDs: map[string]bool{}}
+	r := &run{cfg: cfg, conv: conv, yield: yield, seenIDs: map[string]bool{}, system: cfg.System}
 	r.msgs = conv.Messages()
 	for _, msg := range r.msgs {
 		for _, call := range msg.Calls {
@@ -174,7 +183,29 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	if err := r.recover(ctx); err != nil {
 		return err
 	}
-	return r.add(ctx, input.Clone())
+	if err := r.add(ctx, input.Clone()); err != nil {
+		return err
+	}
+	return r.recall(ctx, input.Text())
+}
+
+// recall adds the memories relevant to the input to this run's system
+// prompt. A failing memory does not stop the turn: the event reports it.
+func (r *run) recall(ctx context.Context, query string) error {
+	n := r.cfg.recallCount()
+	if n == 0 {
+		return nil
+	}
+	recs, err := r.cfg.Memory.Search(ctx, query, n)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	r.system = r.cfg.System + memoryBlock(recs)
+	what := strconv.Itoa(len(recs)) + " memories"
+	if len(recs) == 1 {
+		what = "1 memory"
+	}
+	return r.emit(Event{Kind: EventRecalled, Text: what, Err: err})
 }
 
 // recover answers the calls a previous run left without results. They are
@@ -237,7 +268,7 @@ func (r *run) execute(ctx context.Context) error {
 }
 
 func (r *run) callModel(ctx context.Context) (*Response, error) {
-	full := &Request{System: r.cfg.System, Messages: r.msgs, Tools: r.cfg.Tools.Specs(), MaxTokens: r.cfg.MaxTokens}
+	full := &Request{System: r.system, Messages: r.msgs, Tools: r.cfg.Tools.Specs(), MaxTokens: r.cfg.MaxTokens}
 	resp, streamed, err := r.generate(ctx, full, r.compactor.budget(r.cfg.MaxTokens))
 	if errors.HasCode(err, ErrProviderContext) && !streamed && !r.cfg.Compaction.Disabled {
 		// The estimate was wrong or the window unknown: compact harder,

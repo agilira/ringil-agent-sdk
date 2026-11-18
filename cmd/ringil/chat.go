@@ -115,6 +115,8 @@ func (c *cli) render(ev agent.Event) error {
 			mark = "<- error:"
 		}
 		err = c.line(fmt.Sprintf("  %s %s", mark, short(ev.Output.Content)))
+	case agent.EventRecalled:
+		err = c.recalled(ev)
 	case agent.EventCompacted:
 		err = c.line("  ~ context compacted: " + ev.Text)
 	case agent.EventRecovered:
@@ -157,4 +159,15 @@ func clean(s string) string {
 		}
 		return -1
 	}, s)
+}
+
+// recalled shows recalled memories, and a memory that could not be read.
+func (c *cli) recalled(ev agent.Event) error {
+	switch {
+	case ev.Err != nil:
+		return c.line("  ! memory unavailable: " + describe(ev.Err))
+	case ev.Text != "0 memories":
+		return c.line("  * recalled " + ev.Text)
+	}
+	return nil
 }

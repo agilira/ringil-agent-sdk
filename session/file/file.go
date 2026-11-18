@@ -25,6 +25,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
 )
 
 const (
@@ -43,8 +44,8 @@ func New(dir string) (agent.Store, error) {
 	if err != nil || !info.IsDir() {
 		return nil, errors.New(agent.ErrSessionIO, "session path is not a directory")
 	}
-	if err := checkPrivate(info); err != nil {
-		return nil, err
+	if err := lockfile.CheckPrivate(info); err != nil {
+		return nil, errors.New(agent.ErrSessionIO, "session directory is not private to the current user; chmod 700 it")
 	}
 	return &store{dir: dir}, nil
 }
@@ -87,7 +88,7 @@ func openIn(root *os.Root, name string, flag int) (*os.File, error) {
 	if info, err := root.Lstat(name); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New(agent.ErrSessionIO, "session file is a symlink")
 	}
-	f, err := root.OpenFile(name, flag|openFlags, 0o600)
+	f, err := root.OpenFile(name, flag|lockfile.NoFollow, 0o600)
 	if err != nil {
 		return nil, ioError(err, "cannot open session file")
 	}
@@ -100,7 +101,7 @@ func (s *store) lock(id string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	ok, err := tryLock(f)
+	ok, err := lockfile.TryLock(f)
 	if err == nil && !ok {
 		err = errors.New(agent.ErrSessionBusy, "session "+id+" is open elsewhere")
 	} else if err != nil {
