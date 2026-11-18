@@ -86,7 +86,7 @@ func TestNewToolUnencodableOutput(t *testing.T) {
 func TestNewToolRefusesBeforeCalling(t *testing.T) {
 	calls := 0
 	tool := weatherTool(&calls)
-	for _, in := range []string{`{}`, `{"city":""}`, `{"city":"R","unit":"k"}`, `{"city":"R","x":1}`, `{"City":"R"}`, `[]`, `{"city":1}`} {
+	for _, in := range []string{`{}`, `{"city":""}`, `{"city":"R","unit":"k"}`, `{"City":"R"}`, `[]`, `{"city":1}`} {
 		_, err := tool.Call(context.Background(), json.RawMessage(in))
 		if !errors.HasCode(err, ErrToolInput) || !strings.HasPrefix(ModelMessage(err), "Invalid arguments: ") {
 			t.Errorf("%s: %v / %s", in, err, ModelMessage(err))

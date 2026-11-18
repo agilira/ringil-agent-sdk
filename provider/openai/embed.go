@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"io"
 	"net/url"
 	"strings"
@@ -27,10 +28,15 @@ const (
 	// maxDims is far above any embedding model (3072 for the largest
 	// OpenAI one); a reply beyond it is not an embedding.
 	maxDims = 16384
-	// embedTimeout bounds one request: embedding is quick, and a stalled
-	// endpoint must not hold up recall before every turn.
-	embedTimeout = 60 * time.Second
+	// embedTimeout bounds one attempt: embedding is quick, and a stalled
+	// endpoint must not hold up recall before every turn. A stalled
+	// attempt is tried once more (embedding is idempotent): free tiers
+	// often leave one request hanging and answer the next at once.
+	embedAttempts = 2
 )
+
+// embedTimeout is a variable for tests only.
+var embedTimeout = 20 * time.Second
 
 type embedder struct {
 	*provider
@@ -90,12 +96,28 @@ type embedReply struct {
 }
 
 func (e *embedder) embedBatch(ctx context.Context, texts []string, kind string) ([][]float32, error) {
-	ctx, cancel := context.WithTimeout(ctx, embedTimeout)
-	defer cancel()
 	body, err := json.Marshal(e.request(texts, kind))
 	if err != nil {
 		return nil, errors.Wrap(err, agent.ErrProviderConfig, "request cannot be encoded")
 	}
+	var vecs [][]float32
+	for range embedAttempts {
+		vecs, err = e.attempt(ctx, body, len(texts))
+		if err == nil || ctx.Err() != nil || !retryable(err) {
+			break
+		}
+	}
+	return vecs, err
+}
+
+// retryable: a stalled attempt or an unavailable service, not a refusal.
+func retryable(err error) bool {
+	return stderrors.Is(err, context.DeadlineExceeded) || errors.HasCode(err, agent.ErrProviderUnavailable) || errors.HasCode(err, agent.ErrProviderInterrupted)
+}
+
+func (e *embedder) attempt(ctx context.Context, body []byte, n int) ([][]float32, error) {
+	ctx, cancel := context.WithTimeout(ctx, embedTimeout)
+	defer cancel()
 	resp, err := e.send(ctx, body)
 	if err != nil {
 		return nil, err
@@ -110,7 +132,7 @@ func (e *embedder) embedBatch(ctx context.Context, texts []string, kind string) 
 	if err != nil || len(data) > maxEmbedReply {
 		return nil, errors.New(agent.ErrEmbed, "the embedding reply could not be read")
 	}
-	return parseReply(data, len(texts))
+	return parseReply(data, n)
 }
 
 func (e *embedder) request(texts []string, kind string) map[string]any {

@@ -31,7 +31,7 @@ type dupHolder struct {
 // decodeValidated validates input and decodes the canonical form, as tools do.
 func decodeValidated(t *testing.T, n *Node, input string, out any) bool {
 	t.Helper()
-	canonical, problems := n.Validate([]byte(input))
+	canonical, _, problems := n.Validate([]byte(input))
 	if len(problems) > 0 {
 		return false
 	}
