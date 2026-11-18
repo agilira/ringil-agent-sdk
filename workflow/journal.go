@@ -6,6 +6,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -16,6 +17,26 @@ import (
 	"github.com/agilira/ringil-agent-sdk/internal/atomicfile"
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
 )
+
+const maxJournal = 64 << 20
+
+// Remove deletes a finished or abandoned run's journal and lock.
+func (j *FileJournal) Remove(ctx context.Context, id string) error {
+	unlock, err := j.Lock(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer release(unlock)
+	root, err := os.OpenRoot(j.dir)
+	if err != nil {
+		return err
+	}
+	defer closeRoot(root)
+	if err := root.Remove(id + ".json"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return root.Remove(id + ".lock")
+}
 
 // FileJournal keeps each run as <id>.json in a private directory, written
 // atomically, and holds <id>.lock for the whole run: a second process on
@@ -58,7 +79,7 @@ func (j *FileJournal) Load(_ context.Context, id string) (*State, error) {
 		return nil, err
 	}
 	defer closeRoot(root)
-	data, err := atomicfile.Read(root, id+".json", 64<<20)
+	data, err := atomicfile.Read(root, id+".json", maxJournal)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -77,9 +98,15 @@ func (j *FileJournal) Save(_ context.Context, id string, st *State) error {
 	if err := checkID(id); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(st, "", " ")
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // reports full of code would grow sixfold
+	if err := enc.Encode(st); err != nil {
 		return err
+	}
+	data := buf.Bytes()
+	if len(data) > maxJournal {
+		return errors.New(ErrJournal, "the journal of "+id+" would exceed its size bound")
 	}
 	root, err := os.OpenRoot(j.dir)
 	if err != nil {

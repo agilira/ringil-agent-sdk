@@ -62,6 +62,15 @@ func (c *cli) cmdChat(ctx *orpheus.Context) error {
 	return closing(c.chat(ctx.Context(), a, conv), release)
 }
 
+// promptLine reads the user's next message while holding the terminal, so
+// that a background worker's question waits for the prompt instead of
+// taking the user's message as its answer.
+func (c *cli) promptLine() (string, bool) {
+	c.askMu.Lock()
+	defer c.askMu.Unlock()
+	return c.readLine()
+}
+
 // exchange is one message of the chat: background reports that came in
 // meanwhile first, then the user's turn, then reports already finished.
 func (c *cli) exchange(ctx context.Context, a agent.Agent, conv agent.Conversation, line string) {
@@ -79,7 +88,7 @@ func (c *cli) exchange(ctx context.Context, a agent.Agent, conv agent.Conversati
 
 func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) error {
 	for c.prompt() {
-		raw, ok := c.readLine()
+		raw, ok := c.promptLine()
 		if !ok {
 			break
 		}

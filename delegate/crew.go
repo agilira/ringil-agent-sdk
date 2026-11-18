@@ -27,6 +27,7 @@ type Crew struct {
 
 	life   context.Context // background tasks end with the crew
 	cancel context.CancelFunc
+	bg     sync.WaitGroup // background tasks, awaited by Close
 
 	mu       sync.Mutex
 	closed   bool
@@ -135,7 +136,17 @@ func (c *Crew) release(t *task) {
 		c.drop(t)
 		return
 	}
+	c.touch(t.id) // the order is by last use: a task just finished is the newest
 	c.trim()
+}
+
+func (c *Crew) touch(id int) {
+	for i, o := range c.order {
+		if o == id {
+			c.order = append(append(c.order[:i:i], c.order[i+1:]...), id)
+			return
+		}
+	}
 }
 
 // drop forgets a task and releases its resources.
@@ -165,7 +176,9 @@ func (c *Crew) start(ctx context.Context, t *task, message string) {
 	c.running++
 	c.mu.Unlock()
 	bg := context.WithoutCancel(ctx)
+	c.bg.Add(1)
 	go func() {
+		defer c.bg.Done()
 		run, stop := context.WithCancel(bg)
 		defer stop()
 		unhook := context.AfterFunc(c.life, stop)
@@ -244,18 +257,20 @@ func Notice(f Finished) agent.Message {
 
 var closeTag = regexp.MustCompile(`(?i)<\s*/\s*task-report\s*>`)
 
-// Close stops background tasks and releases every task's resources; a
-// task still running releases its own when it stops.
+// Close stops background tasks, waits for them to stop, and releases
+// every task's resources. A synchronous task still running (in a tool
+// call) releases its own when it returns.
 func (c *Crew) Close() {
 	c.cancel()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.closed = true
 	for _, t := range c.tasks {
 		if !t.busy {
 			c.drop(t)
 		}
 	}
+	c.mu.Unlock()
+	c.bg.Wait()
 }
 
 func cleanup(s Setup) {

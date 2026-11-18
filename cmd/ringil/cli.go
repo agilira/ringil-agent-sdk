@@ -128,7 +128,9 @@ func (c *cli) app() *orpheus.App {
 		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.cmdMemoryRemove).SetUsage("memory rm <id...>")))
 	app.AddCommand(orpheus.NewCommand("workflow", "List the workflows the agent ran").SetHandler(c.cmdWorkflows).
 		AddSubcommand(orpheus.NewCommand("resume", "Continue an interrupted workflow").SetHandler(c.cmdWorkflowResume).SetUsage("workflow resume <id>")).
-		AddSubcommand(orpheus.NewCommand("resolve", "Record the checked outcome of an uncertain step, from standard input").SetHandler(c.cmdWorkflowResolve).SetUsage("workflow resolve <id> <step>")))
+		AddSubcommand(orpheus.NewCommand("resolve", "Record the checked outcome of an uncertain step, from standard input").SetHandler(c.cmdWorkflowResolve).SetUsage("workflow resolve <id> <step>")).
+		AddSubcommand(orpheus.NewCommand("retry", "Let resume run an uncertain step again").SetHandler(c.cmdWorkflowRetry).SetUsage("workflow retry <id> <step>")).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete workflows' journals").SetHandler(c.cmdWorkflowRemove).SetUsage("workflow rm <id...>")))
 	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.cmdRules))
 	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.cmdSkills).
 		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.cmdSkillInstall).SetUsage("skill install <dir>")).
@@ -354,7 +356,7 @@ func (c *cli) defaultDirs() ([]string, error) {
 // askAccess asks in the terminal whether the agent may use dir. No answer
 // (end of input) is a no.
 func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
-	c.askMu.Lock()
+	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
 	return c.confirm("\n  ? " + asker(ctx) + " wants to access " + clean(dir) + " — allow? [y/N] ")
 }
@@ -364,7 +366,7 @@ func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
 // without interrupting the user. "a" allows that tool for the rest of
 // the session.
 func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
-	c.askMu.Lock()
+	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
 	// "always" is remembered per asker: a worker's yes is not the
 	// parent's, nor another worker's.
@@ -387,6 +389,18 @@ func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 		return true, err
 	}
 	return yes(answer), err
+}
+
+// holdTerminal takes the terminal for a question; when the chat prompt
+// holds it, the user is told a question is waiting for their next message.
+func (c *cli) holdTerminal(ctx context.Context) {
+	if c.askMu.TryLock() {
+		return
+	}
+	if _, worker := delegate.Current(ctx); worker {
+		c.note(asker(ctx) + " is waiting for your approval: it will ask after your next message")
+	}
+	c.askMu.Lock()
 }
 
 // asker names who is asking: the agent, or one of its workers.

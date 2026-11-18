@@ -89,13 +89,17 @@ func (c *cli) runner() (*workflow.Runner, error) {
 // showPlan prints a workflow the agent wants to run, before the question.
 func (c *cli) showPlan(call agent.ToolCall) {
 	var in struct {
+		Brief  string          `json:"brief"`
 		Steps  []workflow.Step `json:"steps"`
 		Output string          `json:"output"`
 	}
 	if json.Unmarshal(call.Input, &in) != nil {
 		return
 	}
-	c.note("\n  Workflow of " + strconv.Itoa(len(in.Steps)) + " steps (result: " + clean(in.Output) + "):")
+	c.note("\n  Workflow of " + strconv.Itoa(len(in.Steps)) + " steps (result: " + short(in.Output) + "):")
+	if in.Brief != "" {
+		c.note("    brief, given to every step: " + short(in.Brief))
+	}
 	for _, s := range in.Steps {
 		needs := ""
 		if len(s.Needs) > 0 {
@@ -163,6 +167,9 @@ func (c *cli) cmdWorkflowResume(ctx *orpheus.Context) error {
 	if _, err := c.agent(ctx); err != nil { // builds the crew with its tools
 		return err
 	}
+	if c.crew == nil {
+		return errors.New(ErrUsage, "workflows need the agent's tools; drop --no-tools")
+	}
 	j, err := c.journal()
 	if err != nil {
 		return err
@@ -205,4 +212,38 @@ func (c *cli) cmdWorkflowResolve(ctx *orpheus.Context) error {
 		return err
 	}
 	return c.line("recorded; resume with: ringil workflow resume " + ctx.Positional()[0])
+}
+
+// cmdWorkflowRetry clears an uncertain step so that resume runs it again:
+// for when the user checked that running it twice is safe.
+func (c *cli) cmdWorkflowRetry(ctx *orpheus.Context) error {
+	if len(ctx.Positional()) != 2 {
+		return errors.New(ErrUsage, "ringil workflow retry <id> <step>")
+	}
+	j, err := c.journal()
+	if err != nil {
+		return err
+	}
+	if err := workflow.Retry(ctx.Context(), j, ctx.Positional()[0], ctx.Positional()[1]); err != nil {
+		return err
+	}
+	return c.line("the step will run again; resume with: ringil workflow resume " + ctx.Positional()[0])
+}
+
+// cmdWorkflowRemove deletes workflows' journals: they hold plans, briefs
+// and reports in clear.
+func (c *cli) cmdWorkflowRemove(ctx *orpheus.Context) error {
+	if len(ctx.Positional()) == 0 {
+		return errors.New(ErrUsage, "name the workflows to delete (see: ringil workflow)")
+	}
+	j, err := c.journal()
+	if err != nil {
+		return err
+	}
+	for _, id := range ctx.Positional() {
+		if err := j.Remove(ctx.Context(), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
