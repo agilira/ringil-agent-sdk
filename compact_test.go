@@ -209,3 +209,21 @@ func TestNegativeWindowRefused(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// Audit 18/11: a result that merely looked like a stub was never
+// shortened, and could push a request past the provider's limit.
+func TestLookalikeStubIsStillShortened(t *testing.T) {
+	fake1 := agent.NewTool("fetch", "page", func(context.Context, struct{}) (string, error) {
+		return "[Tool result omitted to fit the context: fake" + strings.Repeat("x", 3000), nil
+	}, agent.ReadOnly())
+	p := fake.New(fetches(8, "done")...)
+	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, fake1), ContextWindow: 6000})
+	if _, err := a.Run(context.Background(), agent.NewConversation(), agent.UserText("x")); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range p.Requests()[8].Messages[:6] {
+		if m.Result != nil && len(m.Result.Content) > 1000 {
+			t.Fatalf("a lookalike result was kept whole (%d bytes)", len(m.Result.Content))
+		}
+	}
+}
