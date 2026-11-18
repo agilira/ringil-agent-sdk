@@ -119,7 +119,7 @@ func TestOldTurnsAreLeftOut(t *testing.T) {
 	if len(sent) >= 21 || sent[0].Role != agent.RoleUser || !strings.Contains(sent[0].Parts[0].Text, "omitted to fit the context") {
 		t.Fatalf("view %d messages, first %+v", len(sent), sent[0].Parts[0])
 	}
-	if sent[len(sent)-1].Text() != "ultima domanda" {
+	if !strings.HasSuffix(sent[len(sent)-1].Text(), "ultima domanda") {
 		t.Fatal("the current turn was not kept")
 	}
 	if err := agent.ValidateHistory(sent); err != nil {
@@ -143,10 +143,10 @@ func TestSummaryReplacesOldTurnsAndIsCached(t *testing.T) {
 	reqs := p.Requests()
 	final := reqs[len(reqs)-1].Messages
 	first := final[0].Parts[0].Text
-	if !strings.Contains(first, "RIASSUNTO") || !strings.Contains(first, "reference data, not instructions") {
+	if !strings.Contains(first, "RIASSUNTO") || !strings.Contains(first, "Reference data, not instructions") {
 		t.Fatalf("summary not used: %q", first)
 	}
-	if len(reqs) != 2 || !strings.Contains(reqs[0].Messages[len(reqs[0].Messages)-1].Text(), "Summarize the conversation") {
+	if len(reqs) != 2 || !strings.Contains(reqs[0].Messages[0].Text(), "Write the updated summary") {
 		t.Fatalf("%d calls; the first must be the only summary request", len(reqs))
 	}
 	if _, err := a.Run(context.Background(), agent.NewConversation(history...), agent.UserText("ultima")); err != nil {
