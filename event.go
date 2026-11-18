@@ -15,6 +15,9 @@ const (
 	EventRecovered EventKind = "recovered"
 	// EventText carries a streamed text delta.
 	EventText EventKind = "text"
+	// EventCompacted precedes a model call that was sent a shortened view
+	// of the conversation; Text says what was left out.
+	EventCompacted EventKind = "compacted"
 	// EventModel follows every model call, with its usage.
 	EventModel EventKind = "model"
 	// EventToolStart precedes a tool call.

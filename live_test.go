@@ -9,6 +9,7 @@ package agent_test
 
 import (
 	"context"
+	"iter"
 	"os"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ func liveModel(t *testing.T) agent.Provider {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spend, err := budget.New(budget.Limits{Calls: 6})
+	spend, err := budget.New(budget.Limits{Calls: 12})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,4 +93,50 @@ func runTools(ctx context.Context, t *testing.T, model agent.Provider, tools age
 	}
 	t.Fatal("model did not answer within 3 turns")
 	return ""
+}
+
+// TestLiveCompaction gives a real model more tool output than its (small,
+// declared) window: old results must be stubbed and the task still finished.
+func TestLiveCompaction(t *testing.T) {
+	model := liveModel(t)
+	page := 0
+	fetch := agent.NewTool("read_page", "Read the next page of the report", func(context.Context, struct{}) (string, error) {
+		page++
+		return "Page " + strconv.Itoa(page) + " of 4. Key figure on this page: " + strconv.Itoa(page*111) + ". " +
+			strings.Repeat("Filler text. ", 300), nil
+	}, agent.ReadOnly())
+	tools, err := agent.NewRegistry(fetch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, ContextWindow: 3000, MaxTurns: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	compacted, answer := watch(t, a.Stream(ctx, nil, agent.UserText("Read all 4 pages of the report one at a time with read_page, then tell me the key figure of the last page.")))
+	if compacted == 0 || page < 4 || !strings.Contains(answer, "444") {
+		t.Fatalf("compacted %d pages %d answer %q", compacted, page, answer)
+	}
+}
+
+// watch drains a run, logging compactions, and returns their count and the
+// final answer.
+func watch(t *testing.T, events iter.Seq2[agent.Event, error]) (int, string) {
+	t.Helper()
+	compacted, answer := 0, ""
+	for ev, err := range events {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.Kind == agent.EventCompacted {
+			compacted++
+			t.Log("compacted:", ev.Text)
+		}
+		if ev.Kind == agent.EventDone {
+			answer = ev.Result.Text
+		}
+	}
+	return compacted, answer
 }

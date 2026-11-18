@@ -60,6 +60,8 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
 		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools").
+		AddGlobalIntFlag("context-window", "", 0, "model context size in tokens; compaction starts near it (0: only when the model reports it is full)").
+		AddGlobalBoolFlag("summarize", "", false, "summarize left-out turns with the model instead of dropping them (costs a call)").
 		AddGlobalFlag("session", "S", "", "save the conversation under this name and resume it next time").
 		AddGlobalFlag("sessions-dir", "", "", "where sessions are stored (default: the user config directory)")
 	app.AddCommand(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.cmdChat))
@@ -87,10 +89,12 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		}
 	}
 	return agent.New(agent.Config{
-		Provider: retry.Wrap(p, retry.Config{}),
-		Tools:    tools,
-		System:   ctx.GetGlobalFlagString("system"),
-		MaxTurns: ctx.GetGlobalFlagInt("max-turns"),
+		Provider:      retry.Wrap(p, retry.Config{}),
+		Tools:         tools,
+		System:        ctx.GetGlobalFlagString("system"),
+		MaxTurns:      ctx.GetGlobalFlagInt("max-turns"),
+		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
+		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
 	})
 }
 

@@ -111,6 +111,8 @@ func (c *cli) render(ev agent.Event) error {
 			mark = "<- error:"
 		}
 		err = c.line(fmt.Sprintf("  %s %s", mark, short(ev.Output.Content)))
+	case agent.EventCompacted:
+		err = c.line("  ~ context compacted: " + ev.Text)
 	case agent.EventRecovered:
 		err = c.line("  ! " + ev.Call.Name + " was interrupted earlier; the model was told, it was not run again")
 	case agent.EventDone:
