@@ -29,6 +29,9 @@ const (
 	EventModel EventKind = "model"
 	// EventToolStart precedes a tool call.
 	EventToolStart EventKind = "tool_start"
+	// EventLoop reports a model repeating itself: Call is the call, Text
+	// what was done ("warned", "blocked", "stopped").
+	EventLoop EventKind = "loop"
 	// EventToolEnd follows a tool call, with the result the model will see
 	// and, if it failed, the full error for the host.
 	EventToolEnd EventKind = "tool_end"

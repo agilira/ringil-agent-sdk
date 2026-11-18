@@ -539,3 +539,31 @@ func TestLiveArtifacts(t *testing.T) {
 		t.Fatalf("answer %q %v", res.Text, err)
 	}
 }
+
+// TestLiveLoop: a real model asked to wait for a job that never finishes
+// keeps checking; the detector warns it, refuses the next repeat, and the
+// model ends with an answer instead of spending every turn.
+func TestLiveLoop(t *testing.T) {
+	model := liveModel(t)
+	runs := 0
+	status := agent.NewTool("job_status", "Status of the nightly export job.", func(context.Context, struct{}) (string, error) {
+		runs++
+		return "export job: still running", nil
+	}, agent.ReadOnly())
+	tools, err := agent.NewRegistry(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, MaxTurns: 12, Loop: agent.Loop{Action: agent.LoopBlock}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), nil, agent.UserText("Controlla lo stato del job di export con job_status finché non è finito, poi dimmi com'è andato."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs > 3 || res.Stop != agent.StopEnd {
+		t.Fatalf("job_status ran %d times, stop %s, answer %q", runs, res.Stop, res.Text)
+	}
+	t.Logf("ran %d times, %d turns, answer %q", runs, res.Turns, res.Text)
+}

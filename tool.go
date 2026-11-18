@@ -62,6 +62,9 @@ const (
 	ErrToolDenied errors.ErrorCode = "TOOL_DENIED"
 	// ErrToolFailed: the tool failed in a way it did not describe.
 	ErrToolFailed errors.ErrorCode = "TOOL_FAILED"
+	// ErrToolLoop: the loop detector did not run the call (LoopBlock,
+	// LoopStop).
+	ErrToolLoop errors.ErrorCode = "TOOL_LOOP"
 )
 
 // ToolError returns an error whose message the model may see. Use it for

@@ -146,16 +146,29 @@ func (c *cli) render(ev agent.Event) error {
 		err = c.toolEnd(ev)
 	case agent.EventRecalled:
 		err = c.recalled(ev)
-	case agent.EventContext:
-		err = c.line("  ! notes index unavailable: " + describe(ev.Err))
-	case agent.EventCompacted:
-		err = c.line("  ~ context compacted: " + ev.Text)
-	case agent.EventRecovered:
-		err = c.line("  ! " + ev.Call.Name + " was interrupted earlier; the model was told, it was not run again")
 	case agent.EventDone:
 		err = c.done(ev)
+	default:
+		if s, ok := status(ev); ok {
+			err = c.line(s)
+		}
 	}
 	return err
+}
+
+// status is the one-line notice of an event that only informs.
+func status(ev agent.Event) (string, bool) {
+	switch ev.Kind {
+	case agent.EventContext:
+		return "  ! notes index unavailable: " + describe(ev.Err), true
+	case agent.EventCompacted:
+		return "  ~ context compacted: " + ev.Text, true
+	case agent.EventLoop:
+		return "  ! loop: " + ev.Call.Name + " keeps giving the same result (" + ev.Text + ")", true
+	case agent.EventRecovered:
+		return "  ! " + ev.Call.Name + " was interrupted earlier; the model was told, it was not run again", true
+	}
+	return "", false
 }
 
 func (c *cli) line(s string) error {

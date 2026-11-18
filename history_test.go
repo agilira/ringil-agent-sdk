@@ -51,7 +51,7 @@ func TestReadHistoryAfterCompaction(t *testing.T) {
 		t.Fatalf("stub without its number: %q", stubbed)
 	}
 	got := last.Messages[len(last.Messages)-1].Result.Content
-	if !strings.HasPrefix(got, `{"n":3,"role":"tool","result":"DOC:xxx`) {
+	if !strings.HasPrefix(got, `{"n":3,"role":"tool","result":"D001xxx`) {
 		t.Fatalf("read_history %q", got[:min(80, len(got))])
 	}
 }
