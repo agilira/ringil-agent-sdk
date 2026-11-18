@@ -1,7 +1,7 @@
 # Go Makefile - AGILira Standard
 # Usage: make help
 
-.PHONY: help test race coverage fmt vet staticcheck errcheck gosec govulcheck gocyclo lint security check check-race deps clean tools fuzz bench live chat
+.PHONY: help test race coverage fmt vet staticcheck errcheck gosec govulcheck gocyclo lint security check check-race deps clean tools fuzz bench live live-local chat
 .DEFAULT_GOAL := help
 
 # Variables
@@ -101,6 +101,12 @@ fuzz: ## Run every fuzz target (FUZZTIME, default 30s each)
 live: ## Run live tests against the endpoint in .env (real calls, may cost)
 	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
 	@set -a && . ./.env && set +a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./...
+
+OLLAMA_URL ?= http://127.0.0.1:11434/v1
+OLLAMA_MODEL ?= qwen2.5:3b
+OLLAMA_EMBED ?= mxbai-embed-large
+live-local: ## Run live tests on a local Ollama (no cost, no rate limits); keys from .env for Composio
+	@set -a && . ./.env && set +a && export RINGIL_BASE_URL=$(OLLAMA_URL) RINGIL_MODEL=$(OLLAMA_MODEL) RINGIL_API_KEY= RINGIL_EMBED_MODEL=$(OLLAMA_EMBED) && go test -tags live -run '^TestLive' -count=1 -v -timeout 40m ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./...
 
 chat: ## Chat with the agent using the endpoint in .env
 	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
