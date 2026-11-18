@@ -8,7 +8,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/agilira/go-errors"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -22,51 +24,97 @@ type tool struct {
 	spec agent.ToolSpec
 }
 
-func (c *Client) adapt(t *sdk.Tool) (agent.Tool, bool) {
-	schema, err := json.Marshal(t.InputSchema)
-	if err != nil || len(schema) == 0 || schema[0] != '{' {
+func (c *Client) adapt(t *sdk.Tool, taken map[string]bool) (agent.Tool, bool) {
+	schema, ok := objectSchema(t.InputSchema)
+	if !ok {
 		return nil, false
 	}
+	ann := agent.Annotations{Destructive: true, OpenWorld: true}
+	if c.srv.TrustAnnotations {
+		ann = annotations(t.Annotations)
+	}
 	return &tool{c: c, name: t.Name, spec: agent.ToolSpec{
-		Name:        toolName(c.name, t.Name),
-		Description: t.Description,
+		Name:        toolName(c.name, t.Name, taken),
+		Description: clip(t.Description, 4096),
 		InputSchema: schema,
-		Annotations: annotations(t.Annotations),
+		Annotations: ann,
 	}}, true
+}
+
+// objectSchema accepts an input schema only if it describes an object
+// and is of sane size: one malformed tool must not make the provider
+// refuse every request.
+func objectSchema(s any) (json.RawMessage, bool) {
+	raw, err := json.Marshal(s)
+	if err != nil || len(raw) == 0 || len(raw) > maxSchema {
+		return nil, false
+	}
+	var top struct {
+		Type any `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &top); err != nil || raw[0] != '{' {
+		return nil, false
+	}
+	return raw, top.Type == nil || top.Type == "object"
 }
 
 // annotations follow the MCP defaults: a tool not marked read-only is
 // destructive unless it says otherwise, and reaches the open world unless
-// it says otherwise.
+// it says otherwise. They are only hints from the server: unless the
+// host trusts the server (TrustAnnotations), every tool counts as
+// destructive, so an approval hook asks before each call.
 func annotations(a *sdk.ToolAnnotations) agent.Annotations {
 	if a == nil {
 		return agent.Annotations{Destructive: true, OpenWorld: true}
 	}
-	return agent.Annotations{
-		ReadOnly:    a.ReadOnlyHint,
-		Destructive: !a.ReadOnlyHint && (a.DestructiveHint == nil || *a.DestructiveHint),
-		OpenWorld:   a.OpenWorldHint == nil || *a.OpenWorldHint,
+	openWorld := a.OpenWorldHint == nil || *a.OpenWorldHint
+	if a.ReadOnlyHint {
+		// destructiveHint matters only for tools that write; a tool
+		// claiming both is taken as destructive.
+		contradicts := a.DestructiveHint != nil && *a.DestructiveHint
+		return agent.Annotations{ReadOnly: !contradicts, Destructive: contradicts, OpenWorld: openWorld}
 	}
+	return agent.Annotations{Destructive: a.DestructiveHint == nil || *a.DestructiveHint, OpenWorld: openWorld}
 }
 
 func (t *tool) Spec() agent.ToolSpec { return t.spec }
 
-// Call runs the tool on the server. What the server returns is data for
-// the model, never instructions to the host.
+// Call runs the tool on the server, bounded in time and in what it may
+// return. What the server returns is data for the model, never
+// instructions to the host.
 func (t *tool) Call(ctx context.Context, input json.RawMessage) (agent.ToolOutput, error) {
 	var args map[string]any
 	if err := json.Unmarshal(input, &args); err != nil {
 		return agent.ToolOutput{}, agent.ToolError(agent.ErrToolInput, "Arguments must be a JSON object.")
 	}
-	res, err := t.c.session.CallTool(ctx, &sdk.CallToolParams{Name: t.name, Arguments: args})
+	session := t.c.current()
+	if session == nil || t.c.life.Err() != nil {
+		return agent.ToolOutput{}, agent.ToolError(ErrCall, "The MCP server is closed.")
+	}
+	ctx, cancel := context.WithTimeout(ctx, t.c.srv.callTimeout())
+	defer cancel()
+	stop := context.AfterFunc(t.c.life, cancel)
+	defer stop()
+	res, err := session.CallTool(ctx, &sdk.CallToolParams{Name: t.name, Arguments: args})
 	if err != nil {
 		return agent.ToolOutput{}, errors.Wrap(err, ErrCall, "MCP call failed")
 	}
-	text := render(res)
+	text := capText(render(res), t.c.srv.maxOutput())
 	if res.IsError {
 		return agent.ToolOutput{}, agent.ToolError(ErrCall, text)
 	}
 	return agent.ToolOutput{Content: text}, nil
+}
+
+func capText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n[" + strconv.Itoa(len(s)-cut) + " more bytes of the result not shown]"
 }
 
 // render turns a result into text: text content as it is, structured

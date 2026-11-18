@@ -48,6 +48,22 @@ type mcpEntry struct {
 	Sandbox bool     `json:"sandbox,omitempty"`
 	Network bool     `json:"network,omitempty"`
 	Mounts  []string `json:"mounts,omitempty"`
+	// Disabled keeps the entry without starting it.
+	Disabled bool `json:"disabled,omitempty"`
+	// TrustAnnotations lets the server's read-only hints skip the
+	// confirmation; by default every MCP call is confirmed.
+	TrustAnnotations bool `json:"trustAnnotations,omitempty"`
+	// OAuth signs in to a remote server through the browser.
+	OAuth *oauthEntry `json:"oauth,omitempty"`
+}
+
+// oauthEntry: empty registers the client dynamically; a registered
+// client gives its ID, secret (${NAME}) and the callback port it was
+// registered with.
+type oauthEntry struct {
+	ClientID     string `json:"clientId,omitempty"`
+	ClientSecret string `json:"clientSecret,omitempty"`
+	Port         int    `json:"port,omitempty"`
 }
 
 func (c *cli) mcpPath(ctx *orpheus.Context) (string, error) {
@@ -72,10 +88,9 @@ func loadMCP(path string, explicit bool) (map[string]mcpEntry, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, ErrUsage, "cannot read the MCP configuration "+path)
 	}
+	// Unknown keys are allowed: the same file often serves other agents.
 	var f mcpFile
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&f); err != nil {
 		return nil, errors.Wrap(err, ErrUsage, "the MCP configuration is not valid JSON of the expected shape")
 	}
 	return f.Servers, nil
@@ -134,6 +149,9 @@ func (c *cli) connectMCP(ctx *orpheus.Context) ([]agent.Tool, error) {
 	}
 	var tools []agent.Tool
 	for _, name := range sortedKeys(entries) {
+		if entries[name].Disabled {
+			continue
+		}
 		client, err := c.startServer(ctx.Context(), name, entries[name], res)
 		if err != nil {
 			c.note("MCP server " + name + " left out: " + err.Error())
@@ -156,10 +174,13 @@ func (c *cli) startServer(ctx context.Context, name string, e mcpEntry, res secr
 }
 
 func (c *cli) serverOf(ctx context.Context, name string, e mcpEntry, res secrets.Resolver) (mcp.Server, error) {
-	srv := mcp.Server{Name: name, URL: e.URL, Tools: e.Tools}
-	if e.URL != "" || e.Type == "http" {
+	srv := mcp.Server{Name: name, URL: e.URL, Tools: e.Tools, TrustAnnotations: e.TrustAnnotations}
+	if err := e.check(); err != nil {
+		return srv, err
+	}
+	if e.URL != "" {
 		srv.Headers = headerFunc(e.Headers, res)
-		return srv, nil
+		return c.withOAuth(ctx, srv, e.OAuth, res)
 	}
 	env, err := expandAll(ctx, e.Env, res)
 	if err != nil {
@@ -192,6 +213,46 @@ func (c *cli) sandboxServer(srv mcp.Server, e mcpEntry) (mcp.Server, error) {
 		srv.Protected = []string{filepath.Join(base, "ringil")}
 	}
 	return srv, nil
+}
+
+func (e mcpEntry) check() error {
+	switch {
+	case e.Type != "" && e.Type != "stdio" && e.Type != "http" && e.Type != "streamable-http":
+		return errors.New(ErrUsage, "unknown server type "+e.Type)
+	case e.URL != "" && e.Command != "":
+		return errors.New(ErrUsage, "give either a command or a url, not both")
+	}
+	return nil
+}
+
+// withOAuth adds the browser sign-in; tokens are kept in the user's
+// config directory, private, so the next run needs no new sign-in.
+func (c *cli) withOAuth(ctx context.Context, srv mcp.Server, o *oauthEntry, res secrets.Resolver) (mcp.Server, error) {
+	if o == nil {
+		return srv, nil
+	}
+	secret, err := expandAll(ctx, map[string]string{"s": o.ClientSecret}, res)
+	if err != nil {
+		return srv, err
+	}
+	login := mcp.Login{ClientID: o.ClientID, ClientSecret: secret["s"], Port: o.Port, Show: c.showSignIn(srv.Name)}
+	if base, err := c.configDir(); err == nil {
+		login.Tokens = mcp.FileTokens(filepath.Join(base, "ringil", "oauth", srv.Name+".json"))
+	}
+	h, stop, err := mcp.NewLogin(login)
+	if err != nil {
+		return srv, err
+	}
+	c.closers = append(c.closers, stop)
+	srv.OAuth = h
+	return srv, nil
+}
+
+func (c *cli) showSignIn(name string) func(string) {
+	return func(link string) {
+		c.note("Sign in to MCP server " + name + " — open this link in your browser:")
+		c.note(link)
+	}
 }
 
 // headerFunc resolves ${NAME} in header values on every request, so

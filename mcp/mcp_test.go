@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,7 +67,7 @@ func inMemory(t *testing.T, allow ...string) *Client {
 			t.Log(err)
 		}
 	})
-	c, err := connect(bg, "srv", ct, nil, allow)
+	c, err := connect(bg, Server{Name: "srv", Tools: allow, TrustAnnotations: true}, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +138,12 @@ func TestConfigValidation(t *testing.T) {
 
 // TestMain lets the test binary act as an MCP server over stdio.
 func TestMain(m *testing.M) {
+	if pidFile := os.Getenv("RINGIL_MCP_TEST_CHILD"); pidFile != "" {
+		child := exec.Command("sleep", "60")
+		if child.Start() != nil || os.WriteFile(pidFile, []byte(strconv.Itoa(child.Process.Pid)), 0o600) != nil {
+			os.Exit(1)
+		}
+	}
 	if os.Getenv("RINGIL_MCP_TEST_SERVER") == "1" {
 		if err := testServer().Run(context.Background(), &sdk.StdioTransport{}); err != nil {
 			os.Exit(1)

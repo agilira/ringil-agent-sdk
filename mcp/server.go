@@ -11,8 +11,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -59,6 +61,31 @@ type Server struct {
 
 	// Tools, when set, offers only these tools of the server.
 	Tools []string
+	// TrustAnnotations takes the server's read-only and destructive hints
+	// at their word. Off by default: the hints come from the server, so
+	// every tool counts as destructive and an approval hook asks first.
+	TrustAnnotations bool
+	// MaxOutput is how much of a result the model sees; default 256 KiB.
+	MaxOutput int
+	// CallTimeout bounds one tool call; default 5 minutes.
+	CallTimeout time.Duration
+	// MaxResponse bounds one HTTP response body, besides event streams;
+	// default 64 MiB.
+	MaxResponse int64
+}
+
+func (s Server) maxOutput() int {
+	if s.MaxOutput > 0 {
+		return s.MaxOutput
+	}
+	return defaultOutput
+}
+
+func (s Server) callTimeout() time.Duration {
+	if s.CallTimeout > 0 {
+		return s.CallTimeout
+	}
+	return defaultCallTime
 }
 
 var serverName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
@@ -101,13 +128,25 @@ func (s Server) transport(ctx context.Context) (sdk.Transport, func() error, err
 	// Not CommandContext: Connect's context bounds the start only; the
 	// server lives until Close.
 	cmd := exec.Command(s.Command[0], s.Command[1:]...) // #nosec G204 -- the host chose the command
-
 	cmd.Env = envList(s.Env)
-	return &sdk.CommandTransport{Command: cmd, TerminateDuration: 2 * time.Second}, nil, nil
+	ownGroup(cmd)
+	return &sdk.CommandTransport{Command: cmd, TerminateDuration: 2 * time.Second}, func() error { return killGroup(cmd) }, nil
 }
 
+// baseEnv are the host variables a plain local server inherits: enough
+// to find interpreters and caches (npx, uvx), no credentials. Env adds
+// the rest and wins.
+var baseEnv = []string{"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP", "SYSTEMROOT", "APPDATA", "LOCALAPPDATA", "USERPROFILE"}
+
 func envList(env map[string]string) []string {
-	list := make([]string, 0, len(env))
+	list := make([]string, 0, len(env)+len(baseEnv))
+	for _, k := range baseEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			if _, set := env[k]; !set {
+				list = append(list, k+"="+v)
+			}
+		}
+	}
 	for k, v := range env {
 		list = append(list, k+"="+v)
 	}
@@ -136,7 +175,11 @@ func (s Server) sandboxed(context.Context) (sdk.Transport, func() error, error) 
 		close(done)
 	}()
 	stop := func() error {
-		cerr := serverIn.Close()
+		cerr := serverIn.Close() // end of input: a well-behaved server exits
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
 		cancel()
 		<-done
 		return cerr
@@ -163,7 +206,7 @@ func (s Server) httpClient() *http.Client {
 	if next == nil {
 		next = http.DefaultTransport
 	}
-	c.Transport = headerTransport{next: next, headers: s.Headers}
+	c.Transport = headerTransport{next: next, headers: s.Headers, max: s.maxResponse()}
 	c.CheckRedirect = sameOrigin
 	return &c
 }
@@ -175,22 +218,54 @@ func sameOrigin(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
+func (s Server) maxResponse() int64 {
+	if s.MaxResponse > 0 {
+		return s.MaxResponse
+	}
+	return 64 << 20
+}
+
 type headerTransport struct {
 	next    http.RoundTripper
 	headers func(ctx context.Context) (http.Header, error)
+	max     int64
 }
 
 func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.headers == nil {
-		return t.next.RoundTrip(req)
+	if t.headers != nil {
+		h, err := t.headers(req.Context())
+		if err != nil {
+			return nil, errors.Wrap(err, ErrConnect, "cannot get the MCP server's credentials")
+		}
+		req = req.Clone(req.Context())
+		for k, vs := range h {
+			req.Header[http.CanonicalHeaderKey(k)] = vs
+		}
 	}
-	h, err := t.headers(req.Context())
-	if err != nil {
-		return nil, errors.Wrap(err, ErrConnect, "cannot get the MCP server's credentials")
+	resp, err := t.next.RoundTrip(req)
+	if err == nil && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		resp.Body = &limitedBody{rc: resp.Body, left: t.max}
 	}
-	req = req.Clone(req.Context())
-	for k, vs := range h {
-		req.Header[http.CanonicalHeaderKey(k)] = vs
-	}
-	return t.next.RoundTrip(req)
+	return resp, err
 }
+
+// limitedBody fails a response body that grows past its bound, instead of
+// letting a server fill the client's memory.
+type limitedBody struct {
+	rc   io.ReadCloser
+	left int64
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		return 0, errors.New(ErrConnect, "the MCP server's response is too large")
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.rc.Read(p)
+	b.left -= int64(n)
+	return n, err
+}
+
+func (b *limitedBody) Close() error { return b.rc.Close() }

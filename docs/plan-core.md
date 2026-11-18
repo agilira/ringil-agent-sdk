@@ -403,7 +403,7 @@ prima del commit dopo:
 | 3 | Tool filesystem in lettura con grant `--workspace` (primo tool di studio) — FATTO 18/11: read_file, list_directory, glob, grep; percorsi assoluti in più cartelle | os.Root, no symlink/traversal, nessun byte di file nei log |
 | 4 | Memoria ricercabile `Memory` (scope dall'host) — FATTO 18/11: BM25 locale, richiamo nella vista, tool remember/recall/forget | richiamo nella vista, mai nella sessione; `VectorStore` + Chroma più avanti |
 | 5 | Skills (nomi sempre esposti, corpi e script al bisogno, script solo nel sandbox) | FATTO 18/11: formato Agent Skills, hash per file, script su copia verificata nel sandbox |
-| 6 | MCP stdio/HTTP + OAuth | stdio nel sandbox; nessun replay dopo `MCP_UNCERTAIN`; consenso solo da operatore |
+| 6 | MCP stdio/HTTP + OAuth | FATTO 18/11: modulo mcp/ sull'SDK ufficiale; stdio nel sandbox; nessun replay; consenso solo da operatore; login OAuth con token privati |
 | 7 | Delega ai worker (sottoinsiemi di tool, budget condiviso, contesto fresco) | `Spawner` per istanze separate più avanti |
 | 8 | Workflow locali + journal durevole (+ workflow scritti dall'agente) | stesso motore per i piani del modello |
 | 9 | Scratchpad e memoria di progetto Markdown (0.10) + todo dell'agente | |

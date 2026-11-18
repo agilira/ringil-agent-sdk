@@ -686,3 +686,18 @@ func TestRuntimePrefixes(t *testing.T) {
 		}
 	}
 }
+
+// "a" allows a tool for the rest of the session: asked once, run twice.
+func TestAlwaysAllowForSession(t *testing.T) {
+	h := newHarness(t, "a\n", fake.Call("forget", `{"id":"x1"}`), fake.Call("forget", `{"id":"x2"}`), fake.Reply("ok"))
+	if code := h.run("run", "dimentica"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if n := strings.Count(h.err.String(), "wants to run forget"); n != 1 {
+		t.Fatalf("asked %d times: %q", n, h.err)
+	}
+	msgs := h.script.Requests()[2].Messages
+	if got := msgs[len(msgs)-1].Result.Content; strings.Contains(got, "did not approve") {
+		t.Fatalf("second call refused: %q", got)
+	}
+}

@@ -188,17 +188,29 @@ func withEnv(env map[string]string, k, v string) map[string]string {
 // configuration. Computed before every script, so secrets created during
 // the session are hidden too.
 func (c *cli) startMount(home, config string) (sandbox.Mount, bool) {
-	cwd, err := c.cwd()
-	if err != nil {
+	given, err := c.cwd()
+	if err != nil || sandbox.Reserved(filepath.ToSlash(given)) {
 		return sandbox.Mount{}, false
 	}
-	if real, err := filepath.EvalSymlinks(cwd); err == nil {
-		cwd = real
-	}
-	if cwd == home || (home != "" && inside(home, cwd)) || sandbox.Reserved(filepath.ToSlash(cwd)) || (config != "" && inside(config, cwd)) {
+	cwd := resolved(given)
+	if cwd == home || (home != "" && inside(home, cwd)) || sandbox.Reserved(filepath.ToSlash(cwd)) || (config != "" && inside(resolved(config), cwd)) {
 		return sandbox.Mount{}, false
 	}
 	return maskedMount(cwd)
+}
+
+// resolved is p with links resolved, as far as it exists: comparisons
+// must not depend on /tmp being /private/tmp (macOS) or on short names
+// (Windows).
+func resolved(p string) string {
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p
+	}
+	return filepath.Join(resolved(parent), filepath.Base(p))
 }
 
 // inside reports whether p is dir or below it.
