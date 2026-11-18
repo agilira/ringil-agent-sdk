@@ -152,6 +152,7 @@ type tool struct {
 
 	mu     sync.Mutex
 	hidden map[string][]string // Read directory → its hidden paths, walked once
+	runMu  sync.Mutex          // one sandboxed command at a time
 }
 
 type input struct {
@@ -302,6 +303,9 @@ func (t *tool) result(ctx context.Context, out *capture, err error, timeout time
 	}
 	b.WriteString(text)
 	b.WriteString(hints(text, status != 0, out.blocked()))
+	if len(out.notes) > 0 {
+		b.WriteString("\n[Sandbox: " + strings.Join(out.notes, "; ") + ".]")
+	}
 	if b.Len() == 0 {
 		b.WriteString("(no output)")
 	}
@@ -334,6 +338,7 @@ type capture struct {
 	tail    []byte
 	dropped int
 	denied  []string
+	notes   []string // what the repository checks undid
 }
 
 // maxDenied bounds the refusals reported for one command.

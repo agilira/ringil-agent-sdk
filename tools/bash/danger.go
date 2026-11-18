@@ -65,6 +65,9 @@ func literal(w *syntax.Word) string {
 		case *syntax.Lit:
 			b.WriteString(unescape(p.Value))
 		case *syntax.SglQuoted:
+			if p.Dollar {
+				return dynamic // $'\x72m': escapes the check does not decode
+			}
 			b.WriteString(p.Value)
 		case *syntax.DblQuoted:
 			for _, q := range p.Parts {
@@ -100,10 +103,20 @@ func unescape(s string) string {
 	return b.String()
 }
 
-// wrappers run the command that follows them; their own options are
-// skipped.
-var wrappers = map[string]bool{"command": true, "builtin": true, "exec": true, "nice": true, "nohup": true,
-	"time": true, "timeout": true, "env": true, "stdbuf": true, "xargs": true, "ionice": true, "setsid": true}
+// wrappers run the command that follows their options; the value lists
+// the options that take the next word as their value.
+var wrappers = map[string][]string{
+	"command": nil, "builtin": nil, "nohup": nil, "setsid": nil, "busybox": nil,
+	"exec":    {"-a"},
+	"nice":    {"-n", "--adjustment"},
+	"time":    {"-f", "-o", "--format", "--output"},
+	"timeout": {"-s", "-k", "--signal", "--kill-after"},
+	"env":     {"-u", "-C", "--unset", "--chdir"},
+	"stdbuf":  {"-i", "-o", "-e", "--input", "--output", "--error"},
+	"ionice":  {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
+	"xargs": {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof", "--replace",
+		"--max-lines", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"},
+}
 
 var shells = map[string]bool{"sh": true, "bash": true, "dash": true, "zsh": true, "ksh": true}
 
@@ -113,7 +126,7 @@ func callDanger(args []string, depth int) []string {
 		return nil
 	}
 	name := args[0]
-	if name == dynamic || strings.ContainsAny(name, "{*?[") {
+	if builtAtRunTime(name) {
 		return []string{"the command's name is built at run time"}
 	}
 	base := path.Base(name)
@@ -122,11 +135,21 @@ func callDanger(args []string, depth int) []string {
 		return shellDanger(args[1:], depth)
 	case base == "find": // its -exec runs a command: checked like this one
 		return findDanger(args[1:])
+	case base == "trap" || base == "watch": // they run their text later
+		return scriptDanger(base, args[1:], depth)
+	case base == "git":
+		return gitDanger(args[1:], depth)
 	}
 	if check, ok := commandChecks[base]; ok {
 		return check(base, args[1:])
 	}
 	return nil
+}
+
+// builtAtRunTime: an expansion, a glob or braces make the name; [ and [[
+// are the test commands.
+func builtAtRunTime(name string) bool {
+	return name == dynamic || strings.ContainsAny(name, "{*?") || strings.Contains(name, "[") && name != "[" && name != "[["
 }
 
 func always(why string) func(string, []string) []string {
@@ -144,19 +167,74 @@ var commandChecks = map[string]func(base string, args []string) []string{
 	"pkexec": always("runs as another user"),
 	"shred":  always("destroys files"),
 	"rm":     func(_ string, a []string) []string { return rmDanger(a) },
-	"git":    func(_ string, a []string) []string { return gitDanger(a) },
 }
 
 // unwrap drops leading wrappers (env, timeout, xargs...) and their options,
-// leaving the command they run.
+// leaving the command they run. env -S's text is a command line itself.
 func unwrap(args []string) []string {
-	for len(args) > 0 && wrappers[path.Base(args[0])] {
+	for len(args) > 0 {
+		valued, ok := wrappers[path.Base(args[0])]
+		if !ok {
+			return args
+		}
+		env := path.Base(args[0]) == "env"
 		args = args[1:]
-		for len(args) > 0 && (strings.HasPrefix(args[0], "-") || strings.Contains(args[0], "=") || isDuration(args[0])) {
+		for len(args) > 0 && isOption(args[0], env) {
+			if text, split := splitString(args); split {
+				return []string{"sh", "-c", text}
+			}
+			if has(args[:1], valued...) && !strings.Contains(args[0], "=") {
+				args = args[1:]
+			}
 			args = args[1:]
 		}
 	}
 	return args
+}
+
+// isOption: an option, an env assignment, or timeout's duration.
+func isOption(a string, env bool) bool {
+	return strings.HasPrefix(a, "-") || env && strings.Contains(a, "=") || isDuration(a)
+}
+
+// splitString recognises env -S TEXT (or --split-string=TEXT) and returns
+// TEXT with the words after it.
+func splitString(args []string) (string, bool) {
+	a := args[0]
+	switch {
+	case a == "-S" || a == "--split-string":
+		if len(args) < 2 {
+			return dynamic, true
+		}
+		return strings.Join(args[1:], " "), true
+	case strings.HasPrefix(a, "--split-string="):
+		return strings.Join(append([]string{strings.TrimPrefix(a, "--split-string=")}, args[1:]...), " "), true
+	case strings.HasPrefix(a, "-S") && len(a) > 2:
+		return strings.Join(append([]string{a[2:]}, args[1:]...), " "), true
+	}
+	return "", false
+}
+
+// scriptDanger checks the text trap runs on a signal, or watch runs
+// repeatedly (its command words joined, as watch passes them to sh -c).
+func scriptDanger(base string, args []string, depth int) []string {
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		if base == "watch" && has(args[:1], "-n", "--interval", "-d", "--differences") && !strings.Contains(args[0], "=") {
+			args = args[1:]
+		}
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	text := args[0]
+	if base == "watch" {
+		text = strings.Join(args, " ")
+	}
+	if strings.Contains(text, dynamic) {
+		return []string{base + " runs text built at run time"}
+	}
+	return dangerous(text, depth+1)
 }
 
 // isDuration recognises timeout's first operand (10, 5s, 1.5m).
@@ -190,7 +268,7 @@ func rmDanger(args []string) []string {
 		if a == "--" {
 			break
 		}
-		if a == "--recursive" || a == dynamic || shortFlag(a, 'r') || shortFlag(a, 'R') {
+		if a == dynamic || has([]string{a}, "--recursive") || shortFlag(a, 'r') || shortFlag(a, 'R') {
 			return []string{"rm -r deletes whole directories"}
 		}
 	}
@@ -220,10 +298,13 @@ func shortFlag(a string, c byte) bool {
 // gitGlobalWithValue are git's options before the subcommand that take
 // the next word as their value.
 var gitGlobalWithValue = map[string]bool{"-C": true, "-c": true, "--git-dir": true, "--work-tree": true,
-	"--namespace": true, "--exec-path": true, "--config-env": true}
+	"--namespace": true, "--exec-path": true, "--config-env": true, "--attr-source": true, "--super-prefix": true}
 
-func gitDanger(args []string) []string {
+func gitDanger(args []string, depth int) []string {
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		if gitAlias(args) {
+			return []string{"git -c alias defines a command the check cannot see"}
+		}
 		if gitGlobalWithValue[args[0]] {
 			args = args[1:]
 		}
@@ -232,9 +313,17 @@ func gitDanger(args []string) []string {
 	if len(args) == 0 {
 		return nil
 	}
-	sub, rest := args[0], args[1:]
-	if sub == dynamic {
+	return gitSubDanger(args[0], args[1:], depth)
+}
+
+func gitSubDanger(sub string, rest []string, depth int) []string {
+	switch {
+	case sub == dynamic:
 		return []string{"the git command is built at run time"}
+	case sub == "submodule":
+		return gitForeach(rest, depth)
+	case sub == "bisect" && len(rest) > 1 && rest[0] == "run":
+		return callDanger(rest[1:], depth+1)
 	}
 	if check, ok := gitChecks[sub]; ok {
 		if why := check(rest); why != "" {
@@ -244,10 +333,44 @@ func gitDanger(args []string) []string {
 	return nil
 }
 
+// gitAlias: -c alias.x=... (or --config-env=alias.x=VAR) defines what x
+// runs, which could be anything.
+func gitAlias(args []string) bool {
+	a := strings.ToLower(args[0])
+	switch {
+	case (a == "-c" || a == "--config-env") && len(args) > 1:
+		return strings.HasPrefix(strings.ToLower(args[1]), "alias.") || args[1] == dynamic
+	case strings.HasPrefix(a, "--config-env="):
+		return strings.HasPrefix(strings.TrimPrefix(a, "--config-env="), "alias.")
+	}
+	return false
+}
+
+// gitForeach checks the command git submodule foreach runs in each
+// submodule.
+func gitForeach(args []string, depth int) []string {
+	if len(args) == 0 || args[0] != "foreach" {
+		return nil
+	}
+	args = args[1:]
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		args = args[1:]
+	}
+	text := strings.Join(args, " ")
+	if strings.Contains(text, dynamic) {
+		return []string{"git submodule foreach runs text built at run time"}
+	}
+	return dangerous(text, depth+1)
+}
+
+// has reports whether args holds one of names. A long option also matches
+// by a unique-looking prefix (--har is --hard to git and GNU tools) and
+// with an attached value (--force=1).
 func has(args []string, names ...string) bool {
 	for _, a := range args {
+		opt, _, _ := strings.Cut(a, "=")
 		for _, n := range names {
-			if a == n || strings.HasPrefix(n, "--") && strings.HasPrefix(a, n+"=") {
+			if a == n || strings.HasPrefix(n, "--") && strings.HasPrefix(opt, "--") && len(opt) > 2 && strings.HasPrefix(n, opt) {
 				return true
 			}
 		}
@@ -277,8 +400,12 @@ var gitChecks = map[string]func([]string) string{
 		return when(has(a, "--force") || hasShort(a, 'f'), "git clean -f deletes untracked files")
 	},
 	"checkout": func(a []string) string {
-		return when(has(a, "--", ".", "--force", "--discard-changes", "--ours", "--theirs") || hasShort(a, 'f'),
+		return when(has(a, "--", ".", "--force", "--discard-changes", "--ours", "--theirs") || hasShort(a, 'f') || operands(a) > 1,
 			"git checkout over files discards their changes")
+	},
+	"prune": func([]string) string { return "git prune drops unreachable work" },
+	"worktree": func(a []string) string {
+		return when(len(a) > 0 && a[0] == "remove" && (has(a, "--force") || hasShort(a, 'f')), "git worktree remove --force deletes a working tree")
 	},
 	"restore": func(a []string) string {
 		staged := has(a, "--staged") || hasShort(a, 'S')
@@ -316,6 +443,17 @@ var gitChecks = map[string]func([]string) string{
 	"commit": func(a []string) string {
 		return when(has(a, "--amend"), "git commit --amend rewrites the last commit")
 	},
+}
+
+// operands counts the arguments that are not options.
+func operands(args []string) int {
+	n := 0
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			n++
+		}
+	}
+	return n
 }
 
 func when(cond bool, why string) string {

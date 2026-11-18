@@ -180,3 +180,43 @@ func TestNewSpecFieldsValidated(t *testing.T) {
 		}
 	}
 }
+
+// Audit 18/11: moving .git aside and copying it back made its hooks
+// writable; the directories above a read-only path are now mount points.
+func TestReadOnlyParentsCannotBeMoved(t *testing.T) {
+	s := sandboxOrSkip(t)
+	dir := t.TempDir()
+	for _, p := range []string{".git/hooks/pre-commit", ".git/config", "sub/deep/CLAUDE.md"} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, errOut, err := run(t, s, Spec{
+		Argv: sh(`cd /w; mv .git .g 2>/dev/null && echo moved-git || echo git-pinned
+mv sub s2 2>/dev/null && echo moved-sub || echo sub-pinned
+mv sub/deep sub/d2 2>/dev/null && echo moved-deep || echo deep-pinned
+echo new > .git/HEAD && echo git-writable`),
+		Mounts: []Mount{{Source: dir, Target: "/w", Writable: true, ReadOnly: []string{".git/hooks", ".git/config", "sub/deep/CLAUDE.md"}}},
+	})
+	if err != nil || out != "git-pinned\nsub-pinned\ndeep-pinned\ngit-writable\n" {
+		t.Fatalf("%q %v %s", out, err, errOut)
+	}
+}
+
+func TestSymlinkSourceRefused(t *testing.T) {
+	s := sandboxOrSkip(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "f"), filepath.Join(dir, "l")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Start(context.Background(), Spec{Argv: []string{"true"}, Mounts: []Mount{{Source: filepath.Join(dir, "l"), Target: "/x"}}})
+	if !errors.HasCode(err, ErrGrant) {
+		t.Fatalf("%v", err)
+	}
+}
