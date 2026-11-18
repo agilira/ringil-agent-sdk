@@ -44,27 +44,7 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	if err != nil {
 		return errors.Wrap(err, ErrUsage, "cannot listen on "+listen)
 	}
-	token, where, err := c.serveToken()
-	if err != nil {
-		closeQuietly(l)
-		return err
-	}
-	if err := c.shareRemote(ctx); err != nil {
-		closeQuietly(l)
-		return err
-	}
-	store, err := c.store(ctx)
-	if err != nil {
-		closeQuietly(l)
-		return err
-	}
-	c.events = []agent.Observer{eventlog.Slog(slog.New(slog.NewTextHandler(c.errOut, nil)))}
-	profiles, err := c.servedProfiles(ctx)
-	if err != nil {
-		closeQuietly(l)
-		return err
-	}
-	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: ctx.GetFlagInt("max-runs"), Profiles: profiles})
+	srv, where, err := c.newServer(ctx)
 	if err != nil {
 		closeQuietly(l)
 		return err
@@ -78,8 +58,38 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	}
 	run, stop := signal.NotifyContext(ctx.Context(), os.Interrupt)
 	defer stop()
+	if !ctx.GetFlagBool("no-schedule") {
+		stopJobs, err := c.startSchedule(run, srv)
+		if err != nil {
+			return err
+		}
+		defer stopJobs()
+	}
 	c.note("serving on http://" + l.Addr().String() + "/v1/ ; bearer token " + where)
 	return srv.Serve(run, l)
+}
+
+// newServer builds the server: its token, the shared remote tools, the
+// session store and the profiles. It returns where the token is.
+func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
+	token, where, err := c.serveToken()
+	if err != nil {
+		return nil, "", err
+	}
+	if err := c.shareRemote(ctx); err != nil {
+		return nil, "", err
+	}
+	store, err := c.store(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	c.events = []agent.Observer{eventlog.Slog(slog.New(slog.NewTextHandler(c.errOut, nil)))}
+	profiles, err := c.servedProfiles(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: ctx.GetFlagInt("max-runs"), Profiles: profiles})
+	return srv, where, err
 }
 
 // servedProfiles are "default" (the flags and environment) and every
