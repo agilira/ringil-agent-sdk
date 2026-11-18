@@ -39,6 +39,7 @@ var machServices = []string{
 	"com.apple.system.opendirectoryd.libinfo", "com.apple.system.opendirectoryd.membership",
 	"com.apple.cfprefsd.daemon", "com.apple.cfprefsd.agent", "com.apple.bsd.dirhelper",
 	"com.apple.trustd", "com.apple.trustd.agent", "com.apple.SecurityServer", "com.apple.ocspd",
+	"com.apple.FSEvents", // xcrun watches the developer directory
 }
 
 // quote writes s as a profile string.
@@ -63,6 +64,9 @@ func buildProfile(spec Spec, grants []grant, tmp, proxy string) string {
 		b.WriteString("(allow file-read* (subpath " + quote(p) + "))\n")
 	}
 	b.WriteString("(allow file-read* " + developerTools + ")\n")
+	// xcrun, behind /usr/bin's python3 and git, caches where the active
+	// Xcode is in the user's system temporary directory: that file only.
+	b.WriteString("(allow file-read* file-write* (regex #\"^/private/var/folders/[^/]+/[^/]+/T/xcrun_db\"))\n")
 	b.WriteString("(allow file-read* file-write* (subpath " + quote(tmp) + "))\n")
 	b.WriteString("(allow file-write* (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n")
 	b.WriteString("(allow file-ioctl (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n")

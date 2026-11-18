@@ -165,7 +165,7 @@ func TestScriptFilesAreDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := t.TempDir()
-	tools := Tools(c, Options{Sandbox: testSandbox(t), Output: dest, Runtimes: map[string]string{"bash": "/usr/bin/bash"}})
+	tools := Tools(c, Options{Sandbox: testSandbox(t), Output: dest, Runtimes: map[string]string{"bash": "/bin/bash"}})
 	out, err := call(t, tools, "run_skill_script", runIn{Skill: "review", Script: "scripts/out.sh"})
 	if err != nil || !strings.Contains(out, `"out.txt" "sub/b.txt"`) || !strings.Contains(out, "entries not saved") {
 		t.Fatalf("run %q %v: %s", out, err, agent.ModelMessage(err))
