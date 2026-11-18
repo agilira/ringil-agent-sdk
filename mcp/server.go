@@ -235,7 +235,7 @@ func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.headers != nil {
 		h, err := t.headers(req.Context())
 		if err != nil {
-			return nil, errors.Wrap(err, ErrConnect, "cannot get the MCP server's credentials")
+			return nil, errors.Wrap(err, ErrConnect, "cannot get the MCP server's credentials: "+err.Error())
 		}
 		req = req.Clone(req.Context())
 		for k, vs := range h {

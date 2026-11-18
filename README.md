@@ -222,6 +222,26 @@ lettura; `"disabled": true` lo tiene spento. Alla conferma, `a` consente quel to
 tutta la sessione.
 Esempio di server: `mcp/examples/notes`.
 
+## Discovery dei tool
+
+I tool marcati `agent.Deferrable()` (quelli MCP lo sono sempre) vengono mostrati al
+modello solo per nome quando i loro schemi superano `Config.DiscoveryThreshold`
+(16 KiB di default). Il modello li carica con `tool_search`, per nome esatto o
+descrivendo il compito, e da lì li chiama normalmente; ciò che ha caricato resta per
+tutta la conversazione. `DiscoveryAlways` e `DiscoveryOff` forzano le due strade.
+
+## Composio
+
+`mcp/composio` collega Composio Connect con la consumer key dell'utente (`ck_…`):
+
+```go
+c, err := mcp.Connect(ctx, composio.Connect(func(ctx context.Context) (string, error) { return key, nil }))
+```
+
+Tutti i meta-tool di Composio sono offerti (ricerca, esecuzione, connessioni,
+workbench); `Server.Tools` li restringe. Nella CLI basta un server HTTP in
+`mcp.json` con l'header `"x-consumer-api-key": "${COMPOSIO_KEY}"`.
+
 ## Decoratori
 
 Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,

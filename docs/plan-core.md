@@ -414,7 +414,7 @@ prima del commit dopo:
 | 14 | Rilevatore di loop (0.27) | default avviso; argomenti alterni e cicli di 3 |
 | 15 | Bus di eventi e adapter slog solo metadati (0.29) | una sola sequenza |
 | 16 | Controller, API HTTP loopback, `serve` (0.30-0.32) | TTL dei run conclusi, lock per job, `omitzero` |
-| 17 | Composio, setup e catalogo con discovery (2.4, 2.4.1) | selettori `user_id`/`entity_id` bloccati; allowlist dallo schema |
+| 17 | Composio, setup e catalogo con discovery (2.4, 2.4.1) | FATTO 18/11 (Connect, consumer key) + discovery nel nucleo (tool_search); modalità project con sessione REST: da fare con una project key |
 | 18 | Tool filesystem in scrittura e Git strutturato (2.4.2) | grafts disattivati; output in streaming, non nel cap; fsync prima del ref |
 | 19 | Bash sandbox/host (2.6) | host mode senza fuga di env da /proc/$PPID; timeout che uccide anche i figli setsid |
 | 20 | Pianificazione (4.1): trigger a tempo e a evento, consegna, retry + notifica | DST con libreria matura; ogni difetto di studio diventa un test |

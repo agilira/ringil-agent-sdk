@@ -47,6 +47,11 @@ type Config struct {
 	// approve it. Which calls to ask about is the host's choice: the CLI
 	// asks for tools marked Destructive, an app may ask for more or none.
 	Approve func(ctx context.Context, call ToolCall, spec ToolSpec) (bool, error)
+	// Discovery lists deferrable tools by name only once their schemas
+	// exceed DiscoveryThreshold bytes (default 16 KiB); the model loads
+	// the ones it needs with tool_search.
+	Discovery          Discovery
+	DiscoveryThreshold int
 	// Memory, when set, recalls the records relevant to each user turn
 	// into that run's system prompt. Writing memories is up to the host,
 	// or to the model through the tools in package memory.
@@ -166,6 +171,8 @@ type run struct {
 	start     int
 	seenIDs   map[string]bool
 	result    Result
+	tools     Registry   // the configured tools, plus tool_search when deferring
+	disc      *discovery // nil when every schema is sent
 }
 
 func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
@@ -177,6 +184,13 @@ func newRun(cfg Config, conv Conversation, yield func(Event, error) bool) *run {
 		}
 	}
 	r.start = len(r.msgs)
+	r.tools = cfg.Tools
+	if d := newDiscovery(cfg, r.msgs); d != nil {
+		// A host tool already named tool_search keeps every schema visible.
+		if reg, err := cfg.Tools.With(d.searchTool()); err == nil {
+			r.tools, r.disc = reg, d
+		}
+	}
 	return r
 }
 
@@ -191,7 +205,13 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	if err := r.add(ctx, input.Clone()); err != nil {
 		return err
 	}
-	return r.recall(ctx, input.Text())
+	if err := r.recall(ctx, input.Text()); err != nil {
+		return err
+	}
+	if r.disc != nil {
+		r.system += r.disc.block()
+	}
+	return nil
 }
 
 // recall adds the memories relevant to the input to this run's system
@@ -273,7 +293,7 @@ func (r *run) execute(ctx context.Context) error {
 }
 
 func (r *run) callModel(ctx context.Context) (*Response, error) {
-	full := &Request{System: r.system, Messages: r.msgs, Tools: r.cfg.Tools.Specs(), MaxTokens: r.cfg.MaxTokens}
+	full := &Request{System: r.system, Messages: r.msgs, Tools: r.toolSpecs(), MaxTokens: r.cfg.MaxTokens}
 	resp, streamed, err := r.generate(ctx, full, r.compactor.budget(r.cfg.MaxTokens))
 	if errors.HasCode(err, ErrProviderContext) && !streamed && !r.cfg.Compaction.Disabled {
 		// The estimate was wrong or the window unknown: compact harder,
@@ -367,6 +387,9 @@ func (r *run) runTools(ctx context.Context, calls []ToolCall) error {
 // callTool runs one call after the host's approval, if the host asks for
 // one. A refusal, or a failure to ask, is answered like a failed tool.
 func (r *run) callTool(ctx context.Context, call ToolCall) (ToolResult, error) {
+	if _, known := r.spec(call.Name); !known && r.disc != nil {
+		return r.disc.unknown(call), errors.New(ErrToolUnknown, "the model called an unknown tool")
+	}
 	if r.cfg.Approve != nil {
 		if spec, ok := r.spec(call.Name); ok {
 			if allowed, err := r.cfg.Approve(ctx, call, spec); err != nil || !allowed {
@@ -378,11 +401,22 @@ func (r *run) callTool(ctx context.Context, call ToolCall) (ToolResult, error) {
 			}
 		}
 	}
-	return r.cfg.Tools.Execute(ctx, call)
+	return r.tools.Execute(ctx, call)
+}
+
+// toolSpecs are the schemas sent with a request.
+func (r *run) toolSpecs() []ToolSpec {
+	switch {
+	case r.cfg.Tools == nil:
+		return nil
+	case r.disc != nil:
+		return r.disc.specs(r.cfg.Tools.Specs())
+	}
+	return r.cfg.Tools.Specs()
 }
 
 func (r *run) spec(name string) (ToolSpec, bool) {
-	for _, s := range r.cfg.Tools.Specs() {
+	for _, s := range r.tools.Specs() {
 		if s.Name == name {
 			return s, true
 		}
