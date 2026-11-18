@@ -197,11 +197,11 @@ func checkDelivered(t *testing.T, dest string) {
 	}
 }
 
-// Audit 18/11: a locked /work, empty folders, a full output folder.
+// Audit 18/11: a locked working directory, empty folders, a full output folder.
 func TestDeliveryEdgeCases(t *testing.T) {
 	src := newSkill(t, map[string]string{
 		"SKILL.md":        reviewSkill,
-		"scripts/lock.sh": "echo 1 > f; chmod 000 f; chmod 000 /work\n",
+		"scripts/lock.sh": "echo 1 > f; chmod 000 f; chmod 000 \"$OUTPUT_DIR\"\n",
 		"scripts/dots.sh": "echo k > .env\n",
 		"scripts/big.sh":  "head -c 3000 /dev/zero > big\n",
 	})

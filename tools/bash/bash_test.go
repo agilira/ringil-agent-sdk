@@ -75,14 +75,15 @@ func TestSandboxedCommandRunsWithoutAsking(t *testing.T) {
 		asked.Add(1)
 		return false, nil
 	}})
-	out, err := call(t, tl, map[string]any{"command": `pwd; cat a.txt; echo; cat .env 2>/dev/null; echo new > b.txt && echo wrote;
+	out, err := call(t, tl, map[string]any{"command": `pwd -P; cat a.txt; echo; cat .env 2>/dev/null; echo new > b.txt && echo wrote;
 (echo x >> CLAUDE.md) 2>/dev/null || echo denied; (echo x > .git/hooks/post-commit) 2>/dev/null || echo denied;
 (echo x > .git/config) 2>/dev/null || echo denied; echo obj > .git/objects-ok && echo git-writable;
 touch /etc/x 2>/dev/null || echo etc-ro; ls ~ 2>/dev/null | wc -l | tr -d ' '`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := dir + "\nhello\nwrote\ndenied\ndenied\ndenied\ngit-writable\netc-ro\n0\n"
+	real, _ := filepath.EvalSymlinks(dir) // macOS: /var is /private/var
+	want := real + "\nhello\nwrote\ndenied\ndenied\ndenied\ngit-writable\netc-ro\n0\n"
 	if out != want {
 		t.Fatalf("got\n%s\nwant\n%s", out, want)
 	}
