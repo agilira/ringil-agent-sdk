@@ -12,6 +12,7 @@ import (
 	stderrors "errors"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -130,7 +131,7 @@ func (l *launch) add(f *os.File) string {
 }
 
 func baseArgs() []string {
-	return []string{
+	args := []string{
 		"--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
 		// A fresh user namespace mapped to the caller, in which no further
 		// namespaces can be made: the kernel's userns surface stays closed.
@@ -145,6 +146,19 @@ func baseArgs() []string {
 		"--size", strconv.Itoa(256 << 20), "--tmpfs", "/tmp",
 		"--dir", "/etc",
 	}
+	// The system's runtime configuration, nothing of the user's: library
+	// alternatives (Debian's libblas.so.3 is a link through
+	// /etc/alternatives), the loader cache, time zone, fonts and CA
+	// certificates. Read-only, and skipped where absent.
+	for _, p := range systemConfig {
+		args = append(args, "--ro-bind-try", p, p)
+	}
+	return args
+}
+
+var systemConfig = []string{
+	"/etc/alternatives", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
+	"/etc/localtime", "/etc/fonts", "/etc/ssl", "/etc/ca-certificates", "/etc/pki",
 }
 
 // mountArgs opens every granted directory and binds the open descriptor,
@@ -166,6 +180,41 @@ func (l *launch) mountArgs(spec Spec) ([]string, error) {
 			bind = "--bind-fd"
 		}
 		args = append(args, bind, fd, targetOf(m))
+		masks, err := hideArgs(m)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, masks...)
+	}
+	return args, nil
+}
+
+// hideArgs covers each hidden path with an empty read-only directory or
+// /dev/null, after the mount that contains it.
+func hideArgs(m Mount) ([]string, error) {
+	if len(m.Hide) == 0 {
+		return nil, nil
+	}
+	root, err := os.OpenRoot(m.Source)
+	if err != nil {
+		return nil, errors.Wrap(err, ErrGrant, "cannot open "+m.Source)
+	}
+	defer closeQuiet(root)
+	var args []string
+	for _, h := range m.Hide {
+		info, err := root.Lstat(h)
+		if err != nil {
+			continue // gone: nothing to hide
+		}
+		dest := path.Join(targetOf(m), h)
+		switch {
+		case info.IsDir():
+			args = append(args, "--perms", "0500", "--tmpfs", dest, "--remount-ro", dest)
+		case info.Mode().IsRegular():
+			args = append(args, "--ro-bind", "/dev/null", dest)
+		}
+		// a symbolic link stays: it resolves inside the sandbox, where
+		// its target is either another hidden path or not mounted
 	}
 	return args, nil
 }
@@ -315,4 +364,10 @@ func (p *process) abort(cause error) error {
 		return coded.WithContext("cleanup_error", cleanup.Error())
 	}
 	return cause
+}
+
+func closeQuiet(r *os.Root) {
+	if err := r.Close(); err != nil {
+		return // a read-only handle: nothing to lose
+	}
 }

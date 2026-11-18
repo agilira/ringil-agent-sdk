@@ -17,6 +17,7 @@ package sandbox
 import (
 	"context"
 	"io"
+	"io/fs"
 	"path"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,10 @@ type Mount struct {
 	Target string
 	// Writable lets the program change the directory's contents.
 	Writable bool
+	// Hide are paths inside Source, relative and slash-separated, that the
+	// program must not see: each becomes an empty directory or an empty
+	// file. files.Hidden lists what the file tools' policy excludes.
+	Hide []string
 }
 
 // Limits are per-process resource limits. Zero means the default given.
@@ -71,9 +76,12 @@ type Mount struct {
 // space (memfd), can add up past them. A cgroup-based total is planned;
 // until then bound the run with the context's deadline.
 type Limits struct {
-	// Memory caps the address space of each process; default 1 GiB.
+	// Memory caps the address space of each process; default 8 GiB.
+	// Address space is not RAM: runtimes such as OpenBLAS, V8 and the JVM
+	// reserve far more than they use, and fail under a tight cap.
 	Memory int64
-	// Processes caps the processes of the sandbox user; default 64.
+	// Processes caps the processes and threads of the sandbox user;
+	// default 256 (numerical libraries start a thread per core).
 	Processes int
 	// CPU caps the CPU time of each process; default 60s.
 	CPU time.Duration
@@ -144,6 +152,14 @@ func validate(spec Spec) error {
 // reservedTargets are mounted by the sandbox itself.
 var reservedTargets = []string{"/", "/usr", "/bin", "/lib", "/lib64", "/sbin", "/proc", "/dev", "/tmp", "/etc"}
 
+func validHide(rel string) bool {
+	return rel != "." && fs.ValidPath(rel)
+}
+
+// Reserved reports whether target is a path inside the sandbox that no
+// mount may use (/, /usr, /proc, /tmp and the like).
+func Reserved(target string) bool { return reserved(target) }
+
 func validateMounts(mounts []Mount) error {
 	seen := map[string]bool{}
 	for _, m := range mounts {
@@ -154,6 +170,11 @@ func validateMounts(mounts []Mount) error {
 		}
 		if reserved(target) {
 			return configError("mount target " + target + " is reserved")
+		}
+		for _, h := range m.Hide {
+			if !validHide(h) {
+				return configError("hidden paths are relative paths inside the mount")
+			}
 		}
 		seen[target] = true
 	}
@@ -191,10 +212,10 @@ func validateEnv(env map[string]string) error {
 
 func (l Limits) withDefaults() Limits {
 	if l.Memory <= 0 {
-		l.Memory = 1 << 30
+		l.Memory = 8 << 30
 	}
 	if l.Processes <= 0 {
-		l.Processes = 64
+		l.Processes = 256
 	}
 	if l.CPU <= 0 {
 		l.CPU = 60 * time.Second

@@ -23,6 +23,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
+	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
 )
 
@@ -92,6 +93,9 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("memory", "List what the agent remembers").SetHandler(c.cmdMemory).
 		AddSubcommand(orpheus.NewCommand("search", "Search what the agent remembers").SetHandler(c.cmdMemory).SetUsage("memory search <words...>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.cmdMemoryRemove).SetUsage("memory rm <id...>")))
+	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.cmdSkills).
+		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.cmdSkillInstall).SetUsage("skill install <dir>")).
+		AddSubcommand(orpheus.NewCommand("rm", "Remove installed skills").SetHandler(c.cmdSkillRemove).SetUsage("skill rm <name...>")))
 	app.AddCommand(orpheus.NewCommand("sandbox", "Run a command isolated, as scripts and tools will be").SetHandler(c.cmdSandbox).
 		SetUsage("sandbox [--mount DIR[:/dest][:rw]]... [--net] [--dir /path] -- command [args...]").
 		AddStringSliceFlag("mount", "", nil, "grant a host directory, at its own path unless :/dest is given; read-only unless :rw").
@@ -113,16 +117,24 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	tools, err := c.tools(ctx, mem)
+	cat, err := c.skillCatalog(ctx)
 	if err != nil {
 		return nil, err
+	}
+	tools, err := c.tools(ctx, mem, cat)
+	if err != nil {
+		return nil, err
+	}
+	system := ctx.GetGlobalFlagString("system")
+	if cat != nil {
+		system += cat.Instructions()
 	}
 	return agent.New(agent.Config{
 		Provider:      retry.Wrap(p, retry.Config{}),
 		Tools:         tools,
 		Memory:        mem,
 		Approve:       c.approve,
-		System:        ctx.GetGlobalFlagString("system"),
+		System:        system,
 		MaxTurns:      ctx.GetGlobalFlagInt("max-turns"),
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
 		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
@@ -136,7 +148,7 @@ func withWorkspace(cmd *orpheus.Command) *orpheus.Command {
 }
 
 // tools grants the built-in tools and, with --workspace, the file tools.
-func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory) (agent.Registry, error) {
+func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog) (agent.Registry, error) {
 	if ctx.GetGlobalFlagBool("no-tools") {
 		return nil, nil
 	}
@@ -144,10 +156,8 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory) (agent.Registry, err
 	if err != nil {
 		return nil, err
 	}
-	if mem != nil {
-		if reg, err = reg.With(memory.Tools(mem)...); err != nil {
-			return nil, err
-		}
+	if reg, err = reg.With(c.extraTools(mem, cat)...); err != nil {
+		return nil, err
 	}
 	dirs := ctx.GetFlagStringSlice("workspace")
 	if len(dirs) == 0 {
@@ -161,6 +171,18 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory) (agent.Registry, err
 		return nil, err
 	}
 	return reg.With(ws.ReadTools()...)
+}
+
+// extraTools: memory and skill tools, when there is something to use.
+func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
+	var extra []agent.Tool
+	if mem != nil {
+		extra = append(extra, memory.Tools(mem)...)
+	}
+	if cat != nil && len(cat.List()) > 0 {
+		extra = append(extra, skills.Tools(cat, c.skillOptions())...)
+	}
+	return extra
 }
 
 // defaultDirs are the start directory and the user's home: the agent moves

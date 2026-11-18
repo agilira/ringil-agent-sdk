@@ -23,6 +23,8 @@ import (
 	"github.com/agilira/ringil-agent-sdk/provider/budget"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
+	"github.com/agilira/ringil-agent-sdk/sandbox"
+	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
 )
 
@@ -42,7 +44,7 @@ func liveModel(t *testing.T) agent.Provider {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spend, err := budget.New(budget.Limits{Calls: 30})
+	spend, err := budget.New(budget.Limits{Calls: 40})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,4 +206,48 @@ func TestLiveMemory(t *testing.T) {
 	if !strings.Contains(res.Text, "Rossi") {
 		t.Fatalf("answer %q", res.Text)
 	}
+}
+
+// TestLiveSkill: a real model picks an installed skill from its
+// description, loads it and runs its script in the sandbox.
+func TestLiveSkill(t *testing.T) {
+	model := liveModel(t)
+	cat, sb := liveCatalog(t)
+	tools, err := agent.NewRegistry(skills.Tools(cat, skills.Options{Sandbox: sb})...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, System: "Answer briefly." + cat.Instructions(), MaxTurns: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ran bool
+	for ev, err := range a.Stream(context.Background(), nil, agent.UserText("Quanti caratteri ha esattamente questo testo? Usa lo script della skill. Testo: ringil-agent-sdk")) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.Kind == agent.EventToolEnd && ev.Call.Name == "run_skill_script" && ev.Err == nil {
+			ran = true
+		}
+	}
+	if !ran {
+		t.Fatal("the skill script did not run")
+	}
+}
+
+func liveCatalog(t *testing.T) (*skills.Catalog, sandbox.Sandbox) {
+	t.Helper()
+	sb, err := sandbox.New()
+	if err != nil {
+		t.Skip(err)
+	}
+	dir := filepath.Join(t.TempDir(), "skills")
+	if _, err := skills.Install(context.Background(), "examples/skills/review", dir); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := skills.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cat, sb
 }

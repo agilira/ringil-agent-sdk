@@ -599,3 +599,59 @@ func TestCleanStripsBidiOverrides(t *testing.T) {
 		t.Fatalf("clean %q", got)
 	}
 }
+
+func TestSkillInstallListUseRemove(t *testing.T) {
+	src := t.TempDir()
+	skill := "---\nname: invoice\ndescription: Check an invoice total. Use for invoices.\n---\nAdd the lines and compare with the total.\n"
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte(skill), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, "", fake.Call("load_skill", `{"name":"invoice"}`), fake.Reply("ok"))
+	if code := h.run("skill", "install", src); code != exitOK || !strings.Contains(h.err.String(), "installed invoice") {
+		t.Fatalf("install %d %q", code, h.err)
+	}
+	if code := h.run("run", "controlla la fattura"); code != exitOK {
+		t.Fatalf("run %d %q", code, h.err)
+	}
+	reqs := h.script.Requests()
+	checkOffered(t, reqs[0].Tools, "load_skill", "read_skill_file")
+	if !strings.Contains(reqs[0].System, `{"name":"invoice"`) {
+		t.Fatalf("skill not listed: %q", reqs[0].System)
+	}
+	if got := reqs[1].Messages[len(reqs[1].Messages)-1].Result.Content; !strings.Contains(got, "Add the lines") {
+		t.Fatalf("load_skill %q", got)
+	}
+	removeSkill(t, h, "invoice")
+}
+
+func removeSkill(t *testing.T, h *harness, name string) {
+	t.Helper()
+	h.err.Reset()
+	if code := h.run("skill", "rm", name); code != exitOK {
+		t.Fatalf("rm %d %q", code, h.err)
+	}
+	if code := h.run("skill"); code != exitOK || !strings.Contains(h.err.String(), "no skills installed") {
+		t.Fatalf("after rm %q", h.err)
+	}
+}
+
+// Audit 18/11: scripts saw the start directory's secrets, and system
+// start directories made every script fail.
+func TestStartMountForScripts(t *testing.T) {
+	h := newHarness(t, "")
+	work := t.TempDir()
+	if err := os.WriteFile(filepath.Join(work, ".env"), []byte("K=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.c.cwd = func() (string, error) { return work, nil }
+	m, ok := h.c.startMount("/home/x", h.dir)
+	if !ok || strings.Join(m.Hide, ",") != ".env" {
+		t.Fatalf("mount %+v %v", m, ok)
+	}
+	for _, cwd := range []string{"/", "/tmp", "/usr/share", "/home/x", h.dir, filepath.Dir(h.dir)} {
+		h.c.cwd = func() (string, error) { return cwd, nil }
+		if _, ok := h.c.startMount("/home/x", filepath.Join(h.dir, "ringil")); ok {
+			t.Errorf("%s mounted", cwd)
+		}
+	}
+}
