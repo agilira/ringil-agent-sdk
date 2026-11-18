@@ -45,9 +45,20 @@ func checkMCPFiles(t *testing.T, path string) {
 	if err != nil || len(got) != 2 || got["b"].Headers["K"] != "${KEY}" {
 		t.Fatalf("load %v %v", got, err)
 	}
-	write(`{"mcpServers":{},"extra":1}`, 0o600)
+	checkSharedFile(t, path, write)
+}
+
+func checkSharedFile(t *testing.T, path string, write func(string, os.FileMode)) {
+	t.Helper()
+	// Audit 18/11: other agents' keys ("disabled", "extra") must not
+	// reject the whole file.
+	write(`{"mcpServers":{"a":{"command":"x","disabled":true,"autoApprove":[]}},"extra":1}`, 0o600)
+	if got, err := loadMCP(path, false); err != nil || !got["a"].Disabled {
+		t.Fatalf("shared file refused: %v %v", got, err)
+	}
+	write(`{"mcpServers":`, 0o600)
 	if _, err := loadMCP(path, false); !errors.HasCode(err, ErrUsage) {
-		t.Fatalf("unknown field accepted: %v", err)
+		t.Fatalf("broken JSON accepted: %v", err)
 	}
 	if runtime.GOOS != "windows" {
 		write(`{"mcpServers":{}}`, 0o666)
@@ -71,5 +82,15 @@ func TestHeaderReferencesResolvePerRequest(t *testing.T) {
 	}
 	if _, err := headerFunc(map[string]string{"K": "${MISSING}"}, res)(context.Background()); err == nil {
 		t.Fatal("missing secret accepted")
+	}
+}
+
+func TestServerEntryChecks(t *testing.T) {
+	h := newHarness(t, "")
+	res := secrets.Map(map[string]string{})
+	for _, e := range []mcpEntry{{Type: "ws", URL: "https://x"}, {URL: "https://x", Command: "y"}} {
+		if _, err := h.c.serverOf(context.Background(), "s", e, res); !errors.HasCode(err, ErrUsage) {
+			t.Errorf("%+v: %v", e, err)
+		}
 	}
 }

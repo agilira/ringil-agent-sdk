@@ -45,6 +45,8 @@ type cli struct {
 	configDir func() (string, error)
 	// closers stop the MCP servers started for the current command.
 	closers []func() error
+	// allowed are tools the user allowed for the rest of the session.
+	allowed map[string]bool
 	// newSandbox returns the platform sandbox; tests may replace it.
 	newSandbox func() (sandbox.Sandbox, error)
 	// cwd is where the CLI was started, home the user's home; tests
@@ -216,29 +218,50 @@ func (c *cli) askAccess(_ context.Context, dir string) (bool, error) {
 	return c.confirm("\n  ? The agent wants to access " + clean(dir) + " — allow? [y/N] ")
 }
 
-// approve asks before destructive tools (forget today, file writes later);
-// everything else runs without interrupting the user.
+// approve asks before destructive tools (forget, MCP tools from servers
+// whose hints are not trusted, file writes later); everything else runs
+// without interrupting the user. "a" allows that tool for the rest of
+// the session.
 func (c *cli) approve(_ context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
-	if !spec.Annotations.Destructive {
+	if !spec.Annotations.Destructive || c.allowed[call.Name] {
 		return true, nil
 	}
-	return c.confirm("\n  ? The agent wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N] ")
+	answer, err := c.ask("\n  ? The agent wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
+	if answer == "a" || answer == "always" || answer == "sempre" {
+		if c.allowed == nil {
+			c.allowed = map[string]bool{}
+		}
+		c.allowed[call.Name] = true
+		return true, err
+	}
+	return yes(answer), err
 }
 
 // confirm asks a yes/no question; no answer is a no.
 func (c *cli) confirm(question string) (bool, error) {
+	answer, err := c.ask(question)
+	return yes(answer), err
+}
+
+// ask prints a question and returns the lower-cased answer; empty at the
+// end of input.
+func (c *cli) ask(question string) (string, error) {
 	if err := c.line(question); err != nil {
-		return false, err
+		return "", err
 	}
 	answer, ok := c.readLine()
 	if !ok {
-		return false, nil
+		return "", nil
 	}
-	switch strings.ToLower(strings.TrimSpace(answer)) {
+	return strings.ToLower(strings.TrimSpace(answer)), nil
+}
+
+func yes(answer string) bool {
+	switch answer {
 	case "y", "yes", "s", "si", "sì":
-		return true, nil
+		return true
 	}
-	return false, nil
+	return false
 }
 
 // readLine reads one line from the terminal, shared by the chat prompt and

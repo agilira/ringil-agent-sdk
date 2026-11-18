@@ -204,12 +204,22 @@ defer c.Close()
 
 Server locali via stdio, nella sandbox se data; remoti via Streamable HTTP, solo HTTPS
 (loopback escluso), credenziali per richiesta dal resolver dell'host, redirect verso altre
-origini mai seguiti, OAuth con l'handler dell'SDK. Le annotazioni seguono i default MCP:
-un tool non marcato read-only è distruttivo, quindi passa dall'hook `Approve`.
+origini mai seguiti. Le annotazioni di un server sono suggerimenti suoi: senza
+`TrustAnnotations` ogni tool MCP conta come distruttivo e passa dall'hook `Approve`.
+Ogni chiamata ha un timeout, ogni risultato e ogni risposta HTTP un tetto, e `Close`
+annulla le chiamate in corso.
+
+Login OAuth da desktop o terminale: `mcp.NewLogin` apre un listener su 127.0.0.1,
+registra il client (dinamicamente o con un client ID dato), mostra il link e conserva i
+token con `mcp.FileTokens`, così la volta dopo non serve rifare il login.
 
 CLI: `<config>/ringil/mcp.json` (o `--mcp-config`) nel formato comune
 `{"mcpServers": {...}}`; nei valori `${NOME}` viene risolto da ambiente ed `--env-file`.
-Per un server locale `"sandbox": true` con `"network"` e `"mounts"` lo isola.
+Per un server locale `"sandbox": true` con `"network"` e `"mounts"` lo isola;
+`"oauth": {}` fa il login dal browser (token in `<config>/ringil/oauth/`);
+`"trustAnnotations": true` evita la conferma sui tool che il server dichiara di sola
+lettura; `"disabled": true` lo tiene spento. Alla conferma, `a` consente quel tool per
+tutta la sessione.
 Esempio di server: `mcp/examples/notes`.
 
 ## Decoratori

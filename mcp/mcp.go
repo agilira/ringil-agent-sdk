@@ -17,8 +17,10 @@ package mcp
 import (
 	"context"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/agilira/go-errors"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -35,14 +37,29 @@ const (
 
 // Client is a connection to one MCP server.
 type Client struct {
-	name    string
-	session *sdk.ClientSession
-	allow   map[string]bool
-	stop    func() error
+	name  string
+	srv   Server
+	allow map[string]bool
+	stop  func() error
 
-	mu    sync.Mutex
-	tools []agent.Tool
+	// life ends with Close: calls in flight are cancelled, so Close never
+	// waits behind a server that stopped answering.
+	life   context.Context
+	cancel context.CancelFunc
+
+	mu      sync.Mutex
+	session *sdk.ClientSession
+	tools   []agent.Tool
 }
+
+// Bounds on what a server can make the client hold.
+const (
+	maxTools        = 1000
+	maxSchema       = 64 << 10
+	defaultOutput   = 256 << 10
+	defaultCallTime = 5 * time.Minute
+	refreshTime     = 30 * time.Second
+)
 
 // Connect starts or reaches the server and lists its tools.
 func Connect(ctx context.Context, srv Server) (*Client, error) {
@@ -53,27 +70,41 @@ func Connect(ctx context.Context, srv Server) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return connect(ctx, srv.Name, transport, stop, srv.Tools)
+	return connect(ctx, srv, transport, stop)
 }
 
-func connect(ctx context.Context, name string, transport sdk.Transport, stop func() error, allow []string) (*Client, error) {
-	c := &Client{name: name, stop: stop, allow: set(allow)}
+func connect(ctx context.Context, srv Server, transport sdk.Transport, stop func() error) (*Client, error) {
+	life, cancel := context.WithCancel(context.Background())
+	c := &Client{name: srv.Name, srv: srv, stop: stop, allow: set(srv.Tools), life: life, cancel: cancel}
 	client := sdk.NewClient(&sdk.Implementation{Name: "ringil-agent-sdk", Version: "0"}, &sdk.ClientOptions{
-		ToolListChangedHandler: func(ctx context.Context, _ *sdk.ToolListChangedRequest) {
-			if err := c.refresh(ctx); err != nil {
-				return // keep the tools we have; the next call reports trouble
-			}
-		},
+		ToolListChangedHandler: c.onListChanged,
 	})
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return nil, c.fail(errors.Wrap(err, ErrConnect, "cannot connect to MCP server "+name))
+		return nil, c.fail(errors.Wrap(err, ErrConnect, "cannot connect to MCP server "+srv.Name+": "+err.Error()))
 	}
+	c.mu.Lock()
 	c.session = session
-	if err := c.refresh(ctx); err != nil {
+	c.mu.Unlock()
+	if err := c.refresh(ctx, session); err != nil {
 		return nil, c.fail(err)
 	}
 	return c, nil
+}
+
+// onListChanged re-reads the tools. A notice that arrives before Connect
+// has finished is ignored: the session is not usable yet, and Connect
+// reads the tools itself right after.
+func (c *Client) onListChanged(context.Context, *sdk.ToolListChangedRequest) {
+	session := c.current()
+	if session == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.life, refreshTime)
+	defer cancel()
+	if err := c.refresh(ctx, session); err != nil {
+		return // keep the tools we have; the next call reports trouble
+	}
 }
 
 func (c *Client) fail(err error) error {
@@ -91,11 +122,19 @@ func (c *Client) Tools() []agent.Tool {
 	return append([]agent.Tool(nil), c.tools...)
 }
 
-// Close ends the session and stops a local server.
+func (c *Client) current() *sdk.ClientSession {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.session
+}
+
+// Close cancels calls in flight, ends the session and stops a local
+// server. It may be called more than once.
 func (c *Client) Close() error {
+	c.cancel()
 	var err error
-	if c.session != nil {
-		err = c.session.Close()
+	if s := c.current(); s != nil {
+		err = s.Close()
 	}
 	if c.stop != nil {
 		if serr := c.stop(); err == nil {
@@ -105,19 +144,21 @@ func (c *Client) Close() error {
 	return err
 }
 
-func (c *Client) refresh(ctx context.Context) error {
+func (c *Client) refresh(ctx context.Context, session *sdk.ClientSession) error {
 	var tools []agent.Tool
-	seen := map[string]bool{}
-	for t, err := range c.session.Tools(ctx, nil) {
+	names := map[string]bool{}
+	count := 0
+	for t, err := range session.Tools(ctx, nil) {
 		if err != nil {
-			return errors.Wrap(err, ErrConnect, "cannot list the tools of MCP server "+c.name)
+			return errors.Wrap(err, ErrConnect, "cannot list the tools of MCP server "+c.name+": "+err.Error())
+		}
+		if count++; count > maxTools {
+			break
 		}
 		if len(c.allow) > 0 && !c.allow[t.Name] {
 			continue
 		}
-		tool, ok := c.adapt(t)
-		if ok && !seen[tool.Spec().Name] {
-			seen[tool.Spec().Name] = true
+		if tool, ok := c.adapt(t, names); ok {
 			tools = append(tools, tool)
 		}
 	}
@@ -129,13 +170,25 @@ func (c *Client) refresh(ctx context.Context) error {
 
 var unsafeChars = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
-// toolName joins server and tool into a name every provider accepts.
-func toolName(server, tool string) string {
-	n := server + "__" + unsafeChars.ReplaceAllString(tool, "_")
-	if len(n) > 64 {
-		n = n[:64]
+// toolName joins server and tool into a name every provider accepts:
+// the server part has no "_" (so "a" + "b__c" and "a__b" + "c" differ),
+// and a name already taken gets a numbered suffix instead of being lost.
+func toolName(server, tool string, taken map[string]bool) string {
+	base := strings.ReplaceAll(server, "_", "-") + "__" + unsafeChars.ReplaceAllString(tool, "_")
+	name := clip(base, 64)
+	for i := 2; taken[name]; i++ {
+		suffix := "_" + strconv.Itoa(i)
+		name = clip(base, 64-len(suffix)) + suffix
 	}
-	return n
+	taken[name] = true
+	return name
+}
+
+func clip(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }
 
 func set(names []string) map[string]bool {
