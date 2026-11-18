@@ -62,11 +62,13 @@ func (e *execution) startReady(ctx context.Context, running map[string]bool, res
 		if len(running) >= e.parallel() {
 			return nil
 		}
-		if e.overBudget() {
-			return errors.New(ErrBudget, "the workflow's budget is spent; raise it and resume to go on")
-		}
 		if running[s.Name] || e.status(s.Name) != "" || !e.ready(s) {
 			continue
+		}
+		// Checked only for a step about to start: a run whose last step
+		// reached the budget is complete, not over it.
+		if e.overBudget() {
+			return errors.New(ErrBudget, "the workflow's budget is spent; raise it and resume to go on")
 		}
 		if err := e.mark(ctx, s.Name); err != nil {
 			return err

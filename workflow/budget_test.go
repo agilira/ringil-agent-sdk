@@ -52,3 +52,14 @@ func TestFailedStepIsSaved(t *testing.T) {
 		t.Fatalf("state %+v %v", st, err)
 	}
 }
+
+// Audit 18/11: a run whose last step reached the budget exactly was
+// reported as over it, though complete.
+func TestBudgetReachedByTheLastStep(t *testing.T) {
+	r := runner(t, &echo{}, nil)
+	r.Budget = Budget{Calls: 1}
+	one := Plan{Steps: []Step{{Name: "a", Worker: "w", Task: "A"}}, Output: "a"}
+	if res, err := r.Run(bg, "x", one, "", false); err != nil || res == nil {
+		t.Fatalf("complete run: %v", err)
+	}
+}

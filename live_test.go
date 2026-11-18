@@ -19,6 +19,7 @@ import (
 	"time"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/artifact"
 	"github.com/agilira/ringil-agent-sdk/delegate"
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/memory/local"
@@ -467,5 +468,39 @@ func TestLiveReadHistory(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "7391") {
 		t.Fatalf("answer %q", res.Text)
+	}
+}
+
+// TestLiveArtifacts: a real model publishes an artifact and another
+// agent reads it back.
+func TestLiveArtifacts(t *testing.T) {
+	model := liveModel(t)
+	store, err := artifact.NewLocal(filepath.Join(t.TempDir(), "artifacts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := agent.NewRegistry(artifact.Tools(store, artifact.Access{Scope: "proj", By: "writer", Publish: true})...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := agent.New(agent.Config{Provider: model, Tools: pub, MaxTurns: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := writer.Run(ctx, nil, agent.UserText("Publish an artifact named codes.md whose content is: 'vault code 7391'.")); err != nil {
+		t.Fatal(err)
+	}
+	ro, err := agent.NewRegistry(artifact.Tools(store, artifact.Access{Scope: "proj", By: "reader"})...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := agent.New(agent.Config{Provider: model, Tools: ro, MaxTurns: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := reader.Run(ctx, nil, agent.UserText("Read the artifact codes.md and tell me the vault code."))
+	if err != nil || !strings.Contains(res.Text, "7391") {
+		t.Fatalf("answer %q %v", res.Text, err)
 	}
 }

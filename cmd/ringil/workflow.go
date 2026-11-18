@@ -71,7 +71,7 @@ func (c *cli) workflowTool(ctx *orpheus.Context) (agent.Tool, error) {
 
 // workflowBudget: what one workflow may spend in total, across resumes.
 func (c *cli) workflowBudget(ctx *orpheus.Context) workflow.Budget {
-	return workflow.Budget{Calls: ctx.GetGlobalFlagInt("workflow-calls"), Tokens: ctx.GetGlobalFlagInt("workflow-tokens")}
+	return workflow.Budget{Calls: max(0, ctx.GetGlobalFlagInt("workflow-calls")), Tokens: max(0, ctx.GetGlobalFlagInt("workflow-tokens"))}
 }
 
 func (c *cli) runner() (*workflow.Runner, error) {

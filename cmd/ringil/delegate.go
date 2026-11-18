@@ -57,7 +57,8 @@ func (c *cli) delegateTool(ctx *orpheus.Context, p agent.Provider, parentTools a
 
 // personal are the parent's own: its notebooks, task list and memory. A
 // worker gets its own scratchpad and list instead, and no memory.
-var personal = map[string]bool{notes.DefaultName: true, todo.ToolName: true, "remember": true, "recall": true, "forget": true}
+var personal = map[string]bool{notes.DefaultName: true, todo.ToolName: true, "remember": true, "recall": true, "forget": true,
+	"list_artifacts": true, "read_artifact": true, "publish_artifact": true}
 
 func sharedTools(parent agent.Registry) (agent.Registry, error) {
 	var names []string
@@ -88,7 +89,7 @@ func (c *cli) prepareWorker(context.Context, string) (delegate.Setup, error) {
 		return delegate.Setup{}, err
 	}
 	return delegate.Setup{
-		Tools:   []agent.Tool{nb.Tool(), todo.Tool()},
+		Tools:   append([]agent.Tool{nb.Tool(), todo.Tool()}, c.artifactTools("worker")...),
 		Context: c.runContext(nb),
 		Done:    func() error { return os.RemoveAll(dir) },
 	}, nil
