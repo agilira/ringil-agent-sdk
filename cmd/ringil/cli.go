@@ -469,6 +469,9 @@ func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
 	if cat != nil && len(cat.List()) > 0 {
 		extra = append(extra, skills.Tools(cat, c.skillOptions())...)
 	}
+	if dir, err := c.skillsDir(); err == nil && !c.restricted() {
+		extra = append(extra, skills.CreateTool(dir, nil)) // destructive: asked, showing what it writes
+	}
 	return extra
 }
 
@@ -504,7 +507,7 @@ func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
 // the session.
 func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
 	if allow, decided := c.triggerAllowed(call.Name); decided { // before --no-approvals: a trigger's run may only what it was allowed
-		return allow || !c.mustAsk(ctx, call, spec), nil
+		return (allow && !replacesSkill(call)) || !c.mustAsk(ctx, call, spec), nil
 	}
 	if c.unasked() {
 		return true, nil
@@ -523,9 +526,7 @@ func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 	if !c.mustAsk(ctx, call, spec) || c.allowed[key] {
 		return true, nil
 	}
-	if call.Name == workflow.ToolName {
-		c.showPlan(call)
-	}
+	c.showCall(call)
 	answer, err := c.ask("\n  ? " + who + " wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
 	return c.answered(key, answer), err
 }
@@ -635,6 +636,17 @@ func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 		return strings.Contains(string(call.Input), `"delete"`)
 	}
 	return c.notes != nil && c.notes.NeedsApproval(call)
+}
+
+// showCall shows, before asking, what a call would do in full when a
+// line cannot: a workflow's plan, a skill's instructions.
+func (c *cli) showCall(call agent.ToolCall) {
+	switch call.Name {
+	case workflow.ToolName:
+		c.showPlan(call)
+	case "create_skill":
+		c.showSkill(call)
+	}
 }
 
 // confirm asks a yes/no question; no answer is a no.

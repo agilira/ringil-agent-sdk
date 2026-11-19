@@ -74,3 +74,14 @@ func TestATriggerRunGetsTheAllowOfItsFire(t *testing.T) {
 		t.Fatal("an unknown run allowed something")
 	}
 }
+
+func TestATriggerRunNeverReplacesASkill(t *testing.T) {
+	c := &cli{inTrigger: true, triggerAllow: []string{"create_skill"}}
+	destructive := agent.ToolSpec{Annotations: agent.Annotations{Destructive: true}}
+	if ok, _ := c.approve(context.Background(), agent.ToolCall{Name: "create_skill", Input: []byte(`{"name":"a","replace":true}`)}, destructive); ok {
+		t.Fatal("a trigger's run replaced a skill")
+	}
+	if ok, _ := c.approve(context.Background(), agent.ToolCall{Name: "create_skill", Input: []byte(`{"name":"a"}`)}, destructive); !ok {
+		t.Fatal("an allowed create refused")
+	}
+}

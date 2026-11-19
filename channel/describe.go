@@ -62,6 +62,13 @@ var knownTools = map[string]asking{
 		return question{text: sp.t(mAskProtected, f.path("path"))}
 	}},
 	"bash_": {[]string{"command", "reason", "why", "explanation"}, askCommand},
+	"create_skill": {[]string{"name", "description", "instructions", "replace"}, func(sp speech, f *callFields) question {
+		m := mAskSkill
+		if f.flag("replace") {
+			m = mAskSkillReplace
+		}
+		return question{text: sp.t(m, inline(f.text("name")), quote(f.text("description"))), code: f.text("instructions")}
+	}},
 	"network_domain": {[]string{"domain"}, func(sp speech, f *callFields) question {
 		return question{text: sp.t(mAskDomain, inline(f.text("domain")))}
 	}},

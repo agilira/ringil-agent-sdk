@@ -17,6 +17,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/agilira/go-errors"
 )
@@ -33,6 +34,9 @@ type manifest struct {
 	Version int               `json:"version"`
 	Info    Info              `json:"info"`
 	Files   map[string]string `json:"files"`
+	// Agent marks a skill the agent wrote (create_skill): the only kind
+	// it may replace.
+	Agent bool `json:"agent,omitempty"`
 }
 
 func checksum(data []byte) string {
@@ -64,7 +68,7 @@ func Install(ctx context.Context, from, dir string) (Info, error) {
 		return Info{}, err
 	}
 	defer closeQuietly(root)
-	return info, publish(ctx, src, root, info)
+	return info, publish(ctx, src, root, info, false)
 }
 
 // openCatalog opens the catalog directory, creating it private.
@@ -79,12 +83,55 @@ func openCatalog(dir string) (*os.Root, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, ErrIO, "cannot open the skills directory")
 	}
+	tidy(root)
 	return root, nil
+}
+
+// leftoverAge is how old a staging or replaced directory must be to be
+// a leftover of an interrupted install or replace, not one under way.
+const leftoverAge = 10 * time.Minute
+
+// tidy clears what interrupted installs and replaces left: a staging
+// directory goes; a skill moved aside for a replace that never came back
+// is put back in its place, else it goes.
+func tidy(root *os.Root) {
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		info, err := e.Info()
+		if err != nil || !e.IsDir() || time.Since(info.ModTime()) < leftoverAge {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(name, stagePrefix):
+			_ = root.RemoveAll(name)
+		case strings.HasPrefix(name, replacedPrefix):
+			restore(root, name)
+		}
+	}
+}
+
+// restore puts a skill moved aside back, unless its name is taken again.
+func restore(root *os.Root, aside string) {
+	var m manifest
+	data, err := root.ReadFile(aside + "/" + manifestName)
+	if err == nil {
+		err = json.Unmarshal(data, &m)
+	}
+	if err == nil && validName(m.Info.Name) {
+		if _, taken := root.Lstat(m.Info.Name); taken != nil && root.Rename(aside, m.Info.Name) == nil {
+			return
+		}
+	}
+	_ = root.RemoveAll(aside)
 }
 
 // publish copies into a staging directory and renames it into place, so
 // the catalog only ever shows complete skills.
-func publish(ctx context.Context, src, root *os.Root, info Info) error {
+func publish(ctx context.Context, src, root *os.Root, info Info, byAgent bool) error {
 	if _, err := root.Lstat(info.Name); err == nil {
 		return errors.New(ErrExists, "skill "+info.Name+" is already installed; remove it first")
 	}
@@ -92,7 +139,7 @@ func publish(ctx context.Context, src, root *os.Root, info Info) error {
 	if err := root.Mkdir(stage, 0o700); err != nil {
 		return errors.Wrap(err, ErrIO, "cannot stage the skill")
 	}
-	err := stageSkill(ctx, src, root, stage, info)
+	err := stageSkill(ctx, src, root, stage, info, byAgent)
 	if err == nil {
 		err = root.Rename(stage, info.Name)
 	}
@@ -116,13 +163,13 @@ func installError(err error) *errors.Error {
 	return errors.Wrap(err, ErrIO, "cannot install the skill")
 }
 
-func stageSkill(ctx context.Context, src, root *os.Root, stage string, info Info) error {
+func stageSkill(ctx context.Context, src, root *os.Root, stage string, info Info, byAgent bool) error {
 	dst, err := root.OpenRoot(stage)
 	if err != nil {
 		return err
 	}
 	defer closeQuietly(dst)
-	m := manifest{Version: 1, Info: info, Files: map[string]string{}}
+	m := manifest{Version: 1, Info: info, Files: map[string]string{}, Agent: byAgent}
 	walkErr := fs.WalkDir(src.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
