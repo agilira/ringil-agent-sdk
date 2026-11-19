@@ -27,6 +27,7 @@ func TestDescribe(t *testing.T) {
 		{"write_file", `{"path":"a","content":"x","mode":"0777"}`, "Posso usare write_file?", "path: a\ncontent: x\nmode: 0777"},
 		{"write_file", `{"path":3,"content":"x"}`, "Posso usare write_file?", "path: 3\ncontent: x"},
 		{"publish", `{}`, "Posso usare publish?", ""},
+		{"create_skill", `{"name":"triage-mail","description":"sort the mail","instructions":"1. read"}`, "Posso scrivere la skill triage-mail (\"sort the mail\") con queste istruzioni?", "1. read"},
 	} {
 		q := describe(it, c.tool, []byte(c.in))
 		if q.text != c.text || q.code != c.code {
@@ -192,5 +193,14 @@ func TestBadLanguages(t *testing.T) {
 	}
 	if len(Texts()) != len(texts[English]) {
 		t.Fatal("texts")
+	}
+}
+
+func TestNoAlwaysForASkill(t *testing.T) {
+	if !askEveryTime["create_skill"] || askEveryTime["write_file"] {
+		t.Fatal("ask every time")
+	}
+	if alwaysKey(serve.Approval{Tool: "create_skill", Input: []byte(`{"name":"a"}`)}) != "create_skill" {
+		t.Fatal("key")
 	}
 }

@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
 
+	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
@@ -307,4 +309,38 @@ func (c *cli) cmdSkillRemove(ctx *orpheus.Context) error {
 		}
 	}
 	return nil
+}
+
+// showSkill shows, before asking, the skill create_skill would write: all
+// of it, as the user approves all of it.
+func (c *cli) showSkill(call agent.ToolCall) {
+	var in struct {
+		Name         string `json:"name"`
+		Description  string `json:"description"`
+		Instructions string `json:"instructions"`
+		Replace      bool   `json:"replace"`
+	}
+	if json.Unmarshal(call.Input, &in) != nil {
+		return
+	}
+	verb := "Skill"
+	if in.Replace {
+		verb = "Skill (replacing the one by that name)"
+	}
+	c.note("\n  " + verb + " " + clean(in.Name) + ": " + clean(in.Description))
+	for _, line := range strings.Split(in.Instructions, "\n") {
+		c.note("    | " + clean(line))
+	}
+}
+
+// replacesSkill: a create_skill call that would replace a skill, which a
+// trigger's run may not do, allowed or not: no one sees what goes.
+func replacesSkill(call agent.ToolCall) bool {
+	if call.Name != "create_skill" {
+		return false
+	}
+	var in struct {
+		Replace bool `json:"replace"`
+	}
+	return json.Unmarshal(call.Input, &in) != nil || in.Replace
 }

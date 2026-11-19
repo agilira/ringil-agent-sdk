@@ -69,6 +69,9 @@ func (b *Bridge) question(a *ask, p serve.Approval, group bool) Out {
 		q.text += b.tr(chatID, mInGroup)
 	}
 	buttons := []Button{{ID: a.token + ":y", Label: b.tr(chatID, mYes)}, {ID: a.token + ":a", Label: b.tr(chatID, mAlways)}, {ID: a.token + ":n", Label: b.tr(chatID, mNo)}}
+	if askEveryTime[p.Tool] {
+		buttons = []Button{buttons[0], buttons[2]}
+	}
 	code, lines, chars := preview(q.code)
 	if lines > 0 || chars > 0 {
 		b.mu.Lock()
@@ -83,6 +86,10 @@ func (b *Bridge) question(a *ask, p serve.Approval, group bool) Out {
 	}
 	return Out{Text: q.text, Code: code, Buttons: buttons}
 }
+
+// askEveryTime are the tools asked about every time, without "always":
+// each call is something new to read (a skill's instructions).
+var askEveryTime = map[string]bool{"create_skill": true}
 
 // validChoice: yes, always, no, or show all.
 func validChoice(c string) bool {
@@ -153,7 +160,7 @@ func (b *Bridge) press(ctx context.Context, m Message, r role) {
 		return
 	}
 	b.close(a)
-	if choice == "a" {
+	if choice == "a" && !askEveryTime[a.key] {
 		if len(b.always) >= maxTracked {
 			clear(b.always) // asked again: never allowed by mistake
 		}
