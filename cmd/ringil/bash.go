@@ -52,6 +52,9 @@ func splitList(s string) []string {
 // confirmCommand asks about a command outside the sandbox or a dangerous
 // one: in the terminal, or under serve through the API.
 func (c *cli) confirmCommand(ctx context.Context, req bash.Request) (bool, error) {
+	if allow, decided := c.triggerAllowed("bash"); decided {
+		return allow, nil
+	}
 	if c.unasked() {
 		return true, nil
 	}
@@ -80,6 +83,9 @@ func (c *cli) confirmCommand(ctx context.Context, req bash.Request) (bool, error
 
 // askDomain asks whether bash commands may reach a domain, once per run.
 func (c *cli) askDomain(ctx context.Context, host string) (bool, error) {
+	if _, decided := c.triggerAllowed(""); decided {
+		return false, nil // a trigger's run reaches only --allow-domains
+	}
 	if c.unasked() {
 		return true, nil
 	}

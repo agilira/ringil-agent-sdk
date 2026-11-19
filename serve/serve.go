@@ -193,6 +193,14 @@ func (s *Server) Start(profile, conversation, input string) (Snapshot, error) {
 
 // StartMessage is Start with a user message that may hold images.
 func (s *Server) StartMessage(profile, conversation string, input agent.Message) (Snapshot, error) {
+	return s.StartFrom("", profile, conversation, input)
+}
+
+// StartFrom is StartMessage for a run the host starts itself, labelled
+// with what started it (SourceOf): a trigger, a chat. The profile's New
+// reads the label and may set the run up for it (the tools a trigger was
+// allowed, say). The API never labels a run.
+func (s *Server) StartFrom(source, profile, conversation string, input agent.Message) (Snapshot, error) {
 	p, ok := s.profiles[profile]
 	if !ok {
 		return Snapshot{}, fail(ErrNotFound, "no such profile")
@@ -213,6 +221,7 @@ func (s *Server) StartMessage(profile, conversation string, input agent.Message)
 		return Snapshot{}, err
 	}
 	j := newJob(rand.Text()[:20], p.Name, conversation, s)
+	j.source = source
 	// The run's context exists before Start returns: a Cancel right away
 	// reaches it.
 	ctx, cancel := context.WithCancel(context.WithValue(s.ctx, jobKey{}, j))

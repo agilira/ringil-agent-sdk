@@ -1,9 +1,9 @@
-// schedule_test.go: the scheduler's rules, on a fake clock
+// trigger_test.go: the runner's rules, on a fake clock
 //
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-package schedule
+package trigger
 
 import (
 	"context"
@@ -22,7 +22,7 @@ type fakeClock struct {
 	mu      sync.Mutex
 	now     time.Time
 	waiters []waiter
-	waiting chan struct{} // signalled each time the scheduler waits
+	waiting chan struct{} // signalled each time the runner waits
 }
 
 type waiter struct {
@@ -67,26 +67,28 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.waiters = kept
 }
 
-// settle waits until the scheduler is waiting on the clock again.
+// settle waits until the runner is waiting on the clock again.
 func (c *fakeClock) settle(t *testing.T) {
 	t.Helper()
 	select {
 	case <-c.waiting:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the scheduler did not come back to wait")
+		t.Fatal("the runner did not come back to wait")
 	}
 }
 
 type recorder struct {
 	mu     sync.Mutex
 	runs   []string
+	fired  []Fired
 	block  chan struct{} // runs wait on it when set
 	events []Event
 }
 
-func (r *recorder) run(ctx context.Context, j Job) (Outcome, error) {
+func (r *recorder) run(ctx context.Context, j Trigger, f Fired) (Outcome, error) {
 	r.mu.Lock()
 	r.runs = append(r.runs, j.Name)
+	r.fired = append(r.fired, f)
 	block := r.block
 	r.mu.Unlock()
 	if block != nil {
@@ -110,12 +112,12 @@ func (r *recorder) onEvent(e Event) {
 	r.events = append(r.events, e)
 }
 
-func (r *recorder) kinds(job string, kind EventKind) int {
+func (r *recorder) kinds(trigger string, kind EventKind) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n := 0
 	for _, e := range r.events {
-		if e.Job == job && e.Kind == kind {
+		if e.Trigger == trigger && e.Kind == kind {
 			n++
 		}
 	}
@@ -124,15 +126,15 @@ func (r *recorder) kinds(job string, kind EventKind) int {
 
 var start = time.Date(2026, 11, 18, 10, 3, 0, 0, time.UTC)
 
-// harness runs a scheduler over a fresh store until the test ends.
-func harness(t *testing.T, jobs ...Job) (*Store, *fakeClock, *recorder) {
+// harness runs a runner over a fresh store until the test ends.
+func harness(t *testing.T, triggers ...Trigger) (*Store, *fakeClock, *recorder) {
 	t.Helper()
 	store, err := OpenStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	for _, j := range jobs {
+	for _, j := range triggers {
 		if err := store.Put(j); err != nil {
 			t.Fatal(err)
 		}
@@ -140,9 +142,14 @@ func harness(t *testing.T, jobs ...Job) (*Store, *fakeClock, *recorder) {
 	return store, newClock(start), &recorder{}
 }
 
-func launch(t *testing.T, store *Store, clock *fakeClock, rec *recorder) *Scheduler {
+func launch(t *testing.T, store *Store, clock *fakeClock, rec *recorder) *Runner {
 	t.Helper()
-	s, err := New(Config{Store: store, Run: rec.run, OnEvent: rec.onEvent, Clock: clock, Poll: time.Hour})
+	return launchWith(t, store, clock, rec, nil)
+}
+
+func launchWith(t *testing.T, store *Store, clock *fakeClock, rec *recorder, call Call) *Runner {
+	t.Helper()
+	s, err := New(Config{Store: store, Run: rec.run, Call: call, OnEvent: rec.onEvent, Clock: clock, Poll: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,10 +178,10 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	t.Fatal(what)
 }
 
-func job(name, when string) Job { return Job{Name: name, When: when, Input: "do it"} }
+func trigger(name, when string) Trigger { return Trigger{Name: name, When: when, Prompt: "do it"} }
 
 func TestRunsOnTimeAndOnlyOnce(t *testing.T) {
-	store, clock, rec := harness(t, job("tick", "@every 10m"))
+	store, clock, rec := harness(t, trigger("tick", "@every 10m"))
 	s := launch(t, store, clock, rec)
 	clock.advance(6 * time.Minute) // 10:09: not yet, nothing wakes
 	time.Sleep(20 * time.Millisecond)
@@ -183,7 +190,7 @@ func TestRunsOnTimeAndOnlyOnce(t *testing.T) {
 	}
 	clock.advance(time.Minute) // 10:10
 	clock.settle(t)
-	eventually(t, "the run", func() bool { return rec.kinds("tick", JobFinished) == 1 })
+	eventually(t, "the run", func() bool { return rec.kinds("tick", Finished) == 1 })
 	st := s.Status()["tick"]
 	if st.Runs != 1 || st.LastRun != "r-tick" || st.LastText != "done tick" || !st.LastFire.Equal(start.Add(7*time.Minute)) {
 		t.Fatalf("status %+v", st)
@@ -195,11 +202,11 @@ func TestRunsOnTimeAndOnlyOnce(t *testing.T) {
 }
 
 func TestNoBurstAfterSleep(t *testing.T) {
-	store, clock, rec := harness(t, job("tick", "@every 10m"))
+	store, clock, rec := harness(t, trigger("tick", "@every 10m"))
 	launch(t, store, clock, rec)
 	clock.advance(3 * time.Hour) // the machine slept through 18 runs
 	clock.settle(t)
-	eventually(t, "one run", func() bool { return rec.kinds("tick", JobFinished) == 1 })
+	eventually(t, "one run", func() bool { return rec.kinds("tick", Finished) == 1 })
 	time.Sleep(50 * time.Millisecond)
 	if rec.count() != 1 {
 		t.Fatalf("%d runs after a long sleep", rec.count())
@@ -207,7 +214,7 @@ func TestNoBurstAfterSleep(t *testing.T) {
 }
 
 func TestOverlappingRunIsSkipped(t *testing.T) {
-	store, clock, rec := harness(t, job("slow", "@every 10m"))
+	store, clock, rec := harness(t, trigger("slow", "@every 10m"))
 	rec.block = make(chan struct{})
 	s := launch(t, store, clock, rec)
 	clock.advance(7 * time.Minute)
@@ -215,41 +222,41 @@ func TestOverlappingRunIsSkipped(t *testing.T) {
 	eventually(t, "first run", func() bool { return rec.count() == 1 })
 	clock.advance(10 * time.Minute) // due again, still running
 	clock.settle(t)
-	eventually(t, "the skip", func() bool { return rec.kinds("slow", JobSkipped) == 1 })
+	eventually(t, "the skip", func() bool { return rec.kinds("slow", Skipped) == 1 })
 	close(rec.block)
-	eventually(t, "the end", func() bool { return rec.kinds("slow", JobFinished) == 1 })
+	eventually(t, "the end", func() bool { return rec.kinds("slow", Finished) == 1 })
 	if st := s.Status()["slow"]; st.Skipped != 1 || st.Runs != 1 {
 		t.Fatalf("status %+v", st)
 	}
 }
 
 func TestCatchUpOnlyWhenAsked(t *testing.T) {
-	store, clock, rec := harness(t, Job{Name: "eager", When: "@hourly", Input: "x", CatchUp: true}, job("lazy", "@hourly"))
-	// Both last ran two hours before the scheduler started.
+	store, clock, rec := harness(t, Trigger{Name: "eager", When: "@hourly", Prompt: "x", CatchUp: true}, trigger("lazy", "@hourly"))
+	// Both last ran two hours before the runner started.
 	if err := store.saveStatus(map[string]Status{"eager": {LastFire: start.Add(-2 * time.Hour)}, "lazy": {LastFire: start.Add(-2 * time.Hour)}}); err != nil {
 		t.Fatal(err)
 	}
 	launch(t, store, clock, rec)
-	eventually(t, "the catch-up", func() bool { return rec.kinds("eager", JobFinished) == 1 })
+	eventually(t, "the catch-up", func() bool { return rec.kinds("eager", Finished) == 1 })
 	time.Sleep(50 * time.Millisecond)
-	if rec.kinds("lazy", JobStarted) != 0 {
-		t.Fatal("a job without catch-up ran a missed run")
+	if rec.kinds("lazy", Started) != 0 {
+		t.Fatal("a trigger without catch-up ran a missed run")
 	}
 }
 
 func TestPausedReloadAndInvalid(t *testing.T) {
-	store, clock, rec := harness(t, Job{Name: "off", When: "@every 10m", Input: "x", Paused: true})
+	store, clock, rec := harness(t, Trigger{Name: "off", When: "@every 10m", Prompt: "x", Paused: true})
 	s := launch(t, store, clock, rec)
-	if err := store.Put(job("new", "@every 10m")); err != nil {
+	if err := store.Put(trigger("new", "@every 10m")); err != nil {
 		t.Fatal(err)
 	}
 	s.Reload()
 	clock.settle(t)
 	clock.advance(7 * time.Minute)
 	clock.settle(t)
-	eventually(t, "the new job", func() bool { return rec.kinds("new", JobFinished) == 1 })
-	if rec.kinds("off", JobStarted) != 0 {
-		t.Fatal("a paused job ran")
+	eventually(t, "the new trigger", func() bool { return rec.kinds("new", Finished) == 1 })
+	if rec.kinds("off", Started) != 0 {
+		t.Fatal("a paused trigger ran")
 	}
 	if !s.NextRun("new").Equal(start.Add(17 * time.Minute)) {
 		t.Fatalf("next %v", s.NextRun("new"))
@@ -266,18 +273,18 @@ func TestOneSchedulerPerStore(t *testing.T) {
 	defer func() { _ = other.Close() }()
 	s2, _ := New(Config{Store: other, Run: rec.run, Clock: clock})
 	if err := s2.Run(context.Background()); !errors.HasCode(err, ErrBusy) {
-		t.Fatalf("second scheduler: %v", err)
+		t.Fatalf("second runner: %v", err)
 	}
 }
 
 func TestStoreEdits(t *testing.T) {
-	store, _, _ := harness(t, job("a", "@daily"))
-	for _, bad := range []Job{
-		{Name: "bad name", When: "@daily", Input: "x"},
+	store, _, _ := harness(t, trigger("a", "@daily"))
+	for _, bad := range []Trigger{
+		{Name: "bad name", When: "@daily", Prompt: "x"},
 		{Name: "b", When: "@daily"},
-		{Name: "b", When: "nope", Input: "x"},
-		{Name: "b", When: "@daily", Input: "x", TimeZone: "Mars/Olympus"},
-		{Name: "b", When: "@daily", Input: "x", Conversation: "../x"},
+		{Name: "b", When: "nope", Prompt: "x"},
+		{Name: "b", When: "@daily", Prompt: "x", TimeZone: "Mars/Olympus"},
+		{Name: strings.Repeat("n", 49), When: "@daily", Prompt: "x"},
 	} {
 		if err := store.Put(bad); !errors.HasCode(err, ErrConfig) {
 			t.Errorf("%+v accepted: %v", bad, err)
@@ -286,9 +293,9 @@ func TestStoreEdits(t *testing.T) {
 	if err := store.Pause("a", true); err != nil {
 		t.Fatal(err)
 	}
-	jobs, _ := store.Jobs()
-	if len(jobs) != 1 || !jobs[0].Paused {
-		t.Fatalf("%+v", jobs)
+	triggers, _ := store.Triggers()
+	if len(triggers) != 1 || !triggers[0].Paused {
+		t.Fatalf("%+v", triggers)
 	}
 	if err := store.Remove("a"); err != nil {
 		t.Fatal(err)

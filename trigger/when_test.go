@@ -3,7 +3,7 @@
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-package schedule
+package trigger
 
 import (
 	"testing"
@@ -71,7 +71,7 @@ func TestCronAcrossClockChanges(t *testing.T) {
 	if got.Format("2006-01-02 15:04") != "2026-03-30 02:30" {
 		t.Errorf("spring forward: %v", got)
 	}
-	// 25 October 2026: 02:30 happens twice; the job runs once that day.
+	// 25 October 2026: 02:30 happens twice; the trigger runs once that day.
 	first := w.Next(time.Date(2026, 10, 25, 0, 0, 0, 0, rome))
 	second := w.Next(first)
 	if first.Day() != 25 || second.Day() != 26 {

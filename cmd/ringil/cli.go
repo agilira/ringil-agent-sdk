@@ -105,6 +105,10 @@ type cli struct {
 	acceptEdits bool
 	// noApprovals allows every call without asking (--no-approvals).
 	noApprovals bool
+	// inTrigger: a run a trigger started; triggerAllow are the tools it
+	// was allowed, the only calls that would ask it may make.
+	inTrigger    bool
+	triggerAllow []string
 	// role is the profile in use (--profile, or a profile served); nil
 	// keeps the flags and environment.
 	role *profile
@@ -156,7 +160,7 @@ func (c *cli) app() *orpheus.App {
 		AddFlag("listen", "", "127.0.0.1:8765", "loopback address and port to listen on").
 		AddIntFlag("max-runs", "", 4, "runs going at once").
 		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token").
-		AddBoolFlag("no-schedule", "", false, "do not run the scheduled jobs (ringil schedule)").
+		AddBoolFlag("no-triggers", "", false, "do not run the triggers (ringil trigger)").
 		AddFlag("telegram-owners", "", "", "Telegram user IDs with every right (the bot's token: RINGIL_TELEGRAM_TOKEN), comma-separated").
 		AddFlag("telegram-members", "", "", "Telegram user IDs of members, comma-separated: they talk with --member-profile and never approve").
 		AddFlag("telegram-company-group", "", "", "a Telegram group whose people are members (the bot must be in it)").
@@ -188,17 +192,27 @@ func (c *cli) app() *orpheus.App {
 		AddSubcommand(orpheus.NewCommand("backup", "Save the agent's state to a new archive").SetHandler(c.cmdStateBackup).SetUsage("state backup <file.tar.gz>")).
 		AddSubcommand(orpheus.NewCommand("verify", "Check an archive without extracting it").SetHandler(c.cmdStateVerify).SetUsage("state verify <file.tar.gz>")).
 		AddSubcommand(orpheus.NewCommand("restore", "Restore an archive into a new directory, in quarantine").SetHandler(c.cmdStateRestore).SetUsage("state restore <file.tar.gz> <dir>")))
-	app.AddCommand(orpheus.NewCommand("schedule", "List the jobs `ringil serve` runs on a timetable").SetHandler(c.cmdSchedule).
-		AddSubcommand(orpheus.NewCommand("add", "Add or replace a job: cron (\"0 8 * * 1-5\"), @daily, @hourly or @every 10m").SetHandler(c.cmdScheduleAdd).
-			SetUsage("schedule add <name> --when <spec> <prompt...>").
-			AddFlag("when", "", "", "the timetable: a cron expression, @daily, @hourly, @weekly or @every DURATION").
-			AddFlag("profile", "", "", "the role that runs it (default: the flags and environment of serve)").
-			AddFlag("conversation", "", "", "carry on this conversation across runs (default: a fresh one each time)").
+	app.AddCommand(orpheus.NewCommand("trigger", "List the triggers `ringil serve` runs: on a time, a change, a message, a webhook").SetHandler(c.cmdTrigger).
+		AddSubcommand(orpheus.NewCommand("add", "Add or replace a trigger").SetHandler(c.cmdTriggerAdd).
+			SetUsage("trigger add <name> [--kind time|tool|file|message|webhook] [--skill <skill>] <prompt...>").
+			AddFlag("kind", "", "", "what sets it off: time, tool (its answer changes), file (files change), message (in a chat), webhook; default from --tool, --path, --chat, else time").
+			AddFlag("when", "", "", "time: the timetable (cron \"0 8 * * 1-5\", @daily, @hourly, @weekly, @every 10m); tool and file: how often to look").
 			AddFlag("time-zone", "", "", "IANA time zone for the timetable, e.g. Europe/Rome (default: local)").
-			AddBoolFlag("catch-up", "", false, "run once at start-up if a run was missed while serve was down")).
-		AddSubcommand(orpheus.NewCommand("rm", "Delete jobs").SetHandler(c.cmdScheduleRemove).SetUsage("schedule rm <name...>")).
-		AddSubcommand(orpheus.NewCommand("pause", "Stop jobs running, keeping them").SetHandler(c.cmdSchedulePause).SetUsage("schedule pause <name...>")).
-		AddSubcommand(orpheus.NewCommand("resume", "Let paused jobs run again").SetHandler(c.cmdScheduleResume).SetUsage("schedule resume <name...>")))
+			AddBoolFlag("catch-up", "", false, "time: run once at start-up if a run was missed while serve was down").
+			AddFlag("tool", "", "", "tool: the tool to ask (one that changes nothing)").
+			AddFlag("args", "", "", "tool: its arguments, as JSON").
+			AddFlag("path", "", "", "file: the file or directory to look at").
+			AddFlag("chat", "", "", "message: the chat to listen to").
+			AddFlag("match", "", "", "message: words the message must have (default: any message)").
+			AddFlag("skill", "", "", "the skill its runs follow").
+			AddFlag("allow", "", "", "tools its runs may use without asking, comma-separated; any other that would ask is refused").
+			AddFlag("deliver", "", "", "where to send what its runs answer (a chat)").
+			AddFlag("profile", "", "", "the role that runs it (default: the flags and environment of serve)").
+			AddFlag("timeout", "", "", "stop a run that takes longer (default 10m, at most 2h)").
+			AddBoolFlag("continue", "", false, "carry on one conversation across its runs (default: a fresh one each time)")).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete triggers").SetHandler(c.cmdTriggerRemove).SetUsage("trigger rm <name...>")).
+		AddSubcommand(orpheus.NewCommand("pause", "Stop triggers, keeping them").SetHandler(c.cmdTriggerPause).SetUsage("trigger pause <name...>")).
+		AddSubcommand(orpheus.NewCommand("resume", "Let paused triggers run again").SetHandler(c.cmdTriggerResume).SetUsage("trigger resume <name...>")))
 	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.cmdRules))
 	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.cmdSkills).
 		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.cmdSkillInstall).SetUsage("skill install <dir>")).
@@ -489,6 +503,9 @@ func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
 // without interrupting the user. "a" allows that tool for the rest of
 // the session.
 func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+	if allow, decided := c.triggerAllowed(call.Name); decided { // before --no-approvals: a trigger's run may only what it was allowed
+		return allow || !c.mustAsk(ctx, call, spec), nil
+	}
 	if c.unasked() {
 		return true, nil
 	}
@@ -555,6 +572,9 @@ var writesFiles = map[string]bool{"write_file": true, "edit_file": true}
 // agents' rules, editor and CI settings, .git), even with --accept-edits;
 // under serve, the API's caller decides.
 func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
+	if allow, decided := c.triggerAllowed("write_protected_file"); decided {
+		return allow, nil
+	}
 	if c.unasked() {
 		return true, nil
 	}
