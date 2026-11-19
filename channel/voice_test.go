@@ -50,7 +50,7 @@ func newVoiceRig(t *testing.T, cfg Config, steps ...fake.Step) *voiceRig {
 	t.Helper()
 	r := newRig(t, true, steps...)
 	v := &voiceRig{rig: r, app: &voiceApp{chatApp: newApp(), voices: make(chan Audio, 4)}, events: make(chan Event, 16)}
-	cfg.Channel, cfg.Server, cfg.Allow = v.app, r.srv, []string{me}
+	cfg.Channel, cfg.Server, cfg.Owners = v.app, r.srv, []string{me}
 	cfg.Transcriber = &ear{}
 	cfg.OnEvent = func(e Event) { v.events <- e }
 	b, err := NewBridge(cfg)

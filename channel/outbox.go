@@ -34,6 +34,14 @@ func (b *Bridge) say(ctx context.Context, chatID, text string) {
 // post queues a reply for a chat and returns at once.
 func (b *Bridge) post(ctx context.Context, chatID string, out Out, failed func()) {
 	b.mu.Lock()
+	b.queue(ctx, chatID, outgoing{out, failed})
+	b.mu.Unlock()
+}
+
+// queue adds a reply to a chat's outbox; b.mu held. A reply dropped for
+// room is reported from its own goroutine: report must not run under
+// b.mu.
+func (b *Bridge) queue(ctx context.Context, chatID string, o outgoing) {
 	box := b.boxes[chatID]
 	if box == nil {
 		box = &outbox{}
@@ -45,17 +53,17 @@ func (b *Bridge) post(ctx context.Context, chatID string, out Out, failed func()
 		dropped = &d
 		box.queue = box.queue[1:]
 	}
-	box.queue = append(box.queue, outgoing{out, failed})
-	start := !box.sending
-	box.sending = true
-	if start {
-		b.wg.Add(1)
-	}
-	b.mu.Unlock()
+	box.queue = append(box.queue, o)
 	if dropped != nil {
-		b.failed(chatID, *dropped, errors.New(ErrQueue, "too many replies waiting for this chat"))
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			b.failed(chatID, *dropped, errors.New(ErrQueue, "too many replies waiting for this chat"))
+		}()
 	}
-	if start {
+	if !box.sending {
+		box.sending = true
+		b.wg.Add(1)
 		go b.drain(ctx, chatID, box)
 	}
 }

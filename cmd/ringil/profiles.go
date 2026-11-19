@@ -17,6 +17,7 @@ import (
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
 
+	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
@@ -40,6 +41,14 @@ type profile struct {
 	// Images says the role's model reads images; for a role with its own
 	// model only (else RINGIL_IMAGES decides).
 	Images bool `json:"images,omitempty"`
+	// Tools, when present, are the only tools the role has (by name; an
+	// empty list, none): what a chat's members or the public may use.
+	// Absent, every tool.
+	Tools *[]string `json:"tools,omitempty"`
+	// Memory is what the role remembers: "" the user's own memory,
+	// "chat" a memory for each chat (its conversations share it, nobody
+	// else sees it), "off" none.
+	Memory string `json:"memory,omitempty"`
 }
 
 type profilesFile struct {
@@ -95,8 +104,65 @@ func (p profile) check(name string) error {
 		return errors.New(ErrUsage, "profile "+name+": key_env is not a valid variable name")
 	case p.Base == "" && p.KeyEnv+p.EmbedModel != "":
 		return errors.New(ErrUsage, "profile "+name+": key_env and embed_model need the role's own base")
+	}
+	return p.checkLimits(name)
+}
+
+func (p profile) checkLimits(name string) error {
+	switch {
 	case p.MaxTurns < 0 || len(p.System) > 64<<10:
 		return errors.New(ErrUsage, "profile "+name+": max_turns cannot be negative, the system prompt is at most 64 KiB")
+	case p.Memory != "" && p.Memory != "chat" && p.Memory != "off":
+		return errors.New(ErrUsage, "profile "+name+": memory is \"chat\" or \"off\", or left out for the user's own")
+	}
+	return nil
+}
+
+// restricted: the role lists its tools, as a chat's members or the
+// public need. It has no workers, skills, notebooks or project rules of
+// the user, and none of the user's artifacts.
+func (c *cli) restricted() bool {
+	return c.role != nil && c.role.Tools != nil
+}
+
+// ownersOnly are tools a restricted role may not list: they reach what is
+// the user's.
+var ownersOnly = map[string]bool{"list_artifacts": true, "read_artifact": true, "publish_artifact": true}
+
+// onlyTools keeps the role's tools, when it lists them; a name that is
+// no tool is an error, not a silent gap.
+func (c *cli) onlyTools(tools agent.Registry) (agent.Registry, error) {
+	if !c.restricted() {
+		return tools, nil
+	}
+	if tools == nil {
+		tools, _ = agent.NewRegistry()
+	}
+	for _, name := range *c.role.Tools {
+		switch {
+		case ownersOnly[name]:
+			return nil, errors.New(ErrUsage, "a profile that lists its tools cannot have "+name+": it reaches the user's own artifacts")
+		case !tools.Has(name):
+			return nil, errors.New(ErrUsage, "the profile lists a tool it does not have: "+name)
+		}
+	}
+	return tools.Select(*c.role.Tools...)
+}
+
+// checkChatProfile accepts a profile for a chat's members or the public:
+// one of the profiles file, listing its tools, with memory per chat or
+// none: never the user's own agent, tools or memory.
+func checkChatProfile(roles map[string]profile, name string) error {
+	p, ok := roles[name]
+	switch {
+	case name == "":
+		return nil
+	case !ok:
+		return errors.New(ErrUsage, "no profile "+name+" in the profiles file (and not default: it is the owner's)")
+	case p.Tools == nil:
+		return errors.New(ErrUsage, "profile "+name+" serves chats: list its tools (\"tools\": [] for none)")
+	case p.Memory != "chat" && p.Memory != "off":
+		return errors.New(ErrUsage, "profile "+name+" serves chats: its memory must be \"chat\" or \"off\"")
 	}
 	return nil
 }

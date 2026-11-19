@@ -37,7 +37,7 @@ type call struct {
 func newBotAPI(t *testing.T) (*botAPI, *httptest.Server) {
 	t.Helper()
 	b := &botAPI{replies: map[string][]string{
-		"getMe":               {`{"ok":true,"result":{"id":1}}`},
+		"getMe":               {`{"ok":true,"result":{"id":1,"username":"TestBot"}}`},
 		"sendMessage":         {`{"ok":true,"result":{}}`},
 		"answerCallbackQuery": {`{"ok":true,"result":true}`},
 		"getUpdates":          {`{"ok":true,"result":[]}`},

@@ -90,7 +90,7 @@ func (c *cli) prepareWorker(context.Context, string) (delegate.Setup, error) {
 	}
 	return delegate.Setup{
 		Tools:   append([]agent.Tool{nb.Tool(), todo.Tool()}, c.artifactTools(true)...),
-		Context: c.runContext(nb),
+		Context: c.runContext(nb, true), // workers exist only for unrestricted roles
 		Done:    func() error { return os.RemoveAll(dir) },
 	}, nil
 }

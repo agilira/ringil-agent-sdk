@@ -23,9 +23,10 @@ import (
 )
 
 // startChannels connects Telegram when RINGIL_TELEGRAM_TOKEN is set (in
-// the environment or the --env-file): its chats talk with the profile of
-// --profile, else default. Only the user IDs of --telegram-allow are
-// heard; a message from anyone else is noted with its ID.
+// the environment or the --env-file). The owners (--telegram-owners) talk
+// with --profile, else default, and approve; the members (listed, or in
+// --telegram-company-group) with --member-profile; with --public-profile,
+// anyone else with it. A message from anyone else is noted with its ID.
 func (c *cli) startChannels(ctx *orpheus.Context, run context.Context, srv *serve.Server) (func(), error) {
 	res, err := c.resolver(ctx)
 	if err != nil {
@@ -35,31 +36,58 @@ func (c *cli) startChannels(ctx *orpheus.Context, run context.Context, srv *serv
 	if err != nil || !found {
 		return func() {}, err
 	}
-	tg, err := telegram.New(run, telegram.Config{Token: token})
-	if err != nil {
-		return nil, errors.Wrap(err, ErrUsage, "telegram: "+err.Error())
-	}
-	cfg, err := c.bridgeConfig(ctx, res)
+	cfg, err := c.telegramConfig(ctx, run, res, token, srv)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Channel, cfg.Server = tg, srv
 	b, err := channel.NewBridge(cfg)
 	if err != nil {
 		return nil, err
 	}
-	run, cancel := context.WithCancel(run)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = b.Run(run)
-	}()
-	if len(cfg.Allow) == 0 {
-		c.note("telegram connected; nobody is allowed yet: write to the bot, then restart with --telegram-allow <your ID>")
+	stop := background(run, b.Run)
+	if len(cfg.Owners) == 0 {
+		c.note("telegram connected; no owner yet: write to the bot, then restart with --telegram-owners <your ID>")
 	} else {
 		c.note("telegram connected")
 	}
-	return func() { cancel(); <-done }, nil
+	return stop, nil
+}
+
+// telegramConfig connects the bot and sets up its bridge.
+func (c *cli) telegramConfig(ctx *orpheus.Context, run context.Context, res secrets.Resolver, token string, srv *serve.Server) (channel.Config, error) {
+	tg, err := telegram.New(run, telegram.Config{Token: token})
+	if err != nil {
+		return channel.Config{}, errors.Wrap(err, ErrUsage, "telegram: "+err.Error())
+	}
+	cfg, err := c.bridgeConfig(ctx, res)
+	if err != nil {
+		return channel.Config{}, err
+	}
+	cfg.Channel, cfg.Server = tg, srv
+	if group := ctx.GetFlagString("telegram-company-group"); group != "" {
+		cfg.IsMember = tg.MemberOf(group)
+	}
+	roles, err := c.loadProfiles(ctx)
+	if err != nil {
+		return channel.Config{}, err
+	}
+	for _, name := range []string{cfg.MemberProfile, cfg.PublicProfile} {
+		if err := checkChatProfile(roles, name); err != nil {
+			return channel.Config{}, err
+		}
+	}
+	return cfg, nil
+}
+
+// background runs work until the function returned stops it and waits.
+func background(ctx context.Context, work func(context.Context) error) func() {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = work(ctx)
+	}()
+	return func() { cancel(); <-done }
 }
 
 // bridgeConfig is what a chat app's bridge does, from the flags and
@@ -84,7 +112,9 @@ func (c *cli) bridgeConfig(ctx *orpheus.Context, res secrets.Resolver) (channel.
 	if c.inboxRoot, err = c.inboxDir(); err != nil {
 		return channel.Config{}, err
 	}
-	return channel.Config{Profile: a2aProfile(ctx), Allow: splitList(ctx.GetFlagString("telegram-allow")),
+	return channel.Config{Profile: a2aProfile(ctx), Owners: splitList(ctx.GetFlagString("telegram-owners")),
+		Members: splitList(ctx.GetFlagString("telegram-members")), MemberProfile: ctx.GetFlagString("member-profile"),
+		PublicProfile: ctx.GetFlagString("public-profile"), MaxPerHour: ctx.GetFlagInt("max-per-hour"),
 		Transcriber: ear, Synthesizer: mouth, VoiceReplies: replies == "voice", Inbox: c.inboxRoot,
 		Sessions: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-sessions.json"), IdleReset: idle, OnEvent: c.channelEvent}, nil
 }
@@ -104,7 +134,11 @@ func newAfter(s string) (time.Duration, error) {
 func (c *cli) channelEvent(e channel.Event) {
 	switch e.Kind {
 	case channel.Refused:
-		c.note("telegram: message from user " + clean(e.From) + " not allowed (to allow it: --telegram-allow " + clean(e.From) + ")")
+		c.note("telegram: message from user " + clean(e.From) + " not allowed (--telegram-owners or --telegram-members " + clean(e.From) + " to let them in)")
+	case channel.Limited:
+		c.note("telegram: user " + clean(e.From) + " went past --max-per-hour")
+	case channel.MemberCheckFailed:
+		c.note("telegram: cannot check whether user " + clean(e.From) + " is in the company group: " + clean(oneLine(e.Err.Error(), 300)))
 	case channel.ReceiveFailed:
 		c.note("telegram: cannot receive, retrying: " + clean(oneLine(e.Err.Error(), 300)))
 	case channel.FileFailed:

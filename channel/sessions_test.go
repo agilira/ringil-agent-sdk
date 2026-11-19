@@ -9,6 +9,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ import (
 // sessionRig is a bridge with a sessions file and a clock of its own.
 func sessionRig(t *testing.T, r *rig, file string, idle time.Duration) (*Bridge, *time.Time) {
 	t.Helper()
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Allow: []string{me}, Sessions: file, IdleReset: idle})
+	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, Sessions: file, IdleReset: idle})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +62,7 @@ func TestNewStartsAFreshConversation(t *testing.T) {
 	if got := again.current(room); got != "test-7_2" {
 		t.Fatalf("after a restart: %q", got)
 	}
-	if info, err := os.Stat(file); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(file); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("sessions file %v %v", info, err)
 	}
 }

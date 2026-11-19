@@ -91,6 +91,8 @@ type cli struct {
 	// in the chats are kept, a directory per conversation; inbox, in a
 	// run, is its own conversation's, granted to the file tools.
 	inboxRoot, inbox string
+	// runConversation, in a run of serve, is the one it continues.
+	runConversation string
 	// remote are the MCP and remote agents' tools, connected once when
 	// shared (under serve) for every run.
 	remote []agent.Tool
@@ -151,7 +153,12 @@ func (c *cli) app() *orpheus.App {
 		AddIntFlag("max-runs", "", 4, "runs going at once").
 		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token").
 		AddBoolFlag("no-schedule", "", false, "do not run the scheduled jobs (ringil schedule)").
-		AddFlag("telegram-allow", "", "", "Telegram user IDs whose messages are answered, comma-separated (the bot's token: RINGIL_TELEGRAM_TOKEN)").
+		AddFlag("telegram-owners", "", "", "Telegram user IDs with every right (the bot's token: RINGIL_TELEGRAM_TOKEN), comma-separated").
+		AddFlag("telegram-members", "", "", "Telegram user IDs of members, comma-separated: they talk with --member-profile and never approve").
+		AddFlag("telegram-company-group", "", "", "a Telegram group whose people are members (the bot must be in it)").
+		AddFlag("member-profile", "", "", "the profile members talk with (give it only the tools they may use)").
+		AddFlag("public-profile", "", "", "the profile anyone else talks with: a public bot").
+		AddIntFlag("max-per-hour", "", 30, "messages a member or the public has answered per hour; negative, no bound").
 		AddFlag("new-after", "", "24h", "a chat silent this long starts a new conversation (24h, 90m...), or never; /new starts one at any time").
 		AddFlag("replies", "", "voice", "how chats' voice messages are answered: voice (needs RINGIL_SPEECH_MODEL) or text; each chat can change it with /voice and /text")))
 	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
@@ -215,11 +222,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	cat, err := c.skillCatalog(ctx)
-	if err != nil {
-		return nil, err
-	}
-	nb, err := c.notebooks(ctx)
+	cat, nb, err := c.ownerState(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +232,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		return nil, err
 	}
 	model := retry.Wrap(p, retry.Config{})
-	if tools, err = c.withDelegate(ctx, model, tools); err != nil {
+	if tools, err = c.finishTools(ctx, model, tools); err != nil {
 		return nil, err
 	}
 	system := c.system(ctx)
@@ -242,7 +245,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		Memory:        mem,
 		Approve:       c.approve,
 		System:        system,
-		Context:       c.runContext(nb),
+		Context:       c.runContext(nb, !c.restricted()),
 		MaxTurns:      c.maxTurns(ctx),
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
 		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
@@ -333,6 +336,33 @@ func (c *cli) remoteTools(ctx *orpheus.Context) ([]agent.Tool, error) {
 	return append(mcpTools, agents...), err
 }
 
+// finishTools adds delegating over the tools, then keeps the role's. A
+// restricted role has no workers: they would have every tool.
+func (c *cli) finishTools(ctx *orpheus.Context, model agent.Provider, tools agent.Registry) (agent.Registry, error) {
+	if c.restricted() {
+		return c.onlyTools(tools)
+	}
+	tools, err := c.withDelegate(ctx, model, tools)
+	if err != nil {
+		return nil, err
+	}
+	return c.onlyTools(tools)
+}
+
+// ownerState is the user's skills and notebooks; none for a restricted
+// role, whose runs must not read or write what is the user's.
+func (c *cli) ownerState(ctx *orpheus.Context) (*skills.Catalog, *notes.Notes, error) {
+	if c.restricted() {
+		return nil, nil, nil
+	}
+	cat, err := c.skillCatalog(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	nb, err := c.notebooks(ctx)
+	return cat, nb, err
+}
+
 // withDelegate adds the delegate tool over the tools the agent has.
 func (c *cli) withDelegate(ctx *orpheus.Context, model agent.Provider, tools agent.Registry) (agent.Registry, error) {
 	if tools == nil {
@@ -352,8 +382,9 @@ func (c *cli) withDelegate(ctx *orpheus.Context, model agent.Provider, tools age
 
 // runContext adds to every run the project's rules (AGENTS.md and the
 // other agents' files) and the notebooks' indexes.
-func (c *cli) runContext(nb *notes.Notes) func(context.Context) (string, error) {
+func (c *cli) runContext(nb *notes.Notes, withRules bool) func(context.Context) (string, error) {
 	cfg, ok := c.rulesConfig()
+	ok = ok && withRules
 	return func(ctx context.Context) (string, error) {
 		var parts []string
 		if ok {

@@ -14,12 +14,12 @@ import (
 
 func TestSeveralOpenWantTheButtons(t *testing.T) {
 	r := newRig(t, true)
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Allow: []string{me}})
+	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	b.chats[room] = &chat{run: "r1"}
+	b.chats[room] = &chat{run: "r1", role: owner}
 	b.ask(ctx, room, "r1", serve.Approval{ID: "a1", Tool: "read"})
 	b.ask(ctx, room, "r1", serve.Approval{ID: "a2", Tool: "rm", Worker: "cleaner 1"})
 	r.app.next(t)
