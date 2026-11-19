@@ -145,7 +145,8 @@ func a2aProfile(ctx *orpheus.Context) string {
 func (c *cli) runInstance(ctx *orpheus.Context, role *profile) func(context.Context) (serve.Instance, error) {
 	return func(run context.Context) (serve.Instance, error) {
 		r := c.forRun()
-		r.inbox = c.inboxOf(serve.ConversationOf(run))
+		r.runConversation = serve.ConversationOf(run)
+		r.inbox = c.inboxOf(r.runConversation)
 		r.role = role
 		a, err := r.agent(ctx)
 		if err != nil {

@@ -12,6 +12,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -45,7 +46,7 @@ func fileRig(t *testing.T, steps ...fake.Step) (*rig, *Bridge, *ear, string) {
 	t.Helper()
 	r := newRig(t, true, steps...)
 	e, inbox := &ear{}, filepath.Join(t.TempDir(), "inbox")
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Allow: []string{me}, Transcriber: e, Inbox: inbox})
+	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, Transcriber: e, Inbox: inbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,14 +108,14 @@ func TestDocumentIsKept(t *testing.T) {
 		t.Fatalf("inbox %v %v", entries, err)
 	}
 	info, _ := entries[0].Info()
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", info.Mode())
 	}
 }
 
 func TestWithoutEarOrInbox(t *testing.T) {
 	r := newRig(t, true)
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Allow: []string{me}})
+	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +192,7 @@ func TestSafeName(t *testing.T) {
 func TestOtherImagesAndAudioAreDocuments(t *testing.T) {
 	r := newRig(t, true, fake.Reply("ok"), fake.Reply("ok"))
 	inbox := t.TempDir()
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Allow: []string{me}, Inbox: inbox})
+	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, Inbox: inbox})
 	if err != nil {
 		t.Fatal(err)
 	}

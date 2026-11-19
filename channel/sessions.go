@@ -119,10 +119,29 @@ func (b *Bridge) touch(ctx context.Context, chatID string) (conversation string,
 		renewed = true
 	}
 	s.N, s.Last = max(s.N, 1), now
+	if len(b.sessions) >= maxTracked {
+		b.forgetStale(now)
+	}
 	b.sessions[chatID] = s
 	b.mu.Unlock()
 	b.persist()
 	return Conversation(b.cfg.Channel.Name(), chatID, s.N), renewed
+}
+
+// forgetStale drops the chats silent past IdleReset (a public bot hears
+// from anyone): their next message starts a new conversation anyway, and
+// reconcile finds its number on the server. b.mu held.
+func (b *Bridge) forgetStale(now time.Time) {
+	idle := b.idleReset()
+	if idle < 0 {
+		idle = 30 * 24 * time.Hour
+	}
+	for id, s := range b.sessions {
+		if now.Sub(s.Last) > idle {
+			delete(b.sessions, id)
+			delete(b.reconciled, id)
+		}
+	}
 }
 
 // stamp records an exchange of the chat (a press, an answer, a reply):
@@ -146,6 +165,9 @@ func (b *Bridge) stamp(chatID string) {
 func (b *Bridge) reconcile(ctx context.Context, chatID string) {
 	b.mu.Lock()
 	done := b.reconciled[chatID]
+	if len(b.reconciled) >= maxTracked {
+		clear(b.reconciled) // only spares listings: asked again
+	}
 	b.reconciled[chatID] = true
 	b.mu.Unlock()
 	if done {

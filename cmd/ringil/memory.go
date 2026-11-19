@@ -14,6 +14,7 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/memory/local"
 	"github.com/agilira/ringil-agent-sdk/memory/vector"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
@@ -31,7 +32,10 @@ func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, ErrUsage, "no user config directory; use --no-memory")
 	}
-	dir := filepath.Join(base, "ringil", "memory")
+	dir, ok := c.memoryDir(filepath.Join(base, "ringil", "memory"))
+	if !ok {
+		return nil, nil
+	}
 	emb, err := c.embedder(ctx)
 	if err != nil || emb == nil {
 		if err != nil {
@@ -40,6 +44,19 @@ func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 		return local.New(dir)
 	}
 	return vector.New(dir, emb)
+}
+
+// memoryDir is where the role remembers: the user's memory, or a chat's
+// own (the chat of the run's conversation); not ok for none.
+func (c *cli) memoryDir(user string) (string, bool) {
+	if c.role == nil || c.role.Memory == "" {
+		return user, true
+	}
+	chat := channel.ChatOf(c.runConversation)
+	if c.role.Memory == "off" || chat == "" {
+		return "", false // without a chat, nothing of its own to remember
+	}
+	return filepath.Join(user, "chats", chat), true
 }
 
 // embedder is the embedding model on the same endpoint and key as the

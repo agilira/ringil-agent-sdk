@@ -29,13 +29,28 @@ type Config struct {
 	Channel Channel
 	// Server runs the agents; it must keep conversations (serve.Config.Store).
 	Server *serve.Server
-	// Profile is the server's profile the chats talk to; default "default".
+	// Owners are the senders (Message.From) with every right: they talk
+	// with Profile (default "default") in their own chats, and only they
+	// approve tool calls.
+	Owners  []string
 	Profile string
-	// Allow lists the senders (Message.From) who are heard. A message
-	// from anyone else is not answered, and is reported as Refused, with
-	// its sender, for the host to add if wanted: empty, nobody is heard,
-	// which is how a user learns their own ID.
-	Allow []string
+	// Members are senders who talk with MemberProfile, which the host
+	// gives the tools members may use; they never approve. IsMember, when
+	// set, is asked about senders not listed (such as the members of a
+	// company group), and its answers are kept for MemberCheck (default
+	// 10 minutes). Members need a MemberProfile.
+	Members       []string
+	IsMember      func(ctx context.Context, from string) (bool, error)
+	MemberCheck   time.Duration
+	MemberProfile string
+	// PublicProfile, when set, answers anyone else: a public bot. Without
+	// it, a message from anyone else is not answered, and is reported as
+	// Refused with its sender, for the host to add if wanted (which is how
+	// a user learns their own ID).
+	PublicProfile string
+	// MaxPerHour bounds the messages a member or public sender has
+	// answered in an hour; default 30, negative no bound. Owners have none.
+	MaxPerHour int
 	// Transcriber turns voice messages into text; nil, the chat is told
 	// they cannot be heard.
 	Transcriber agent.Transcriber
@@ -69,6 +84,10 @@ type EventKind int
 const (
 	// Refused: a message from a sender not allowed.
 	Refused EventKind = iota + 1
+	// Limited: a member or public sender went past MaxPerHour.
+	Limited
+	// MemberCheckFailed: IsMember failed; the sender was not let in.
+	MemberCheckFailed
 	// ReceiveFailed: the channel could not receive; the Bridge retries.
 	ReceiveFailed
 	// SendFailed: a reply could not be sent.
@@ -94,14 +113,17 @@ type Event struct {
 
 // Bridge talks with one channel for a server.
 type Bridge struct {
-	cfg   Config
-	allow map[string]bool
+	cfg     Config
+	owners  map[string]bool
+	members map[string]bool
 
-	mu    sync.Mutex
-	chats map[string]*chat   // chats with a run going, by chat ID
-	asks  map[string]*ask    // by token
-	boxes map[string]*outbox // replies waiting, by chat ID
-	voice map[string]bool    // /voice and /text, by chat ID
+	mu      sync.Mutex
+	chats   map[string]*chat       // chats with a run going, by chat ID
+	asks    map[string]*ask        // by token
+	boxes   map[string]*outbox     // replies waiting, by chat ID
+	voice   map[string]bool        // /voice and /text, by chat ID
+	checked map[string]memberCheck // IsMember's answers, by sender
+	recent  map[string][]time.Time // messages answered in the last hour, by sender
 	// sessions are the chats' conversations, by chat ID.
 	sessions   map[string]session
 	reconciled map[string]bool // chats whose number was checked against the server
@@ -114,6 +136,9 @@ type Bridge struct {
 // files fetched): run is empty until it starts.
 type chat struct {
 	conv   string // the conversation the message goes to
+	group  bool
+	role   role   // of who started the run
+	from   string // who started it
 	run    string
 	cancel context.CancelFunc // stops the preparing
 	open   []*ask             // oldest first
@@ -127,11 +152,9 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	case !validName.MatchString(cfg.Channel.Name()):
 		return nil, errors.New(ErrConfig, "the channel's name must be 1-20 lower-case letters or digits")
 	}
-	allow := map[string]bool{}
-	for _, id := range cfg.Allow {
-		if id = strings.TrimSpace(id); id != "" {
-			allow[id] = true
-		}
+	owners, members := idSet(cfg.Owners), idSet(cfg.Members)
+	if (len(members) > 0 || cfg.IsMember != nil) && cfg.MemberProfile == "" {
+		return nil, errors.New(ErrConfig, "members need a MemberProfile: the tools they may use")
 	}
 	if cfg.Profile == "" {
 		cfg.Profile = "default"
@@ -140,8 +163,9 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Bridge{cfg: cfg, allow: allow, chats: map[string]*chat{}, asks: map[string]*ask{}, boxes: map[string]*outbox{},
-		voice: map[string]bool{}, sessions: sessions, reconciled: map[string]bool{}, now: time.Now}, nil
+	return &Bridge{cfg: cfg, owners: owners, members: members, chats: map[string]*chat{}, asks: map[string]*ask{},
+		boxes: map[string]*outbox{}, voice: map[string]bool{}, checked: map[string]memberCheck{}, recent: map[string][]time.Time{},
+		sessions: sessions, reconciled: map[string]bool{}, now: time.Now}, nil
 }
 
 // Run receives and answers until ctx ends, then waits for the replies
@@ -181,28 +205,44 @@ func pause(ctx context.Context, d time.Duration) {
 }
 
 func (b *Bridge) handle(ctx context.Context, m Message) {
-	if !b.allow[m.From] {
-		b.report(Event{Kind: Refused, Chat: m.Chat, From: m.From})
-		return
+	if m.Group && !m.Addressed && m.Pressed == "" {
+		return // group talk not for the bot
 	}
-	if m.Pressed != "" {
-		b.press(ctx, m)
-		return
-	}
-	text := strings.TrimSpace(m.Text)
+	r := b.roleOf(ctx, m.From)
 	switch {
-	case text == "" && len(m.Files) == 0:
-		b.say(ctx, m.Chat, "I cannot read this kind of message.")
-	case len(m.Files) == 0 && b.command(ctx, m.Chat, text):
-	case len(m.Files) == 0 && b.answered(ctx, m.Chat, text):
+	case r == stranger:
+		b.report(Event{Kind: Refused, Chat: m.Chat, From: m.From})
+	case m.Pressed != "":
+		b.press(ctx, m, r)
 	default:
-		b.start(ctx, m.Chat, text, m.Files)
+		b.dispatch(ctx, m, r)
 	}
 }
 
-// command runs a chat command; false when text is not one.
-func (b *Bridge) command(ctx context.Context, chatID, text string) bool {
+// dispatch handles a message of a sender let in.
+func (b *Bridge) dispatch(ctx context.Context, m Message, r role) {
+	text := strings.TrimSpace(m.Text)
 	switch {
+	case len(m.Files) == 0 && r == owner && b.answered(ctx, m.Chat, text):
+	case !b.within(m.From, r): // commands count too
+		b.report(Event{Kind: Limited, Chat: m.Chat, From: m.From})
+		b.say(ctx, m.Chat, "You have sent many messages this hour; please wait a little.")
+	case text == "" && len(m.Files) == 0:
+		b.say(ctx, m.Chat, "I cannot read this kind of message.")
+	case len(m.Files) == 0 && b.command(ctx, m, r, text):
+	default:
+		b.start(ctx, m, r)
+	}
+}
+
+// command runs a chat command; false when text is not one. In a group,
+// which several people share, the public cannot start a new
+// conversation, and only an owner or who sent the message stops a run.
+func (b *Bridge) command(ctx context.Context, m Message, r role, text string) bool {
+	chatID := m.Chat
+	switch {
+	case b.notHere(m, r, text):
+		b.say(ctx, chatID, "Only an owner can do that here.")
 	case command(text, "/start"):
 		b.say(ctx, chatID, "Hello. Write to me and I will answer. /new starts a new conversation, /stop stops what I am doing, /voice and /text choose how I answer voice messages.")
 	case command(text, "/stop"):
@@ -238,9 +278,35 @@ func (b *Bridge) stop(ctx context.Context, chatID string) {
 	}
 }
 
+// notHere: a command the sender may not give in a group.
+func (b *Bridge) notHere(m Message, r role, text string) bool {
+	switch {
+	case !m.Group || r == owner:
+		return false
+	case command(text, "/new"):
+		return r == public
+	case command(text, "/stop"):
+		return !b.startedBy(m.Chat, m.From)
+	}
+	return false
+}
+
+// startedBy says whether from started the chat's run.
+func (b *Bridge) startedBy(chatID, from string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := b.chats[chatID]
+	return c != nil && c.from == from
+}
+
 // start prepares the message and runs it on the chat's conversation;
 // one at a time per chat.
-func (b *Bridge) start(ctx context.Context, chatID, text string, files []File) {
+func (b *Bridge) start(ctx context.Context, m Message, r role) {
+	chatID, text, files := m.Chat, strings.TrimSpace(m.Text), m.Files
+	if m.Group && b.groupProfile() == "" {
+		b.say(ctx, chatID, "I am not set up to talk in groups.")
+		return
+	}
 	b.mu.Lock()
 	if b.chats[chatID] != nil {
 		b.mu.Unlock()
@@ -254,7 +320,7 @@ func (b *Bridge) start(ctx context.Context, chatID, text string, files []File) {
 	}
 	b.mu.Lock() // still free: only Run's goroutine starts runs
 	prep, cancel := context.WithCancel(ctx)
-	b.chats[chatID] = &chat{conv: conv, cancel: cancel}
+	b.chats[chatID] = &chat{conv: conv, group: m.Group, role: r, from: m.From, cancel: cancel}
 	b.wg.Add(1)
 	b.mu.Unlock()
 	go b.converse(ctx, prep, chatID, text, files)
@@ -293,7 +359,7 @@ func (b *Bridge) launch(ctx, prep context.Context, chatID, text string, files []
 	case problem != "":
 		reply = problem
 	default:
-		snap, err := b.cfg.Server.StartMessage(b.cfg.Profile, c.conv, msg)
+		snap, err := b.cfg.Server.StartMessage(b.profileFor(c.role, c.group), c.conv, msg)
 		if err == nil {
 			c.run = snap.ID
 			return snap.ID, ""
@@ -320,8 +386,9 @@ func (b *Bridge) follow(ctx context.Context, chatID, run string, typing *typer, 
 			}
 		}
 	})
-	// The chat stays busy until its answer is posted, in order; /stop
-	// now cancels the speaking (the answer then goes as text).
+	// The chat stays busy until its answer is queued: what the chat sends
+	// next is answered after it. /stop now cancels the speaking (the
+	// answer then goes as text).
 	speaking, cancel := context.WithCancel(ctx)
 	defer cancel()
 	b.mu.Lock()
@@ -331,17 +398,19 @@ func (b *Bridge) follow(ctx context.Context, chatID, run string, typing *typer, 
 	}
 	c.open, c.run, c.cancel = nil, "", cancel
 	b.mu.Unlock()
+	var out Out
 	if err == nil {
-		out := Out{Text: final(last)}
+		out.Text = final(last)
 		if spoken && last.State == serve.Completed {
 			out.Voice = b.speak(speaking, chatID, out.Text)
 		}
-		typing.stop() // before the reply, which ends what the app shows
-		b.post(ctx, chatID, out, nil)
 	}
-	typing.stop()
+	typing.stop() // before the reply, which ends what the app shows
 	b.mu.Lock()
 	delete(b.chats, chatID)
+	if err == nil {
+		b.queue(ctx, chatID, outgoing{out: out}) // under b.mu: queued before any later reply of the chat
+	}
 	b.mu.Unlock()
 	b.stamp(chatID)
 }

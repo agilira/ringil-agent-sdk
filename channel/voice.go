@@ -43,6 +43,9 @@ func (b *Bridge) setVoice(ctx context.Context, chatID string, on bool) {
 		return
 	}
 	b.mu.Lock()
+	if len(b.voice) >= maxTracked {
+		clear(b.voice) // the chats go back to the host's choice
+	}
 	b.voice[chatID] = on
 	b.mu.Unlock()
 	if on {

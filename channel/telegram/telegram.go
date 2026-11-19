@@ -62,6 +62,14 @@ type Channel struct {
 	fetcher     *http.Client
 	offset      int64
 	queue       []queued
+	bot         me             // the bot itself, from getMe
+	name        *regexp.Regexp // its @name in a text
+}
+
+// me is the bot, as getMe gives it.
+type me struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
 }
 
 var validToken = regexp.MustCompile(`^[0-9]{1,20}:[A-Za-z0-9_-]{20,100}$`)
@@ -88,8 +96,11 @@ func New(ctx context.Context, cfg Config) (*Channel, error) {
 	c := &Channel{token: cfg.Token, base: base, poll: poll,
 		client:  safehttp.Client(cfg.Client, nil, maxBody, false),
 		fetcher: safehttp.Client(cfg.Client, nil, 0, false)}
-	if err := c.call(ctx, "getMe", struct{}{}, nil); err != nil {
+	if err := c.call(ctx, "getMe", struct{}{}, &c.bot); err != nil {
 		return nil, err
+	}
+	if c.bot.Username != "" {
+		c.name = regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(c.bot.Username) + `\b`)
 	}
 	return c, nil
 }
@@ -183,17 +194,22 @@ type update struct {
 }
 
 type message struct {
-	Chat     struct{ ID int64 } `json:"chat"`
-	From     *user              `json:"from"`
-	Text     string             `json:"text"`
-	Caption  string             `json:"caption"`
-	Group    string             `json:"media_group_id"`
-	Photo    []photoSize        `json:"photo"`
-	Voice    *media             `json:"voice"`
-	Audio    *media             `json:"audio"`
-	Document *media             `json:"document"`
-	Video    *media             `json:"video"`
-	Note     *media             `json:"video_note"`
+	Chat struct {
+		ID   int64  `json:"id"`
+		Type string `json:"type"`
+	} `json:"chat"`
+	From       *user       `json:"from"`
+	SenderChat *struct{}   `json:"sender_chat"`
+	ReplyTo    *message    `json:"reply_to_message"`
+	Text       string      `json:"text"`
+	Caption    string      `json:"caption"`
+	Group      string      `json:"media_group_id"`
+	Photo      []photoSize `json:"photo"`
+	Voice      *media      `json:"voice"`
+	Audio      *media      `json:"audio"`
+	Document   *media      `json:"document"`
+	Video      *media      `json:"video"`
+	Note       *media      `json:"video_note"`
 }
 
 type photoSize struct {
@@ -225,17 +241,35 @@ func (c *Channel) message(ctx context.Context, u update) (queued, bool) {
 	switch {
 	case u.Message != nil && u.Message.From != nil:
 		m := u.Message
-		return queued{channel.Message{Chat: id(m.Chat.ID), From: id(m.From.ID), Text: m.Text + m.Caption, Files: c.files(m)}, m.Group}, true
+		out := channel.Message{Chat: id(m.Chat.ID), From: sender(m), Text: m.Text + m.Caption, Files: c.files(m), Group: isGroup(m)}
+		if out.Group {
+			out.Text, out.Addressed = c.addressed(m, out.Text)
+		}
+		return queued{out, m.Group}, true
 	case u.Callback != nil && u.Callback.Message != nil:
 		cb := u.Callback
 		// Stops the button's spinner; only cosmetic, so not retried.
 		_ = c.call(ctx, "answerCallbackQuery", map[string]string{"callback_query_id": cb.ID}, nil)
-		return queued{Message: channel.Message{Chat: id(cb.Message.Chat.ID), From: id(cb.From.ID), Pressed: cb.Data}}, true
+		return queued{Message: channel.Message{Chat: id(cb.Message.Chat.ID), From: id(cb.From.ID), Pressed: cb.Data, Group: isGroup(cb.Message)}}, true
 	}
 	return queued{}, false
 }
 
 func id(n int64) string { return strconv.FormatInt(n, 10) }
+
+// shared are the user IDs Telegram puts on messages of no one person:
+// anonymous group admins, posts as a channel, forwards from a linked
+// channel.
+var shared = map[int64]bool{1087968824: true, 136817688: true, 777000: true}
+
+// sender is who wrote a message: "" (nobody the Bridge lets in) when it
+// was sent in the name of a chat or by one of the shared IDs.
+func sender(m *message) string {
+	if m.SenderChat != nil || shared[m.From.ID] {
+		return ""
+	}
+	return id(m.From.ID)
+}
 
 type sendIn struct {
 	Chat   string  `json:"chat_id"`

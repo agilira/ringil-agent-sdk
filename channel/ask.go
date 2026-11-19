@@ -21,17 +21,30 @@ type ask struct {
 // ask shows an approval in the chat, with yes and no buttons. It is open
 // from before it is sent (a quick press finds it) and closed if the
 // sending fails: nobody answers a question they did not see.
+//
+// Only owners approve: in the private chat of anyone else nobody could,
+// so the call is refused at once; in a group, an owner there may.
 func (b *Bridge) ask(ctx context.Context, chatID, run string, p serve.Approval) {
 	a := &ask{token: rand.Text()[:16], chat: chatID, run: run, approval: p.ID, tool: visible(p.Tool)}
 	b.mu.Lock()
+	c := b.chats[chatID]
+	if c.role != owner && !c.group {
+		b.mu.Unlock()
+		_ = b.cfg.Server.Decide(run, p.ID, false)
+		b.say(ctx, chatID, "Refused: "+a.tool+" needs an owner's approval.")
+		return
+	}
 	b.asks[a.token] = a
-	b.chats[chatID].open = append(b.chats[chatID].open, a)
+	c.open = append(c.open, a)
 	b.mu.Unlock()
 	who := "The agent"
 	if p.Worker != "" {
 		who = "Worker " + visible(p.Worker)
 	}
 	text := who + " wants to use " + a.tool + ":\n" + showInput(p.Input) + "\nAllow it?"
+	if c.group {
+		text += " (an owner answers)"
+	}
 	buttons := []Button{{ID: a.token + ":y", Label: "Yes"}, {ID: a.token + ":n", Label: "No"}}
 	b.post(ctx, chatID, Out{Text: text, Buttons: buttons}, func() {
 		b.mu.Lock()
@@ -40,8 +53,13 @@ func (b *Bridge) ask(ctx context.Context, chatID, run string, p serve.Approval) 
 	})
 }
 
-// press decides the approval a button names, if it is of this chat.
-func (b *Bridge) press(ctx context.Context, m Message) {
+// press decides the approval a button names, if it is of this chat and
+// an owner pressed it.
+func (b *Bridge) press(ctx context.Context, m Message, r role) {
+	if r != owner {
+		b.say(ctx, m.Chat, "Only an owner can answer that.")
+		return
+	}
 	token, choice, _ := strings.Cut(m.Pressed, ":")
 	b.mu.Lock()
 	a := b.asks[token]

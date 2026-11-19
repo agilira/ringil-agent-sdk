@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	agent "github.com/agilira/ringil-agent-sdk"
 )
 
 // Channel is a chat app, as the Bridge sees it.
@@ -77,7 +79,14 @@ type Message struct {
 	Chat string
 	// From is who sent it: only the senders the host allows are heard.
 	From string
-	Text string
+	// Group says the chat has several people: it shares one conversation,
+	// and the Bridge answers only the messages Addressed to the bot.
+	Group bool
+	// Addressed says a group's message is for the bot: it names the bot,
+	// answers one of its messages, or is a command for it. The adapter
+	// takes the bot's name out of Text.
+	Addressed bool
+	Text      string
 	// Files are what came with the text: images, voice, documents.
 	Files []File
 	// Pressed is the ID of the button pressed, when the message is that.
@@ -141,6 +150,18 @@ func Conversation(name, chat string, n int) string {
 		id += "_" + strconv.Itoa(n)
 	}
 	return id
+}
+
+var generation = regexp.MustCompile(`_[0-9]+$`)
+
+// ChatOf is the chat part of a conversation ID, the same for all the
+// chat's conversations: for what lasts across them, such as a memory of
+// the chat's own. "" for an ID that is not a valid conversation.
+func ChatOf(conversation string) string {
+	if agent.ValidateSessionID(conversation) != nil {
+		return ""
+	}
+	return generation.ReplaceAllString(conversation, "")
 }
 
 // answer reads a written yes or no; ok is false for anything else.

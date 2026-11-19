@@ -134,7 +134,7 @@ func newRig(t *testing.T, store bool, steps ...fake.Step) *rig {
 	if r.srv, err = serve.New(cfg); err != nil {
 		t.Fatal(err)
 	}
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Allow: []string{me}, OnEvent: func(e Event) { r.events <- e }})
+	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, OnEvent: func(e Event) { r.events <- e }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestReplyInTheChat(t *testing.T) {
 func TestBlankSendersAreNeverAllowed(t *testing.T) {
 	srv := newRig(t, true).srv
 	app := newApp()
-	b, err := NewBridge(Config{Channel: app, Server: srv, Allow: []string{" ", ""}})
+	b, err := NewBridge(Config{Channel: app, Server: srv, Owners: []string{" ", ""}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,10 +341,10 @@ func TestReceiveIsRetried(t *testing.T) {
 func TestBridgeConfig(t *testing.T) {
 	srv := newRig(t, true).srv
 	bad := []Config{
-		{Server: srv, Allow: []string{me}},
-		{Channel: newApp(), Allow: []string{me}},
-		{Channel: named("Bad Name"), Server: srv, Allow: []string{me}},
-		{Channel: named("tg-x"), Server: srv, Allow: []string{me}},
+		{Server: srv, Owners: []string{me}},
+		{Channel: newApp(), Owners: []string{me}},
+		{Channel: named("Bad Name"), Server: srv, Owners: []string{me}},
+		{Channel: named("tg-x"), Server: srv, Owners: []string{me}},
 	}
 	for i, cfg := range bad {
 		if _, err := NewBridge(cfg); err == nil {
@@ -444,14 +444,8 @@ func TestQueueIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dropped := 0
 	for range maxQueued + 2 {
 		b.say(context.Background(), "slow", "x")
-	}
-	for len(r.events) > 0 {
-		if e := <-r.events; e.Kind == SendFailed {
-			dropped++
-		}
 	}
 	go func() {
 		for range r.app.out {
@@ -459,6 +453,12 @@ func TestQueueIsBounded(t *testing.T) {
 	}()
 	close(r.app.hold)
 	b.wg.Wait()
+	dropped := 0
+	for len(r.events) > 0 {
+		if e := <-r.events; e.Kind == SendFailed {
+			dropped++
+		}
+	}
 	if dropped < 1 {
 		t.Fatal("nothing dropped past the bound")
 	}
