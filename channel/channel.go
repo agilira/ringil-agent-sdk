@@ -12,7 +12,7 @@
 // them and a written yes or no where it has not.
 //
 //	tg, _ := telegram.New(ctx, telegram.Config{Token: token})
-//	b, _ := channel.NewBridge(channel.Config{Channel: tg, Server: srv, Allow: []string{"123456789"}})
+//	b, _ := channel.NewBridge(channel.Config{Channel: tg, Server: srv, Owners: []string{"123456789"}})
 //	b.Run(ctx)
 //
 // Writing an adapter: Receive blocks until a message comes and returns
@@ -25,11 +25,13 @@
 package channel
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -91,6 +93,9 @@ type Message struct {
 	Files []File
 	// Pressed is the ID of the button pressed, when the message is that.
 	Pressed string
+	// Phone is the sender's own phone number, when they shared it in
+	// their own chat (see PhoneAsker); never someone else's.
+	Phone string
 }
 
 // File is a file sent in a chat, fetched only when the Bridge uses it,
@@ -113,6 +118,10 @@ type File struct {
 // Out is what the Bridge sends.
 type Out struct {
 	Text string
+	// Markdown says Text is the agent's, written in markdown: an app may
+	// show its marks as formatting. The Bridge's own texts (approvals
+	// above all: what is approved is what is read) never are.
+	Markdown bool
 	// Buttons, when the app has them, go under the text; an app without
 	// them ignores them (the text says what to write instead).
 	Buttons []Button
@@ -182,6 +191,87 @@ func command(text, name string) bool {
 	return word == name
 }
 
+// fields shows a JSON object a field per line, "name: value"; a text of
+// several lines goes under its name, indented, so that no line of it
+// reads as a field. Anything else is shown as indented JSON, or as it is.
+func fields(raw json.RawMessage) string {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		var v any
+		if json.Unmarshal(raw, &v) == nil {
+			if pretty, err := json.MarshalIndent(v, "", "  "); err == nil {
+				return string(pretty)
+			}
+		}
+		return string(raw)
+	}
+	if len(obj) == 0 {
+		return "(no input)"
+	}
+	var b strings.Builder
+	for _, name := range order(raw, obj) {
+		b.WriteString(label(name) + ":" + field(obj[name]) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// label is a field's name, quoted when it could pass for something else
+// (a line break, a colon, blanks around it, nothing).
+func label(name string) string {
+	if name == "" || strings.ContainsAny(name, "\n\r:\"") || strings.TrimSpace(name) != name {
+		return strconv.Quote(name)
+	}
+	return name
+}
+
+// order is the names of a JSON object as they come in it.
+func order(raw json.RawMessage, obj map[string]json.RawMessage) []string {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	var names []string
+	seen := map[string]bool{}
+	_, _ = dec.Token() // {
+	for dec.More() {
+		tok, err := dec.Token()
+		name, ok := tok.(string)
+		var skip json.RawMessage
+		if err != nil || !ok || dec.Decode(&skip) != nil {
+			break
+		}
+		if !seen[name] { // a name given twice counts once, as the tool reads it: the last value
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	if len(names) != len(obj) { // cannot happen with valid JSON; never hide a field
+		names = names[:0]
+		for name := range obj {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+	}
+	return names
+}
+
+// field is a value after its name: " text" for a text of one line, the
+// lines indented under it for a longer one, JSON for anything else.
+func field(v json.RawMessage) string {
+	var s string
+	if json.Unmarshal(v, &s) != nil {
+		var compact bytes.Buffer
+		if json.Compact(&compact, v) == nil {
+			return " " + compact.String()
+		}
+		return " " + string(v)
+	}
+	switch {
+	case s == "":
+		return ` ""`
+	case !strings.ContainsAny(s, "\n\r"):
+		return " " + s
+	}
+	return "\n  " + strings.ReplaceAll(strings.ReplaceAll(strings.TrimRight(s, "\n"), "\r", ""), "\n", "\n  ")
+}
+
 // visible is s without the characters that hide or reorder text on
 // screen (controls, bidi marks, zero-width and other format characters),
 // so that what a user approves is what they read. Line breaks and tabs
@@ -207,17 +297,10 @@ const (
 )
 
 // showInput is a tool call's input as the user reads it to approve it:
-// indented JSON, made visible; a very long one is cut in the middle,
-// saying so.
+// a line per field, in the order given, made visible; a very long one is
+// cut in the middle, saying so.
 func showInput(raw json.RawMessage) string {
-	var v any
-	s := string(raw)
-	if json.Unmarshal(raw, &v) == nil {
-		if pretty, err := json.MarshalIndent(v, "", "  "); err == nil {
-			s = string(pretty)
-		}
-	}
-	r := []rune(visible(s))
+	r := []rune(visible(fields(raw)))
 	if len(r) <= maxShown {
 		return string(r)
 	}

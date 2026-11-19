@@ -42,27 +42,40 @@ const maxSession = 1_000_000
 // loadSessions reads the sessions file; none yet is no sessions.
 func loadSessions(path string) (map[string]session, error) {
 	out := map[string]session{}
-	if path == "" {
-		return out, nil
-	}
-	root, err := os.OpenRoot(filepath.Dir(path))
-	if stderrors.Is(err, fs.ErrNotExist) {
-		return out, nil
-	}
-	if err != nil {
-		return nil, errors.Wrap(err, ErrConfig, "cannot open the sessions file's directory")
-	}
-	defer func() { _ = root.Close() }()
-	data, err := atomicfile.Read(root, filepath.Base(path), maxSessionsFile)
+	data, err := readState(path, maxSessionsFile, "sessions")
 	switch {
-	case stderrors.Is(err, fs.ErrNotExist):
-		return out, nil
 	case err != nil:
-		return nil, errors.Wrap(err, ErrConfig, "cannot read the sessions file")
+		return nil, err
+	case data == nil:
+		return out, nil
 	case json.Unmarshal(data, &out) != nil || out == nil || !validSessions(out):
 		return nil, errors.New(ErrConfig, "the sessions file is damaged: "+path)
 	}
 	return out, nil
+}
+
+// readState reads a file the Bridge keeps (what names it); nil when there
+// is none yet, or no path.
+func readState(path string, max int64, what string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if stderrors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.Wrap(err, ErrConfig, "cannot open the "+what+" file's directory")
+	}
+	defer func() { _ = root.Close() }()
+	data, err := atomicfile.Read(root, filepath.Base(path), max)
+	switch {
+	case stderrors.Is(err, fs.ErrNotExist):
+		return nil, nil
+	case err != nil:
+		return nil, errors.Wrap(err, ErrConfig, "cannot read the "+what+" file")
+	}
+	return data, nil
 }
 
 func validSessions(m map[string]session) bool {

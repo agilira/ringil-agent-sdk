@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -64,6 +65,8 @@ type Channel struct {
 	queue       []queued
 	bot         me             // the bot itself, from getMe
 	name        *regexp.Regexp // its @name in a text
+	mu          sync.Mutex
+	unkey       map[string]bool // chats that shared a contact, whose keyboard goes at the next text
 }
 
 // me is the bot, as getMe gives it.
@@ -95,7 +98,7 @@ func New(ctx context.Context, cfg Config) (*Channel, error) {
 	}
 	c := &Channel{token: cfg.Token, base: base, poll: poll,
 		client:  safehttp.Client(cfg.Client, nil, maxBody, false),
-		fetcher: safehttp.Client(cfg.Client, nil, 0, false)}
+		fetcher: safehttp.Client(cfg.Client, nil, 0, false), unkey: map[string]bool{}}
 	if err := c.call(ctx, "getMe", struct{}{}, &c.bot); err != nil {
 		return nil, err
 	}
@@ -210,6 +213,7 @@ type message struct {
 	Document   *media      `json:"document"`
 	Video      *media      `json:"video"`
 	Note       *media      `json:"video_note"`
+	Contact    *contact    `json:"contact"`
 }
 
 type photoSize struct {
@@ -242,6 +246,10 @@ func (c *Channel) message(ctx context.Context, u update) (queued, bool) {
 	case u.Message != nil && u.Message.From != nil:
 		m := u.Message
 		out := channel.Message{Chat: id(m.Chat.ID), From: sender(m), Text: m.Text + m.Caption, Files: c.files(m), Group: isGroup(m)}
+		if m.Contact != nil && m.Chat.Type == "private" {
+			c.shared(out.Chat)
+			out.Phone = phone(m)
+		}
 		if out.Group {
 			out.Text, out.Addressed = c.addressed(m, out.Text)
 		}
@@ -272,9 +280,10 @@ func sender(m *message) string {
 }
 
 type sendIn struct {
-	Chat   string  `json:"chat_id"`
-	Text   string  `json:"text"`
-	Markup *markup `json:"reply_markup,omitempty"`
+	Chat   string `json:"chat_id"`
+	Text   string `json:"text"`
+	Parse  string `json:"parse_mode,omitempty"`
+	Markup any    `json:"reply_markup,omitempty"`
 }
 
 type markup struct {
@@ -293,16 +302,36 @@ func (c *Channel) Send(ctx context.Context, chat string, out channel.Out) error 
 	if len(parts) == 0 {
 		return errors.New(ErrAPI, "nothing to send")
 	}
+	unkey := len(out.Buttons) == 0 && c.unkeyed(chat)
 	for i, p := range parts {
 		in := sendIn{Chat: chat, Text: p}
-		if i == len(parts)-1 && len(out.Buttons) > 0 {
+		switch {
+		case i == len(parts)-1 && len(out.Buttons) > 0:
 			in.Markup = keyboard(out.Buttons)
+		case i == 0 && unkey:
+			in.Markup = noKeyboard{Remove: true}
 		}
-		if err := c.call(ctx, "sendMessage", in, nil); err != nil {
+		if err := c.sendPart(ctx, in, out.Markdown); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sendPart sends a part, formatted when it is markdown and fits; as it is
+// when Telegram cannot read the formatting (then it sent nothing).
+func (c *Channel) sendPart(ctx context.Context, in sendIn, markdown bool) error {
+	if markdown {
+		formatted := in
+		formatted.Text, formatted.Parse = format(in.Text), "HTML"
+		if fit(formatted.Text, maxText) == len(formatted.Text) {
+			err := c.call(ctx, "sendMessage", formatted, nil)
+			if err == nil || !strings.Contains(err.Error(), "can't parse entities") {
+				return err
+			}
+		}
+	}
+	return c.call(ctx, "sendMessage", in, nil)
 }
 
 func keyboard(buttons []channel.Button) *markup {

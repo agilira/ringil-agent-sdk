@@ -25,6 +25,8 @@ type outgoing struct {
 	out Out
 	// failed, when set, runs if out could not be sent.
 	failed func()
+	// askPhone sends out with the PhoneAsker's button.
+	askPhone bool
 }
 
 func (b *Bridge) say(ctx context.Context, chatID, text string) {
@@ -34,7 +36,7 @@ func (b *Bridge) say(ctx context.Context, chatID, text string) {
 // post queues a reply for a chat and returns at once.
 func (b *Bridge) post(ctx context.Context, chatID string, out Out, failed func()) {
 	b.mu.Lock()
-	b.queue(ctx, chatID, outgoing{out, failed})
+	b.queue(ctx, chatID, outgoing{out: out, failed: failed})
 	b.mu.Unlock()
 }
 
@@ -82,7 +84,7 @@ func (b *Bridge) drain(ctx context.Context, chatID string, box *outbox) {
 		next := box.queue[0]
 		box.queue = box.queue[1:]
 		b.mu.Unlock()
-		if err := b.deliver(ctx, chatID, next.out); err != nil {
+		if err := b.deliver(ctx, chatID, next); err != nil {
 			b.failed(chatID, next, err)
 		}
 	}
@@ -99,7 +101,11 @@ func (b *Bridge) failed(chatID string, o outgoing, err error) {
 // else (or when the voice fails) as text. A voice that failed only in
 // the app's answer (a timeout after it took it) is then also text: an
 // answer twice rather than none.
-func (b *Bridge) deliver(ctx context.Context, chatID string, out Out) error {
+func (b *Bridge) deliver(ctx context.Context, chatID string, o outgoing) error {
+	out := o.out
+	if pa, ok := b.cfg.Channel.(PhoneAsker); ok && o.askPhone {
+		return pa.AskPhone(ctx, chatID, out.Text)
+	}
 	voice := out.Voice
 	out.Voice = nil
 	if vs, ok := b.cfg.Channel.(VoiceSender); ok && voice != nil {

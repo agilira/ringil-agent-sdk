@@ -37,15 +37,15 @@ func idSet(ids []string) map[string]bool {
 	return out
 }
 
-// roleOf is a sender's role: listed owner or member, a member by
-// IsMember, the public when there is a public profile, else a stranger.
+// roleOf is a sender's role: listed owner or member, a member by a
+// listed phone they shared or by IsMember, the public when there is a public profile, else a stranger.
 func (b *Bridge) roleOf(ctx context.Context, from string) role {
 	switch {
 	case from == "":
 		return stranger
 	case b.owners[from]:
 		return owner
-	case b.members[from] || b.isMember(ctx, from):
+	case b.members[from] || b.phoneMember(from) || b.isMember(ctx, from):
 		return member
 	case b.cfg.PublicProfile != "":
 		return public
@@ -122,13 +122,11 @@ func (b *Bridge) groupProfile() string {
 	return b.cfg.MemberProfile
 }
 
-// within records a message of a member or public sender and says whether
-// it is within MaxPerHour.
+// within records a message of a member, public or stranger sender and
+// says whether it is within MaxPerHour; strangers (asked for their phone)
+// always have a bound, 30 when MaxPerHour has none.
 func (b *Bridge) within(from string, r role) bool {
-	limit := b.cfg.MaxPerHour
-	if limit == 0 {
-		limit = 30
-	}
+	limit := b.limit(r)
 	if r == owner || limit < 0 {
 		return true
 	}
@@ -145,11 +143,30 @@ func (b *Bridge) within(from string, r role) bool {
 		b.recent[from] = kept
 		return false
 	}
-	if len(b.recent) >= maxTracked {
-		b.forgetQuiet(now)
+	if !b.room(from, now) {
+		return r == member // a flood: no one new is tracked
 	}
 	b.recent[from] = append(kept, now)
 	return true
+}
+
+// limit is the messages an hour of a sender of role r; negative, none.
+func (b *Bridge) limit(r role) int {
+	limit := b.cfg.MaxPerHour
+	if limit == 0 || (limit < 0 && r == stranger) {
+		limit = 30
+	}
+	return limit
+}
+
+// room says whether from can be tracked: already is, or there is room,
+// made by forgetting the quiet senders when needed; b.mu held.
+func (b *Bridge) room(from string, now time.Time) bool {
+	if _, known := b.recent[from]; known || len(b.recent) < maxTracked {
+		return true
+	}
+	b.forgetQuiet(now)
+	return len(b.recent) < maxTracked
 }
 
 // maxTracked bounds the senders the Bridge keeps track of: a public bot

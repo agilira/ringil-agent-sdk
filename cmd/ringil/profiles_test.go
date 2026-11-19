@@ -17,6 +17,7 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 )
@@ -175,5 +176,16 @@ func TestProfilesTrailingData(t *testing.T) {
 	writeProfiles(t, h.dir, `{"profiles":{"w":{"model":"x"}}} {"garbage":true}`)
 	if code := h.run("--profile", "w", "--no-tools", "run", "hi"); code == 0 {
 		t.Fatal("trailing data accepted")
+	}
+}
+
+func TestChatSystem(t *testing.T) {
+	c := &cli{runConversation: "telegram-42"}
+	if got := c.chatSystem(""); !strings.HasPrefix(got, agent.DefaultSystem) || !strings.HasSuffix(got, channel.Style) {
+		t.Fatalf("%q", got)
+	}
+	c.runConversation = "chat-1"
+	if got := c.chatSystem("mine"); got != "mine" {
+		t.Fatalf("%q", got)
 	}
 }

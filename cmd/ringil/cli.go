@@ -156,6 +156,7 @@ func (c *cli) app() *orpheus.App {
 		AddFlag("telegram-owners", "", "", "Telegram user IDs with every right (the bot's token: RINGIL_TELEGRAM_TOKEN), comma-separated").
 		AddFlag("telegram-members", "", "", "Telegram user IDs of members, comma-separated: they talk with --member-profile and never approve").
 		AddFlag("telegram-company-group", "", "", "a Telegram group whose people are members (the bot must be in it)").
+		AddFlag("telegram-member-phones", "", "", "phone numbers of members with their country code, comma-separated: anyone else writing to the bot in private is asked to share theirs (on a public bot, at /start)").
 		AddFlag("member-profile", "", "", "the profile members talk with (give it only the tools they may use)").
 		AddFlag("public-profile", "", "", "the profile anyone else talks with: a public bot").
 		AddIntFlag("max-per-hour", "", 30, "messages a member or the public has answered per hour; negative, no bound").
@@ -235,7 +236,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if tools, err = c.finishTools(ctx, model, tools); err != nil {
 		return nil, err
 	}
-	system := c.system(ctx)
+	system := c.chatSystem(c.system(ctx))
 	if cat != nil {
 		system += cat.Instructions()
 	}

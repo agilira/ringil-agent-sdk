@@ -486,3 +486,27 @@ func TestCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestShowInputReadable(t *testing.T) {
+	got := showInput([]byte(`{"path":"prova.txt","content":"line one\nb: not a field\n","n":3,"tags":["a"],"e":""}`))
+	want := "path: prova.txt\ncontent:\n  line one\n  b: not a field\nn: 3\ntags: [\"a\"]\ne: \"\""
+	if got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+	if got := showInput([]byte(`{}`)); got != "(no input)" {
+		t.Fatalf("%q", got)
+	}
+	if got := showInput([]byte(`{"a":"x","a":"y"}`)); got != "a: y" {
+		t.Fatalf("twice: %q", got)
+	}
+	if got := showInput([]byte(`["x"]`)); !strings.Contains(got, `"x"`) {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestShowInputOddNames(t *testing.T) {
+	got := showInput([]byte(`{"x\ncommand: ls":"rm -rf /"}`))
+	if strings.Contains(got, "\ncommand") {
+		t.Fatalf("a name passed for a field: %q", got)
+	}
+}
