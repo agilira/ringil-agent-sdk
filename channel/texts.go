@@ -56,6 +56,7 @@ const (
 	mAlways        msg = "always"
 	mShowAll       msg = "show_all"
 	mMoreLines     msg = "more_lines"
+	mMoreChars     msg = "more_chars"
 	mWhole         msg = "whole"
 	mNo            msg = "no"
 	mAllowed       msg = "allowed"
@@ -113,6 +114,7 @@ var texts = map[string]speech{
 		mAlways:        "Yes, always",
 		mShowAll:       "Show all",
 		mMoreLines:     "… {} more lines not shown: Show all to read them.",
+		mMoreChars:     "… cut: {} more characters not shown. Show all to read them.",
 		mWhole:         "All of it:",
 		mNo:            "No",
 		mAllowed:       "Allowed.",
@@ -131,7 +133,7 @@ var texts = map[string]speech{
 		mAskCommand:    "May I run this command?",
 		mOutside:       "It runs outside the sandbox, with your rights.",
 		mAgentSays:     "The agent says: {}",
-		mAskDomain:     "A command wants to reach {}. May it, for this conversation?",
+		mAskDomain:     "A command wants to reach {}. May it?",
 	},
 	Italian: {
 		mHello:         "Ciao. Scrivimi e ti rispondo. /new apre una nuova conversazione, /stop ferma quello che sto facendo, /voice e /text scelgono come rispondo ai vocali.",
@@ -168,6 +170,7 @@ var texts = map[string]speech{
 		mAlways:        "Sì, sempre",
 		mShowAll:       "Mostra tutto",
 		mMoreLines:     "… altre {} righe non mostrate: Mostra tutto per leggerle.",
+		mMoreChars:     "… tagliato: altri {} caratteri non mostrati. Mostra tutto per leggerli.",
 		mWhole:         "Tutto il contenuto:",
 		mNo:            "No",
 		mAllowed:       "Permesso.",
@@ -186,7 +189,7 @@ var texts = map[string]speech{
 		mAskCommand:    "Posso eseguire questo comando?",
 		mOutside:       "Gira fuori dalla sandbox, con i tuoi permessi.",
 		mAgentSays:     "L'agente dice: {}",
-		mAskDomain:     "Un comando vuole raggiungere {}. Glielo permetto, per questa conversazione?",
+		mAskDomain:     "Un comando vuole raggiungere {}. Glielo permetto?",
 	},
 }
 

@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -27,16 +28,16 @@ type ask struct {
 //
 // Only owners approve: in the private chat of anyone else nobody could,
 // so the call is refused at once; in a group, an owner there may. In a
-// run an owner started, a call allowed "always" in the conversation, or
-// any call when the host turned the questions off (Config.NoApprovals),
-// is allowed without asking.
+// run an owner started, any call is allowed without asking when the host
+// turned the questions off (Config.NoApprovals); in such a run or in a
+// group, so is a call an owner allowed "always" in the conversation.
 func (b *Bridge) ask(ctx context.Context, chatID, run string, p serve.Approval) {
 	a := &ask{token: rand.Text()[:16], chat: chatID, run: run, approval: p.ID, key: alwaysKey(p)}
 	b.mu.Lock()
 	c := b.chats[chatID]
 	a.conv = c.conv
 	switch {
-	case c.role == owner && (b.cfg.NoApprovals || b.always[a.conv+"\x00"+a.key]):
+	case (c.role == owner && b.cfg.NoApprovals) || ((c.role == owner || c.group) && b.always[a.conv+"\x00"+a.key]):
 		b.mu.Unlock()
 		_ = b.cfg.Server.Decide(run, p.ID, true)
 		return
@@ -49,27 +50,38 @@ func (b *Bridge) ask(ctx context.Context, chatID, run string, p serve.Approval) 
 	b.asks[a.token] = a
 	c.open = append(c.open, a)
 	b.mu.Unlock()
-	q := describe(b.lang(chatID), p.Tool, p.Input)
-	if p.Worker != "" {
-		q.text = b.tr(chatID, mWorkerAsks, visible(p.Worker)) + q.text
-	}
-	if c.group {
-		q.text += b.tr(chatID, mInGroup)
-	}
-	buttons := []Button{{ID: a.token + ":y", Label: b.tr(chatID, mYes)}, {ID: a.token + ":a", Label: b.tr(chatID, mAlways)}, {ID: a.token + ":n", Label: b.tr(chatID, mNo)}}
-	code, more := preview(q.code)
-	if more > 0 {
-		b.mu.Lock()
-		a.full = q.code
-		b.mu.Unlock()
-		q.text += "\n" + b.tr(chatID, mMoreLines, strconv.Itoa(more))
-		buttons = append(buttons, Button{ID: a.token + ":s", Label: b.tr(chatID, mShowAll)})
-	}
-	b.post(ctx, chatID, Out{Text: q.text, Code: code, Buttons: buttons}, func() {
+	b.post(ctx, chatID, b.question(a, p, c.group), func() {
 		b.mu.Lock()
 		b.close(a)
 		b.mu.Unlock()
 	})
+}
+
+// question is how an approval is asked in its chat: in words, a preview
+// of what it is about (all of it on request), the buttons.
+func (b *Bridge) question(a *ask, p serve.Approval, group bool) Out {
+	chatID := a.chat
+	q := describe(b.lang(chatID), p.Tool, p.Input)
+	if p.Worker != "" {
+		q.text = b.tr(chatID, mWorkerAsks, inline(visible(p.Worker))) + q.text
+	}
+	if group {
+		q.text += b.tr(chatID, mInGroup)
+	}
+	buttons := []Button{{ID: a.token + ":y", Label: b.tr(chatID, mYes)}, {ID: a.token + ":a", Label: b.tr(chatID, mAlways)}, {ID: a.token + ":n", Label: b.tr(chatID, mNo)}}
+	code, lines, chars := preview(q.code)
+	if lines > 0 || chars > 0 {
+		b.mu.Lock()
+		a.full = capped(q.code)
+		b.mu.Unlock()
+		if lines > 0 {
+			q.text += "\n" + b.tr(chatID, mMoreLines, strconv.Itoa(lines))
+		} else {
+			q.text += "\n" + b.tr(chatID, mMoreChars, strconv.Itoa(chars))
+		}
+		buttons = append(buttons, Button{ID: a.token + ":s", Label: b.tr(chatID, mShowAll)})
+	}
+	return Out{Text: q.text, Code: code, Buttons: buttons}
 }
 
 // validChoice: yes, always, no, or show all.
@@ -84,28 +96,28 @@ const (
 	previewChars = 1500
 )
 
-// preview is the start of code an approval shows, and how many lines it
-// leaves out (0: all of it shown).
-func preview(code string) (string, int) {
-	lines := strings.Split(code, "\n")
-	shown := lines[:min(len(lines), previewLines)]
-	out := strings.Join(shown, "\n")
+// preview is the start of code an approval shows, and what it leaves
+// out: whole lines, or (when it cuts inside a line) characters; both 0
+// when it shows all.
+func preview(code string) (shown string, lines, chars int) {
+	all := strings.Split(code, "\n")
+	head := all[:min(len(all), previewLines)]
+	out := strings.Join(head, "\n")
 	if r := []rune(out); len(r) > previewChars {
 		out = string(r[:previewChars])
-		shown = strings.Split(out, "\n")
+		return out, 0, len([]rune(code)) - previewChars
 	}
-	if out == code {
-		return code, 0
-	}
-	return out, max(len(lines)-len(shown), 1)
+	return out, len(all) - len(head), 0
 }
 
-// alwaysKey is what "always" allows: a tool, a command (only that
-// command), a domain.
+// alwaysKey is what "always" allows: the file asked about (write_file,
+// edit_file, write_protected_file), the command (only that command), the
+// domain; for another tool, the tool.
 func alwaysKey(p serve.Approval) string {
 	var in struct {
 		Command string `json:"command"`
 		Domain  string `json:"domain"`
+		Path    string `json:"path"`
 	}
 	_ = json.Unmarshal(p.Input, &in)
 	switch {
@@ -113,6 +125,8 @@ func alwaysKey(p serve.Approval) string {
 		return p.Tool + "\x00" + in.Command
 	case p.Tool == "network_domain":
 		return p.Tool + "\x00" + in.Domain
+	case p.Tool == "write_file" || p.Tool == "edit_file" || p.Tool == "write_protected_file":
+		return p.Tool + "\x00" + filepath.Clean(in.Path)
 	}
 	return p.Tool
 }

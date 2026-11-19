@@ -46,3 +46,12 @@ func TestNoApprovalsLeavesChatsToTheBridge(t *testing.T) {
 		t.Fatal("asked")
 	}
 }
+
+func TestEveryChatIsLeftToTheBridge(t *testing.T) {
+	for _, name := range chats {
+		c := &cli{noApprovals: true, runConversation: name + "-42"}
+		if c.unasked() || c.chatSystem("x") == "x" {
+			t.Errorf("%s", name)
+		}
+	}
+}

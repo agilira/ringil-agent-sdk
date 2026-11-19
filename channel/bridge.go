@@ -84,8 +84,9 @@ type Config struct {
 	IdleReset time.Duration
 	// NoApprovals allows, without asking, the tool calls of the runs an
 	// owner starts; the others are still refused. In the chat, "Yes,
-	// always" does the same for one tool (one command, one domain) for
-	// the rest of a conversation.
+	// always" allows the same again for the rest of the conversation: the
+	// same file, the same command, the same domain; for another tool,
+	// that tool.
 	NoApprovals bool
 	// The Bridge says its own texts in each user's language, as the app
 	// says it (Message.Language): English, Italian, or one of Languages,
