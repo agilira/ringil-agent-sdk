@@ -231,7 +231,7 @@ func (b *Bridge) renew(ctx context.Context, chatID string) {
 	busy := b.chats[chatID] != nil
 	b.mu.Unlock()
 	if busy {
-		b.say(ctx, chatID, "I am still working on your last message; send /stop first.")
+		b.say(ctx, chatID, b.tr(chatID, mBusyNew))
 		return
 	}
 	b.reconcile(ctx, chatID)
@@ -241,7 +241,7 @@ func (b *Bridge) renew(ctx context.Context, chatID string) {
 	b.sessions[chatID] = s
 	b.mu.Unlock()
 	b.persist()
-	b.say(ctx, chatID, "New conversation: I no longer see the earlier messages. What I was asked to remember stays.")
+	b.say(ctx, chatID, b.tr(chatID, mNew))
 }
 
 // current is the chat's conversation now.

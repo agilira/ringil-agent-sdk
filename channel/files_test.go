@@ -227,7 +227,7 @@ func TestACaptionIsNotAnAnswer(t *testing.T) {
 	if got := r.app.next(t).Text; !strings.Contains(got, "still working") {
 		t.Fatalf("a caption answered the question: %q", got)
 	}
-	r.app.press(q.Buttons[1].ID)
+	r.app.press(q.Buttons[2].ID)
 	r.app.next(t)
 	r.app.next(t)
 }

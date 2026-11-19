@@ -82,6 +82,18 @@ type Config struct {
 	// silence this long (the chat is told): default DefaultIdleReset (24
 	// hours), negative never. /new starts one at any time.
 	IdleReset time.Duration
+	// NoApprovals allows, without asking, the tool calls of the runs an
+	// owner starts; the others are still refused. In the chat, "Yes,
+	// always" does the same for one tool (one command, one domain) for
+	// the rest of a conversation.
+	NoApprovals bool
+	// The Bridge says its own texts in each user's language, as the app
+	// says it (Message.Language): English, Italian, or one of Languages,
+	// the host's translations of Texts() by language code ("de"); a user
+	// in a language it does not speak is spoken to in English. Language
+	// is the one used when the app does not say (default English).
+	Language  string
+	Languages map[string]map[string]string
 	// OnEvent hears what the chats do not see. It is called from several
 	// goroutines at once and must not block.
 	OnEvent func(Event)
@@ -139,10 +151,14 @@ type Bridge struct {
 	checked map[string]memberCheck // IsMember's answers, by sender
 	recent  map[string][]time.Time // messages answered in the last hour, by sender
 	shared  map[string]string      // listed phones shared, by sender
+	always  map[string]bool        // calls allowed for the rest of a conversation, by conversation and key
 	// sessions are the chats' conversations, by chat ID.
 	sessions   map[string]session
-	reconciled map[string]bool // chats whose number was checked against the server
-	saving     sync.Mutex      // one write of the sessions file at a time
+	reconciled map[string]bool   // chats whose number was checked against the server
+	saving     sync.Mutex        // one write of the sessions file at a time
+	spoken     map[string]speech // the languages spoken, by code
+	langMu     sync.Mutex
+	langs      map[string]string // the language of each chat's last sender, by chat ID; under langMu
 	now        func() time.Time
 	wg         sync.WaitGroup
 }
@@ -161,11 +177,8 @@ type chat struct {
 
 // NewBridge checks cfg and returns a Bridge.
 func NewBridge(cfg Config) (*Bridge, error) {
-	switch {
-	case cfg.Channel == nil || cfg.Server == nil:
-		return nil, errors.New(ErrConfig, "a bridge needs a channel and a server")
-	case !validName.MatchString(cfg.Channel.Name()):
-		return nil, errors.New(ErrConfig, "the channel's name must be 1-20 lower-case letters or digits")
+	if err := checkConfig(cfg); err != nil {
+		return nil, err
 	}
 	owners, members := idSet(cfg.Owners), idSet(cfg.Members)
 	phones, err := checkMembers(cfg, members)
@@ -183,13 +196,39 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &Bridge{cfg: cfg, owners: owners, members: members, phones: phones, shared: shared, chats: map[string]*chat{}, asks: map[string]*ask{},
+	speaks, err := spoken(cfg)
+	if err != nil {
+		return nil, err
+	}
+	b := &Bridge{cfg: cfg, owners: owners, members: members, phones: phones, shared: shared, always: map[string]bool{}, langs: map[string]string{}, spoken: speaks, chats: map[string]*chat{}, asks: map[string]*ask{},
 		boxes: map[string]*outbox{}, voice: map[string]bool{}, checked: map[string]memberCheck{}, recent: map[string][]time.Time{},
 		sessions: sessions, reconciled: map[string]bool{}, now: time.Now}
 	if pruned {
 		b.persistShared() // the numbers taken off the list leave the disk too
 	}
 	return b, nil
+}
+
+// spoken is the languages the Bridge speaks, Config.Language among them.
+func spoken(cfg Config) (map[string]speech, error) {
+	speaks, err := languages(cfg.Languages)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := speaks[cfg.Language]; !ok && cfg.Language != "" {
+		return nil, errors.New(ErrConfig, "the Bridge does not speak "+cfg.Language+": add it to Languages")
+	}
+	return speaks, nil
+}
+
+func checkConfig(cfg Config) error {
+	switch {
+	case cfg.Channel == nil || cfg.Server == nil:
+		return errors.New(ErrConfig, "a bridge needs a channel and a server")
+	case !validName.MatchString(cfg.Channel.Name()):
+		return errors.New(ErrConfig, "the channel's name must be 1-20 lower-case letters or digits")
+	}
+	return nil
 }
 
 // checkMembers checks how members are let in, and returns MemberPhones
@@ -248,13 +287,14 @@ func (b *Bridge) handle(ctx context.Context, m Message) {
 	if m.Group && !m.Addressed && m.Pressed == "" {
 		return // group talk not for the bot
 	}
+	b.hearLanguage(m.Chat, m.Language)
 	r := b.roleOf(ctx, m.From)
 	switch {
 	case b.sharesPhone(m) && r != owner && r != member:
 		b.sharedPhone(ctx, m)
 	case r == stranger:
 		b.report(Event{Kind: Refused, Chat: m.Chat, From: m.From})
-		b.askPhone(ctx, m, askText)
+		b.askPhone(ctx, m, mAskPhone)
 	case m.Pressed != "":
 		b.press(ctx, m, r)
 	default:
@@ -269,9 +309,9 @@ func (b *Bridge) dispatch(ctx context.Context, m Message, r role) {
 	case len(m.Files) == 0 && r == owner && b.answered(ctx, m.Chat, text):
 	case !b.within(m.From, r): // commands count too
 		b.report(Event{Kind: Limited, Chat: m.Chat, From: m.From})
-		b.say(ctx, m.Chat, "You have sent many messages this hour; please wait a little.")
+		b.say(ctx, m.Chat, b.tr(m.Chat, mTooMany))
 	case text == "" && len(m.Files) == 0:
-		b.say(ctx, m.Chat, "I cannot read this kind of message.")
+		b.say(ctx, m.Chat, b.tr(m.Chat, mUnreadable))
 	case len(m.Files) == 0 && b.command(ctx, m, r, text):
 	default:
 		b.start(ctx, m, r)
@@ -285,11 +325,11 @@ func (b *Bridge) command(ctx context.Context, m Message, r role, text string) bo
 	chatID := m.Chat
 	switch {
 	case b.notHere(m, r, text):
-		b.say(ctx, chatID, "Only an owner can do that here.")
+		b.say(ctx, chatID, b.tr(chatID, mOwnerOnly))
 	case command(text, "/start"):
-		b.say(ctx, chatID, "Hello. Write to me and I will answer. /new starts a new conversation, /stop stops what I am doing, /voice and /text choose how I answer voice messages.")
+		b.say(ctx, chatID, b.tr(chatID, mHello))
 		if r == public {
-			b.askPhone(ctx, m, "If you work here, share your phone number with the button below.")
+			b.askPhone(ctx, m, mHelloPhone)
 		}
 	case command(text, "/stop"):
 		b.stop(ctx, chatID)
@@ -318,7 +358,7 @@ func (b *Bridge) stop(ctx context.Context, chatID string) {
 	b.mu.Unlock()
 	switch {
 	case c == nil:
-		b.say(ctx, chatID, "Nothing to stop.")
+		b.say(ctx, chatID, b.tr(chatID, mNothingStop))
 	case run != "":
 		_ = b.cfg.Server.Cancel(run) // the run's end says it stopped
 	}
@@ -350,19 +390,19 @@ func (b *Bridge) startedBy(chatID, from string) bool {
 func (b *Bridge) start(ctx context.Context, m Message, r role) {
 	chatID, text, files := m.Chat, strings.TrimSpace(m.Text), m.Files
 	if m.Group && b.groupProfile() == "" {
-		b.say(ctx, chatID, "I am not set up to talk in groups.")
+		b.say(ctx, chatID, b.tr(chatID, mNoGroups))
 		return
 	}
 	b.mu.Lock()
 	if b.chats[chatID] != nil {
 		b.mu.Unlock()
-		b.say(ctx, chatID, "I am still working on your last message; send /stop to stop it.")
+		b.say(ctx, chatID, b.tr(chatID, mBusy))
 		return
 	}
 	b.mu.Unlock()
 	conv, renewed := b.touch(ctx, chatID)
 	if renewed {
-		b.say(ctx, chatID, "This chat was quiet for a while, so this is a new conversation: I no longer see the earlier messages.")
+		b.say(ctx, chatID, b.tr(chatID, mQuiet))
 	}
 	b.mu.Lock() // still free: only Run's goroutine starts runs
 	prep, cancel := context.WithCancel(ctx)
@@ -401,7 +441,7 @@ func (b *Bridge) launch(ctx, prep context.Context, chatID, text string, files []
 	switch {
 	case ctx.Err() != nil: // Run is ending: no run nobody would follow
 	case stopped:
-		reply = "Stopped."
+		reply = b.tr(chatID, mStopped)
 	case problem != "":
 		reply = problem
 	default:
@@ -410,7 +450,7 @@ func (b *Bridge) launch(ctx, prep context.Context, chatID, text string, files []
 			c.run = snap.ID
 			return snap.ID, ""
 		}
-		reply = userMessage(err)
+		reply = b.userMessage(chatID, err)
 	}
 	delete(b.chats, chatID)
 	return "", reply
@@ -446,7 +486,7 @@ func (b *Bridge) follow(ctx context.Context, chatID, run string, typing *typer, 
 	b.mu.Unlock()
 	var out Out
 	if err == nil {
-		out.Text, out.Markdown = final(last), last.State == serve.Completed
+		out.Text, out.Markdown = b.final(chatID, last), last.State == serve.Completed
 		if spoken && last.State == serve.Completed {
 			out.Voice = b.speak(speaking, chatID, out.Text)
 		}
@@ -462,25 +502,25 @@ func (b *Bridge) follow(ctx context.Context, chatID, run string, typing *typer, 
 }
 
 // final is what the chat reads when a run ends.
-func final(s serve.Snapshot) string {
+func (b *Bridge) final(chatID string, s serve.Snapshot) string {
 	switch {
 	case s.State == serve.Cancelled:
-		return "Stopped."
+		return b.tr(chatID, mStopped)
 	case s.Error != nil:
 		return s.Error.Message
 	case strings.TrimSpace(s.Text) == "":
-		return "Done."
+		return b.tr(chatID, mDone)
 	}
 	return s.Text
 }
 
 // userMessage is the server's message for the user, never internal detail.
-func userMessage(err error) string {
+func (b *Bridge) userMessage(chatID string, err error) string {
 	var e *errors.Error
 	if stderrors.As(err, &e) && e.UserMsg != "" {
 		return e.UserMsg
 	}
-	return "The agent cannot answer now."
+	return b.tr(chatID, mCannotAnswer)
 }
 
 func (b *Bridge) report(e Event) {

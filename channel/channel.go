@@ -93,6 +93,10 @@ type Message struct {
 	Files []File
 	// Pressed is the ID of the button pressed, when the message is that.
 	Pressed string
+	// Language is the sender's language as the app knows it (an IETF tag
+	// such as "it" or "pt-BR"), if it does: the Bridge's own texts are in
+	// it when the Bridge speaks it.
+	Language string
 	// Phone is the sender's own phone number, when they shared it in
 	// their own chat (see PhoneAsker); never someone else's.
 	Phone string
@@ -122,6 +126,9 @@ type Out struct {
 	// show its marks as formatting. The Bridge's own texts (approvals
 	// above all: what is approved is what is read) never are.
 	Markdown bool
+	// Code, when set, is shown after Text as it is, in monospace where
+	// the app has it: a file's content, a command. Never formatted.
+	Code string
 	// Buttons, when the app has them, go under the text; an app without
 	// them ignores them (the text says what to write instead).
 	Buttons []Button

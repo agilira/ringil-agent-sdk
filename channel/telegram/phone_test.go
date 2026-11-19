@@ -49,7 +49,7 @@ func TestOthersContactsAreNotThePhone(t *testing.T) {
 func TestAskPhoneThenTheKeyboardGoes(t *testing.T) {
 	b, srv := newBotAPI(t)
 	c := open(t, srv.URL)
-	if err := c.AskPhone(context.Background(), "42", "share it"); err != nil {
+	if err := c.AskPhone(context.Background(), "42", "share it", "Share my phone number"); err != nil {
 		t.Fatal(err)
 	}
 	receiveOne(t, b, c, `{"update_id":1,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"contact":{"phone_number":"393331234567","user_id":42}}}`)
@@ -72,5 +72,14 @@ func TestAskPhoneThenTheKeyboardGoes(t *testing.T) {
 	}
 	if _, has := s[2]["reply_markup"]; has {
 		t.Fatal("removed twice")
+	}
+}
+
+func TestLanguageOfTheSender(t *testing.T) {
+	b, srv := newBotAPI(t)
+	c := open(t, srv.URL)
+	m := receiveOne(t, b, c, `{"update_id":1,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42,"language_code":"it"},"text":"ciao"}}`)
+	if m.Language != "it" {
+		t.Fatalf("%+v", m)
 	}
 }

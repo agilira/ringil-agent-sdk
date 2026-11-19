@@ -7,6 +7,7 @@ package telegram
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/agilira/ringil-agent-sdk/channel"
@@ -58,5 +59,31 @@ func TestBadFormattingGoesPlain(t *testing.T) {
 	s := b.called("sendMessage")
 	if len(s) != 2 || s[1]["text"] != "**a *b** c*" || s[1]["parse_mode"] != nil {
 		t.Fatalf("%v", s)
+	}
+}
+
+func TestSendCode(t *testing.T) {
+	b, srv := newBotAPI(t)
+	c := open(t, srv.URL)
+	err := c.Send(context.Background(), "1", channel.Out{Text: "May I write a<b?", Code: "x < y **z**", Buttons: []channel.Button{{ID: "t:y", Label: "Yes"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := b.called("sendMessage")
+	if len(s) != 1 || s[0]["text"] != "May I write a&lt;b?\n<pre>x &lt; y **z**</pre>" || s[0]["parse_mode"] != "HTML" || s[0]["reply_markup"] == nil {
+		t.Fatalf("%v", s)
+	}
+}
+
+func TestLongCodeGoesAsText(t *testing.T) {
+	b, srv := newBotAPI(t)
+	c := open(t, srv.URL)
+	code := strings.Repeat("line <x>\n", 1000)
+	if err := c.Send(context.Background(), "1", channel.Out{Text: "May I?", Code: code, Buttons: []channel.Button{{ID: "t:y", Label: "Yes"}}}); err != nil {
+		t.Fatal(err)
+	}
+	s := b.called("sendMessage")
+	if len(s) < 2 || s[0]["parse_mode"] != nil || !strings.HasPrefix(s[0]["text"].(string), "May I?\n\nline <x>") || s[len(s)-1]["reply_markup"] == nil {
+		t.Fatalf("%d parts: %v", len(s), s[0])
 	}
 }

@@ -229,7 +229,8 @@ type media struct {
 }
 
 type user struct {
-	ID int64 `json:"id"`
+	ID       int64  `json:"id"`
+	Language string `json:"language_code"`
 }
 
 type callback struct {
@@ -245,7 +246,7 @@ func (c *Channel) message(ctx context.Context, u update) (queued, bool) {
 	switch {
 	case u.Message != nil && u.Message.From != nil:
 		m := u.Message
-		out := channel.Message{Chat: id(m.Chat.ID), From: sender(m), Text: m.Text + m.Caption, Files: c.files(m), Group: isGroup(m)}
+		out := channel.Message{Chat: id(m.Chat.ID), From: sender(m), Text: m.Text + m.Caption, Files: c.files(m), Group: isGroup(m), Language: m.From.Language}
 		if m.Contact != nil && m.Chat.Type == "private" {
 			c.shared(out.Chat)
 			out.Phone = phone(m)
@@ -258,7 +259,7 @@ func (c *Channel) message(ctx context.Context, u update) (queued, bool) {
 		cb := u.Callback
 		// Stops the button's spinner; only cosmetic, so not retried.
 		_ = c.call(ctx, "answerCallbackQuery", map[string]string{"callback_query_id": cb.ID}, nil)
-		return queued{Message: channel.Message{Chat: id(cb.Message.Chat.ID), From: id(cb.From.ID), Pressed: cb.Data, Group: isGroup(cb.Message)}}, true
+		return queued{Message: channel.Message{Chat: id(cb.Message.Chat.ID), From: id(cb.From.ID), Pressed: cb.Data, Group: isGroup(cb.Message), Language: cb.From.Language}}, true
 	}
 	return queued{}, false
 }
@@ -298,19 +299,19 @@ type button struct {
 // Send delivers out, in parts when longer than Telegram takes; the
 // buttons go under the last part.
 func (c *Channel) Send(ctx context.Context, chat string, out channel.Out) error {
+	if out.Code != "" {
+		if sent, err := c.sendCode(ctx, chat, out); sent || err != nil {
+			return err
+		}
+		out.Text = strings.TrimRight(out.Text, "\n") + "\n\n" + out.Code // too long for one message: as it is
+	}
 	parts := split(out.Text, maxText)
 	if len(parts) == 0 {
 		return errors.New(ErrAPI, "nothing to send")
 	}
 	unkey := len(out.Buttons) == 0 && c.unkeyed(chat)
 	for i, p := range parts {
-		in := sendIn{Chat: chat, Text: p}
-		switch {
-		case i == len(parts)-1 && len(out.Buttons) > 0:
-			in.Markup = keyboard(out.Buttons)
-		case i == 0 && unkey:
-			in.Markup = noKeyboard{Remove: true}
-		}
+		in := sendIn{Chat: chat, Text: p, Markup: partMarkup(i, len(parts), out.Buttons, unkey)}
 		if err := c.sendPart(ctx, in, out.Markdown); err != nil {
 			return err
 		}
@@ -332,6 +333,18 @@ func (c *Channel) sendPart(ctx context.Context, in sendIn, markdown bool) error 
 		}
 	}
 	return c.call(ctx, "sendMessage", in, nil)
+}
+
+// partMarkup is what goes under part i of n: the buttons under the last,
+// the keyboard's removal with the first.
+func partMarkup(i, n int, buttons []channel.Button, unkey bool) any {
+	switch {
+	case i == n-1 && len(buttons) > 0:
+		return keyboard(buttons)
+	case i == 0 && unkey:
+		return noKeyboard{Remove: true}
+	}
+	return nil
 }
 
 func keyboard(buttons []channel.Button) *markup {

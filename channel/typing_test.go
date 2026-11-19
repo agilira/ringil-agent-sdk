@@ -51,7 +51,7 @@ func TestTypingWhileWorkingOnly(t *testing.T) {
 	if app.typed.Load() != before {
 		t.Fatal("typing while waiting for the user")
 	}
-	app.in <- Message{Chat: room, From: me, Pressed: q.Buttons[1].ID}
+	app.in <- Message{Chat: room, From: me, Pressed: q.Buttons[2].ID}
 	app.next(t)
 	app.next(t)
 	end := app.typed.Load()

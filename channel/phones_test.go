@@ -17,7 +17,7 @@ import (
 // comes out as a text starting with "ASK ".
 type phoneApp struct{ *chatApp }
 
-func (a phoneApp) AskPhone(ctx context.Context, chat, text string) error {
+func (a phoneApp) AskPhone(ctx context.Context, chat, text, _ string) error {
 	return a.Send(ctx, chat, Out{Text: "ASK " + text})
 }
 

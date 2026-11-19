@@ -24,6 +24,7 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/delegate"
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/notes"
@@ -102,6 +103,8 @@ type cli struct {
 	// acceptEdits lets file writes and edits go without asking
 	// (--accept-edits); protected files are still confirmed.
 	acceptEdits bool
+	// noApprovals allows every call without asking (--no-approvals).
+	noApprovals bool
 	// role is the profile in use (--profile, or a profile served); nil
 	// keeps the flags and environment.
 	role *profile
@@ -140,6 +143,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
 		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools").
+		AddGlobalBoolFlag("no-approvals", "", false, "never ask before a tool call: in the terminal, through the API and, for the runs an owner starts, in the chats (the others' calls are still refused)").
 		AddGlobalBoolFlag("accept-edits", "", false, "write and edit files without asking (files holding your rules and settings are still confirmed)").
 		AddGlobalFlag("allow-domains", "", "", "domains bash commands reach without asking, comma-separated (pypi.org,*.github.com); others are asked about").
 		AddGlobalBoolFlag("no-memory", "", false, "do not recall or keep memories across conversations").
@@ -156,6 +160,7 @@ func (c *cli) app() *orpheus.App {
 		AddFlag("telegram-owners", "", "", "Telegram user IDs with every right (the bot's token: RINGIL_TELEGRAM_TOKEN), comma-separated").
 		AddFlag("telegram-members", "", "", "Telegram user IDs of members, comma-separated: they talk with --member-profile and never approve").
 		AddFlag("telegram-company-group", "", "", "a Telegram group whose people are members (the bot must be in it)").
+		AddFlag("language", "", "en", "the chat bot's own messages are in each user's language (en or it); this one when their app does not say it").
 		AddFlag("telegram-member-phones", "", "", "phone numbers of members with their country code, comma-separated: anyone else writing to the bot in private is asked to share theirs (on a public bot, at /start)").
 		AddFlag("member-profile", "", "", "the profile members talk with (give it only the tools they may use)").
 		AddFlag("public-profile", "", "", "the profile anyone else talks with: a public bot").
@@ -212,6 +217,7 @@ const ErrUsage errors.ErrorCode = "USAGE"
 
 func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	c.acceptEdits = ctx.GetGlobalFlagBool("accept-edits")
+	c.noApprovals = ctx.GetGlobalFlagBool("no-approvals")
 	if err := c.chooseProfile(ctx); err != nil {
 		return nil, err
 	}
@@ -483,6 +489,9 @@ func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
 // without interrupting the user. "a" allows that tool for the rest of
 // the session.
 func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+	if c.unasked() {
+		return true, nil
+	}
 	if c.server != nil {
 		return c.serveApprove(ctx, call, spec)
 	}
@@ -546,6 +555,9 @@ var writesFiles = map[string]bool{"write_file": true, "edit_file": true}
 // agents' rules, editor and CI settings, .git), even with --accept-edits;
 // under serve, the API's caller decides.
 func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
+	if c.unasked() {
+		return true, nil
+	}
 	if c.server != nil {
 		input, err := json.Marshal(map[string]string{"path": path})
 		if err != nil {
@@ -556,6 +568,12 @@ func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
 	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
 	return c.confirm("\n  ! " + asker(ctx) + " wants to change " + clean(path) + ", which holds your own rules or settings — allow this change? [y/N] ")
+}
+
+// unasked: --no-approvals, and not in a chat's run, whose Bridge decides
+// by who started it (an owner's runs go unasked, the others' are refused).
+func (c *cli) unasked() bool {
+	return c.noApprovals && !channel.Owns("telegram", c.runConversation)
 }
 
 // serveApprove: under serve, the API's caller decides what the chat

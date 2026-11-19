@@ -37,7 +37,7 @@ const ErrFile errors.ErrorCode = "CHANNEL_FILE"
 // empty, is why it could not be built, for the chat.
 func (b *Bridge) message(ctx context.Context, chatID, text string, files []File) (agent.Message, string) {
 	if len(files) > maxFiles {
-		return agent.Message{}, "Send at most 10 files at a time."
+		return agent.Message{}, b.tr(chatID, mMaxFiles)
 	}
 	var images []agent.Part
 	var notes []string
@@ -48,7 +48,7 @@ func (b *Bridge) message(ctx context.Context, chatID, text string, files []File)
 			saved = append(saved, path)
 		}
 		if problem == "" && ctx.Err() != nil {
-			problem = "Stopped."
+			problem = b.tr(chatID, mStopped)
 		}
 		if problem != "" {
 			removeAll(saved) // the agent will never hear of them
@@ -96,7 +96,7 @@ func removeAll(paths []string) {
 // hear transcribes a voice message or an audio file.
 func (b *Bridge) hear(ctx context.Context, chatID string, f File) (string, string) {
 	if b.cfg.Transcriber == nil {
-		return "", "I cannot listen to voice messages here; please write."
+		return "", b.tr(chatID, mNoVoiceIn)
 	}
 	data, problem := b.fetch(ctx, chatID, f, MaxAudioBytes)
 	if problem != "" {
@@ -104,16 +104,16 @@ func (b *Bridge) hear(ctx context.Context, chatID string, f File) (string, strin
 	}
 	text, err := b.cfg.Transcriber.Transcribe(ctx, data, f.MIME)
 	if err != nil && ctx.Err() != nil {
-		return "", "Stopped."
+		return "", b.tr(chatID, mStopped)
 	}
 	if err != nil {
 		b.report(Event{Kind: FileFailed, Chat: chatID, Err: err})
-		return "", "I could not understand the voice message; please write."
+		return "", b.tr(chatID, mVoiceUnheard)
 	}
 	if f.Voice {
 		return "[voice message, transcribed] " + text, ""
 	}
-	return "[audio file " + displayName(f) + ", transcribed] " + text, ""
+	return "[audio file " + b.displayName(chatID, f) + ", transcribed] " + text, ""
 }
 
 // see takes an image, checked on its bytes.
@@ -124,7 +124,7 @@ func (b *Bridge) see(ctx context.Context, chatID string, f File) (*agent.Part, s
 	}
 	p, err := agent.Image(data)
 	if err != nil {
-		return nil, "I can take images in JPEG, PNG, GIF or WebP up to 5 MB."
+		return nil, b.tr(chatID, mImages)
 	}
 	return &p, ""
 }
@@ -132,7 +132,7 @@ func (b *Bridge) see(ctx context.Context, chatID string, f File) (*agent.Part, s
 // save keeps a document in the chat's inbox and tells the agent where.
 func (b *Bridge) save(ctx context.Context, chatID string, f File) (note, path, problem string) {
 	if b.cfg.Inbox == "" {
-		return "", "", "I cannot take documents here."
+		return "", "", b.tr(chatID, mNoDocuments)
 	}
 	data, problem := b.fetch(ctx, chatID, f, MaxDocumentBytes)
 	if problem != "" {
@@ -144,7 +144,7 @@ func (b *Bridge) save(ctx context.Context, chatID string, f File) (note, path, p
 	path, err := b.store(filepath.Join(b.cfg.Inbox, conv), f, data)
 	if err != nil {
 		b.report(Event{Kind: FileFailed, Chat: chatID, Err: err})
-		return "", "", "I could not keep " + displayName(f) + "."
+		return "", "", b.tr(chatID, mNotKept, b.displayName(chatID, f))
 	}
 	return "[the user sent a file, saved as " + path + "]", path, ""
 }
@@ -163,20 +163,20 @@ func (b *Bridge) InboxOf(chatID string) string {
 // fetch downloads a file within max bytes.
 func (b *Bridge) fetch(ctx context.Context, chatID string, f File, max int64) ([]byte, string) {
 	if f.Size > max {
-		return nil, displayName(f) + " is too large: up to " + mib(max) + " MB."
+		return nil, b.tr(chatID, mTooLarge, b.displayName(chatID, f), mib(max))
 	}
 	if f.Fetch == nil {
-		return nil, "I could not download " + displayName(f) + "."
+		return nil, b.tr(chatID, mNotFetched, b.displayName(chatID, f))
 	}
 	data, err := f.Fetch(ctx, max)
 	switch {
 	case err != nil && ctx.Err() != nil:
-		return nil, "Stopped."
+		return nil, b.tr(chatID, mStopped)
 	case err != nil:
 		b.report(Event{Kind: FileFailed, Chat: chatID, Err: err})
-		return nil, "I could not download " + displayName(f) + "."
+		return nil, b.tr(chatID, mNotFetched, b.displayName(chatID, f))
 	case int64(len(data)) > max:
-		return nil, displayName(f) + " is too large: up to " + mib(max) + " MB."
+		return nil, b.tr(chatID, mTooLarge, b.displayName(chatID, f), mib(max))
 	}
 	return data, ""
 }
@@ -232,11 +232,11 @@ func safeName(name string) string {
 }
 
 // displayName is a file's name for the chat.
-func displayName(f File) string {
+func (b *Bridge) displayName(chatID string, f File) string {
 	if n := visible(strings.TrimSpace(f.Name)); n != "" {
 		return "“" + n + "”"
 	}
-	return "the file"
+	return b.tr(chatID, mTheFile)
 }
 
 func mib(n int64) string {
