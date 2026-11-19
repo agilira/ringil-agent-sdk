@@ -6,6 +6,7 @@
 package channel
 
 import (
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ import (
 func TestDescribe(t *testing.T) {
 	it := texts[Italian]
 	for _, c := range []struct{ tool, in, text, code string }{
-		{"write_file", `{"path":"/d/hello.py","content":"print(1)"}`, "Posso scrivere questo in /d/hello.py?", "print(1)"},
+		{"write_file", `{"path":"/d/hello.py","content":"print(1)"}`, "Posso scrivere questo in " + filepath.FromSlash("/d/hello.py") + "?", "print(1)"},
 		{"edit_file", `{"path":"a.go","old_string":"x","new_string":"y"}`, "Posso modificare a.go? Le righe con - escono, quelle con + entrano:", "- x\n+ y"},
 		{"bash_unsandboxed", `{"command":"ls ~","reason":"unsandboxed","why":null,"explanation":"to see home"}`,
 			"Posso eseguire questo comando?\nGira fuori dalla sandbox, con i tuoi permessi.\nL'agente dice: \"to see home\"", "ls ~"},
