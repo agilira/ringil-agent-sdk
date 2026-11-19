@@ -60,7 +60,7 @@ func TestMemoryDir(t *testing.T) {
 		"user":          {&cli{}, user, true},
 		"role, shared":  {&cli{role: &profile{}}, user, true},
 		"off":           {&cli{role: &profile{Memory: "off"}, runConversation: "telegram-5"}, "", false},
-		"chat":          {&cli{role: &profile{Memory: "chat"}, runConversation: "telegram-5_3"}, user + "/chats/telegram-5", true},
+		"chat":          {&cli{role: &profile{Memory: "chat"}, runConversation: "telegram-5_3"}, filepath.Join(user, "chats", "telegram-5"), true},
 		"chat, none":    {&cli{role: &profile{Memory: "chat"}}, "", false},
 		"chat, invalid": {&cli{role: &profile{Memory: "chat"}, runConversation: "../x"}, "", false},
 	} {
