@@ -11,3 +11,4 @@ go.work.sum
 # CLI build output
 /cmd/ringil/ringil
 /cmd/ringil/ringil.exe
+docs/RIPARTENZA-*.md

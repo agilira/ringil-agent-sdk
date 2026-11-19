@@ -84,3 +84,15 @@ func TestBodyBoundAndStreams(t *testing.T) {
 		}
 	}
 }
+
+// A transport error is returned as it is, also by a client that streams.
+func TestTransportErrorWithStreams(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	resp, err := Client(nil, nil, 1<<10, true).Get(url)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("a closed server answered")
+	}
+}

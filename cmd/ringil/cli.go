@@ -146,7 +146,8 @@ func (c *cli) app() *orpheus.App {
 		AddFlag("listen", "", "127.0.0.1:8765", "loopback address and port to listen on").
 		AddIntFlag("max-runs", "", 4, "runs going at once").
 		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token").
-		AddBoolFlag("no-schedule", "", false, "do not run the scheduled jobs (ringil schedule)")))
+		AddBoolFlag("no-schedule", "", false, "do not run the scheduled jobs (ringil schedule)").
+		AddFlag("telegram-allow", "", "", "Telegram user IDs whose messages are answered, comma-separated (the bot's token: RINGIL_TELEGRAM_TOKEN)")))
 	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
 		SetUsage("run <prompt...>")))
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).

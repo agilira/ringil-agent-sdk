@@ -102,8 +102,11 @@ func (t transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	resp, err := t.next.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
 	stream := t.streams && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
-	if err == nil && t.max > 0 && !stream {
+	if t.max > 0 && !stream {
 		resp.Body = &limitedBody{rc: resp.Body, left: t.max}
 	}
 	return resp, err

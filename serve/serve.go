@@ -356,6 +356,29 @@ func (s *Server) Wait(ctx context.Context, id string) (Snapshot, error) {
 	}
 }
 
+// Watch calls see with the run's snapshot now and after its changes,
+// until the run ends or ctx does. Changes close together may come as one
+// snapshot; the last call of a run that ended sees its end. It returns
+// ctx's error when ctx ends first.
+func (s *Server) Watch(ctx context.Context, id string, see func(Snapshot)) error {
+	j, err := s.job(id)
+	if err != nil {
+		return err
+	}
+	for {
+		_, changed, _, over := j.since(1 << 62)
+		see(j.snapshot())
+		if over {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 // Cancel stops a run; it ends as cancelled once its tools return.
 func (s *Server) Cancel(id string) error {
 	j, err := s.job(id)
