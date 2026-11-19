@@ -545,3 +545,31 @@ func TestConversationsListsTheStore(t *testing.T) {
 		t.Fatalf("without a store: %v %v", ids, err)
 	}
 }
+
+func TestSourceOf(t *testing.T) {
+	got := make(chan string, 2)
+	a, err := agent.New(agent.Config{Provider: fake.New(fake.Reply("ok"), fake.Reply("ok"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(Config{Token: strings.Repeat("t", 32), Profiles: []Profile{{Name: "default", New: func(ctx context.Context) (Instance, error) {
+		got <- SourceOf(ctx)
+		return Instance{Agent: a}, nil
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if _, err := srv.StartFrom("trigger:mail", "default", "", agent.UserText("hi")); err != nil {
+		t.Fatal(err)
+	}
+	if s := <-got; s != "trigger:mail" {
+		t.Fatalf("%q", s)
+	}
+	if _, err := srv.Start("default", "", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if s := <-got; s != "" {
+		t.Fatalf("an API run labelled %q", s)
+	}
+}

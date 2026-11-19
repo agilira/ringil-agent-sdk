@@ -1,9 +1,9 @@
-// when.go: when a job runs — cron expressions and intervals
+// when.go: when a trigger runs — cron expressions and intervals
 //
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-package schedule
+package trigger
 
 import (
 	"strconv"
@@ -15,14 +15,14 @@ import (
 
 // When is a parsed timetable.
 type When interface {
-	// Next is the first time strictly after t when the job runs.
+	// Next is the first time strictly after t when the trigger runs.
 	Next(t time.Time) time.Time
 	// String is the timetable as written.
 	String() string
 }
 
 // MinInterval is the shortest @every: a model run more often than once a
-// minute is a loop, not a schedule.
+// minute is a loop, not a trigger.
 const MinInterval = time.Minute
 
 // Parse reads a timetable: a cron expression of five fields (minute hour
@@ -226,7 +226,7 @@ func (c *cron) dayMatches(t time.Time) bool {
 const searchYears = 9
 
 // Next searches the clock's readings, not instants: candidates are wall
-// times (minute, hour, day, month as a clock in the job's zone shows
+// times (minute, hour, day, month as a clock in the trigger's zone shows
 // them), stepped in a calendar without clock changes, so the search
 // always moves forward. A wall time a clock change skips is skipped; one
 // it repeats runs at its first occurrence only.
@@ -269,7 +269,7 @@ func (c *cron) step(wall time.Time) (time.Time, bool) {
 	return wall, true
 }
 
-// first is the earliest instant the job's clock reads wall, if any: none
+// first is the earliest instant the trigger's clock reads wall, if any: none
 // in a gap, the first of two in a repeated hour. Offsets change by at
 // most a couple of hours, in steps of a quarter-hour or more.
 func (c *cron) first(wall time.Time) (time.Time, bool) {

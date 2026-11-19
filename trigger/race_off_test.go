@@ -5,6 +5,6 @@
 
 //go:build !race
 
-package schedule
+package trigger
 
 const raceEnabled = false

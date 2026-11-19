@@ -72,22 +72,22 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	return srv.Serve(run, l)
 }
 
-// startBackground starts what works beside the API: the scheduled jobs
-// (unless --no-schedule) and the chat apps. The function returned stops
+// startBackground starts what works beside the API: the triggers (unless
+// --no-triggers) and the chat apps. The function returned stops
 // them.
 func (c *cli) startBackground(ctx *orpheus.Context, run context.Context, srv *serve.Server) (func(), error) {
 	stopChannels, err := c.startChannels(ctx, run, srv)
 	if err != nil {
 		return nil, err
 	}
-	stopJobs := func() {}
-	if !ctx.GetFlagBool("no-schedule") {
-		if stopJobs, err = c.startSchedule(run, srv); err != nil {
+	stopTriggers := func() {}
+	if !ctx.GetFlagBool("no-triggers") {
+		if stopTriggers, err = c.startTriggers(ctx, run, srv); err != nil {
 			stopChannels()
 			return nil, err
 		}
 	}
-	return func() { stopJobs(); stopChannels() }, nil
+	return func() { stopTriggers(); stopChannels() }, nil
 }
 
 // newServer builds the server: its token, the shared remote tools, the
@@ -146,6 +146,7 @@ func (c *cli) runInstance(ctx *orpheus.Context, role *profile) func(context.Cont
 	return func(run context.Context) (serve.Instance, error) {
 		r := c.forRun()
 		r.runConversation = serve.ConversationOf(run)
+		r.setUpTrigger(serve.SourceOf(run))
 		r.inbox = c.inboxOf(r.runConversation)
 		r.role = role
 		a, err := r.agent(ctx)

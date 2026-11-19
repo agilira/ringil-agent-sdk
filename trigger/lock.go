@@ -3,7 +3,7 @@
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-package schedule
+package trigger
 
 import (
 	"context"
@@ -21,10 +21,10 @@ const lockWait = 10 * time.Second
 func checkPrivate(root *os.Root) error {
 	info, err := root.Stat(".")
 	if err != nil {
-		return errors.Wrap(err, ErrStore, "cannot inspect the schedule's directory")
+		return errors.Wrap(err, ErrStore, "cannot inspect the triggers' directory")
 	}
 	if err := lockfile.CheckPrivate(info); err != nil {
-		return errors.Wrap(err, ErrStore, "the schedule's directory must be private to you")
+		return errors.Wrap(err, ErrStore, "the triggers' directory must be private to you")
 	}
 	return nil
 }
@@ -39,7 +39,7 @@ func (s *Store) lock(name string) (func(), error) {
 	defer cancel()
 	if err := lockfile.Lock(ctx, f); err != nil {
 		_ = f.Close() // #nosec G104 -- not locked
-		return nil, errors.Wrap(err, ErrStore, "the schedule is being edited elsewhere")
+		return nil, errors.Wrap(err, ErrStore, "the triggers is being edited elsewhere")
 	}
 	return func() {
 		_ = lockfile.Unlock(f) // #nosec G104 -- closing releases it too
@@ -47,8 +47,8 @@ func (s *Store) lock(name string) (func(), error) {
 	}, nil
 }
 
-// claim takes the scheduler's lock for as long as it runs: two schedulers
-// on one store would run every job twice.
+// claim takes the runner's lock for as long as it runs: two runners
+// on one store would run every trigger twice.
 func (s *Store) claim() (func(), error) {
 	f, err := lockfile.Open(s.root, lockName)
 	if err != nil {
@@ -57,7 +57,7 @@ func (s *Store) claim() (func(), error) {
 	ok, err := lockfile.TryLock(f)
 	if err != nil || !ok {
 		_ = f.Close() // #nosec G104 -- not ours
-		return nil, errors.New(ErrBusy, "another scheduler is running these jobs")
+		return nil, errors.New(ErrBusy, "another runner is running these triggers")
 	}
 	return func() {
 		_ = lockfile.Unlock(f) // #nosec G104 -- closing releases it too

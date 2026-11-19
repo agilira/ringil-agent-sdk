@@ -84,6 +84,16 @@ func ConversationOf(ctx context.Context) string {
 	return ""
 }
 
+// SourceOf is what started a run, as the host labelled it with
+// StartFrom ("trigger:mail", "telegram"); "" for a run of the API, which
+// never sets it.
+func SourceOf(ctx context.Context) string {
+	if j, ok := ctx.Value(jobKey{}).(*job); ok {
+		return j.source
+	}
+	return ""
+}
+
 type entry struct {
 	id   int
 	data []byte
@@ -97,6 +107,7 @@ type pending struct {
 
 type job struct {
 	id, profile, conversation string
+	source                    string // who started it, the host's label
 	srv                       *Server
 
 	mu      sync.Mutex

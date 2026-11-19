@@ -3,7 +3,7 @@
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-package schedule
+package trigger
 
 import (
 	"testing"

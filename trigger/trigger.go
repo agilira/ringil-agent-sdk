@@ -1,31 +1,39 @@
-// schedule.go: running jobs on their timetable
+// trigger.go: running agents when something happens
 //
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-// Package schedule runs agents on a timetable: "every weekday at 8",
-// "every 10 minutes". Jobs live in a Store (a private directory: jobs.json
-// people edit, status.json the scheduler writes); a Scheduler reads them,
-// starts each run through Config.Run when it is due, and records what
-// became of it.
+// Package trigger runs agents when something happens: a time ("every
+// weekday at 8"), a tool's answer that changes, files created, changed or
+// removed, a message in a chat, a request to a webhook. Triggers live in a
+// Store (a private directory: triggers.json people edit, status.json the
+// runner writes); a Runner reads them, starts each run through Config.Run
+// when it is set off, and records what became of it.
 //
-// The rules a scheduler keeps:
-//   - one run of a job at a time: a run due while the last is still going
-//     is skipped and counted;
-//   - no burst after downtime: runs missed while the scheduler was down,
-//     or the machine asleep, are skipped, except one catch-up run for jobs
-//     that ask for it;
-//   - one scheduler per store: a second one refuses to start;
-//   - edits to the jobs are picked up while running (Reload, or within
-//     Config.Poll).
+// The rules a runner keeps:
+//   - one run of a trigger at a time: a time or a host's fire while the
+//     last is still going is skipped and counted; a Tool or File trigger
+//     does not look while its run goes, and takes note of what its path
+//     holds after a File run (what the run wrote does not set it off);
+//   - no burst after downtime: times missed while the runner was down, or
+//     the machine asleep, are skipped, except one catch-up run for the
+//     triggers that ask for it;
+//   - a change is a change from what was last seen: the first look only
+//     takes note, and what was seen is kept across restarts;
+//   - one runner per store: a second one refuses to start;
+//   - edits to the triggers are picked up while running (Reload, or
+//     within Config.Poll).
 //
-// A scheduled run has no one in front of it: whatever its tools would ask
-// waits for an answer through the host (serve's API) and is refused when
-// none comes. The CLI runs jobs through `ringil serve`.
-package schedule
+// A trigger's run has no one in front of it: the host allows the tools
+// the trigger was allowed when it was made (Trigger.Allow) and refuses the
+// others. What set it off reaches the run as data from outside, never as
+// instructions. The CLI runs triggers through `ringil serve`.
+package trigger
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -33,9 +41,28 @@ import (
 	"github.com/agilira/go-errors"
 )
 
-// Run starts a job's run and waits for its end. It returns what the run
-// produced and its error, nil for success.
-type Run func(ctx context.Context, job Job) (Outcome, error)
+// Run starts a trigger's run and waits for its end. It returns what the run
+// produced and its error, nil for success. When ctx ends (the trigger's
+// Timeout, or the runner stopping), the run must stop too.
+type Run func(ctx context.Context, t Trigger, f Fired) (Outcome, error)
+
+// Fired is what set a trigger off, for its run.
+type Fired struct {
+	Kind Kind
+	// At is when: the time on the timetable, or when the change was seen,
+	// the message heard, the request taken.
+	At time.Time
+	// Detail is what happened, as data from outside: the tool's new
+	// answer, the files created, changed or removed, the message, the
+	// request's body. Empty for a time. At most MaxDetail bytes.
+	Detail string
+}
+
+// MaxDetail bounds what a run is told of what set it off.
+const MaxDetail = 16 << 10
+
+// Call asks a tool for a Tool trigger: its answer as text.
+type Call func(ctx context.Context, tool string, args json.RawMessage) (string, error)
 
 // Outcome is what a run produced.
 type Outcome struct {
@@ -45,33 +72,36 @@ type Outcome struct {
 	Text string
 }
 
-// MaxText bounds the answer a job's status keeps.
+// MaxText bounds the answer a trigger's status keeps.
 const MaxText = 4 << 10
 
-// EventKind is what happened to a job.
+// EventKind is what happened to a trigger.
 type EventKind string
 
 const (
-	JobStarted  EventKind = "started"
-	JobFinished EventKind = "finished"
-	JobFailed   EventKind = "failed"
-	JobSkipped  EventKind = "skipped"
-	// JobInvalid: the job's timetable or zone cannot be read; it does not
-	// run until fixed.
-	JobInvalid EventKind = "invalid"
+	Started  EventKind = "started"
+	Finished EventKind = "finished"
+	Failed   EventKind = "failed"
+	Skipped  EventKind = "skipped"
+	// LookFailed: a Tool or File trigger could not look; it looks again
+	// at its next time.
+	LookFailed EventKind = "look_failed"
+	// Invalid: the trigger cannot be read (its timetable, its zone, its
+	// fields); it does not run until fixed.
+	Invalid EventKind = "invalid"
 )
 
-// Event reports a job's run to Config.OnEvent.
+// Event reports a trigger's run to Config.OnEvent.
 type Event struct {
-	Kind EventKind
-	Job  string
-	// At is the scheduled time of the run.
+	Kind    EventKind
+	Trigger string
+	// At is when it was set off.
 	At  time.Time
 	Run string
 	Err error
 }
 
-// Clock is time for the scheduler; tests replace it.
+// Clock is time for the runner; tests replace it.
 type Clock interface {
 	Now() time.Time
 	After(d time.Duration) <-chan time.Time
@@ -82,39 +112,53 @@ type realClock struct{}
 func (realClock) Now() time.Time                         { return time.Now() }
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-// Config configures a Scheduler.
+// Config configures a Runner.
 type Config struct {
 	Store *Store
 	Run   Run
+	// Call asks the tools of Tool triggers; without it they cannot look.
+	Call Call
 	// OnEvent hears of every start, end and skip; it must not block.
 	OnEvent func(Event)
-	// Poll is how often the jobs are re-read; default 30s.
+	// Poll is how often the triggers are re-read; default 30s.
 	Poll  time.Duration
 	Clock Clock
 }
 
-// Scheduler runs a store's jobs.
-type Scheduler struct {
+// ErrTimeout: a run went past its trigger's Timeout and was stopped.
+const ErrTimeout errors.ErrorCode = "TRIGGER_TIMEOUT"
+
+// ErrStopped: the runner is not running (Fire, Heard).
+const ErrStopped errors.ErrorCode = "TRIGGER_STOPPED"
+
+// Runner runs a store's triggers.
+type Runner struct {
 	cfg    Config
 	reload chan struct{}
 
-	mu      sync.Mutex
-	status  map[string]Status
-	running map[string]bool
-	jobs    map[string]planned
+	mu       sync.Mutex
+	ctx      context.Context // Run's, while it runs; nil otherwise
+	wg       sync.WaitGroup
+	status   map[string]Status
+	running  map[string]bool // looking or running
+	triggers map[string]planned
+	seen     map[string]snapshot // what File triggers last saw
+	// shortLimit, in tests, replaces every run's Timeout.
+	shortLimit time.Duration
 }
 
-// planned is a job as the scheduler holds it.
+// planned is a trigger as the runner holds it: next is zero for those
+// the host sets off.
 type planned struct {
-	job  Job
-	when When
-	next time.Time
+	trigger Trigger
+	when    When
+	next    time.Time
 }
 
 // New checks the configuration.
-func New(cfg Config) (*Scheduler, error) {
+func New(cfg Config) (*Runner, error) {
 	if cfg.Store == nil || cfg.Run == nil {
-		return nil, errors.New(ErrConfig, "a scheduler needs a store and a way to run jobs")
+		return nil, errors.New(ErrConfig, "a runner needs a store and a way to run triggers")
 	}
 	if cfg.Poll <= 0 {
 		cfg.Poll = 30 * time.Second
@@ -125,30 +169,38 @@ func New(cfg Config) (*Scheduler, error) {
 	if cfg.OnEvent == nil {
 		cfg.OnEvent = func(Event) {}
 	}
-	return &Scheduler{cfg: cfg, reload: make(chan struct{}, 1), running: map[string]bool{}, jobs: map[string]planned{}}, nil
+	return &Runner{cfg: cfg, reload: make(chan struct{}, 1), running: map[string]bool{},
+		triggers: map[string]planned{}, seen: map[string]snapshot{}}, nil
 }
 
-// Reload re-reads the jobs now instead of at the next poll.
-func (s *Scheduler) Reload() {
+// Reload re-reads the triggers now instead of at the next poll.
+func (s *Runner) Reload() {
 	select {
 	case s.reload <- struct{}{}:
 	default:
 	}
 }
 
-// Run runs the jobs until ctx ends, then waits for the runs in progress
-// (which end with ctx). It returns ErrBusy when another scheduler holds
-// the store.
-func (s *Scheduler) Run(ctx context.Context) error {
+// Run runs the triggers until ctx ends, then waits for the runs in
+// progress (which end with ctx). It returns ErrBusy when another runner
+// holds the store.
+func (s *Runner) Run(ctx context.Context) error {
 	release, err := s.cfg.Store.claim()
 	if err != nil {
 		return err
 	}
 	defer release()
 	s.loadStatus()
-	var wg sync.WaitGroup
-	defer wg.Wait()
 	s.load(true)
+	s.mu.Lock()
+	s.ctx = ctx
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.ctx = nil
+		s.mu.Unlock()
+		s.wg.Wait()
+	}()
 	loaded := s.cfg.Clock.Now()
 	for {
 		now := s.cfg.Clock.Now()
@@ -159,7 +211,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			loaded = now
 		}
 		for _, due := range s.due(now) {
-			wg.Go(func() { s.fire(ctx, due.job, due.at) })
+			s.wg.Go(func() { s.fire(ctx, due.trigger, due.at) })
 		}
 		reload, alive := s.wait(ctx, now)
 		if !alive {
@@ -172,13 +224,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// loadStatus reads what became of the jobs. A status that cannot be read
-// is reported and started afresh: it is the scheduler's own record, and
-// the jobs must not stop over it.
-func (s *Scheduler) loadStatus() {
+// loadStatus reads what became of the triggers. A status that cannot be
+// read is reported and started afresh: it is the runner's own record, and
+// the triggers must not stop over it.
+func (s *Runner) loadStatus() {
 	st, err := s.cfg.Store.Status()
 	if err != nil {
-		s.cfg.OnEvent(Event{Kind: JobInvalid, Err: err})
+		s.cfg.OnEvent(Event{Kind: Invalid, Err: err})
 		st = map[string]Status{}
 	}
 	s.mu.Lock()
@@ -186,11 +238,11 @@ func (s *Scheduler) loadStatus() {
 	s.mu.Unlock()
 }
 
-// anyDue reports whether a job's time has come.
-func (s *Scheduler) anyDue(now time.Time) bool {
+// anyDue reports whether a trigger's time has come.
+func (s *Runner) anyDue(now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, p := range s.jobs {
+	for _, p := range s.triggers {
 		if !p.next.IsZero() && !p.next.After(now) {
 			return true
 		}
@@ -200,7 +252,7 @@ func (s *Scheduler) anyDue(now time.Time) bool {
 
 // wait sleeps until the next run, a reload (true) or the end (alive
 // false).
-func (s *Scheduler) wait(ctx context.Context, now time.Time) (reload, alive bool) {
+func (s *Runner) wait(ctx context.Context, now time.Time) (reload, alive bool) {
 	select {
 	case <-ctx.Done():
 		return false, false
@@ -211,39 +263,90 @@ func (s *Scheduler) wait(ctx context.Context, now time.Time) (reload, alive bool
 	}
 }
 
-// load reads the jobs and plans each one's next run. On the first load a
-// job that asks for it catches up a run missed while the scheduler was
-// down; a job whose timetable changed is planned afresh.
-func (s *Scheduler) load(first bool) {
-	jobs, err := s.cfg.Store.Jobs()
+// load reads the triggers and plans each one's next time. On the first
+// load a trigger that asks for it catches up a run missed while the
+// runner was down; a trigger whose kind or timetable changed is planned
+// afresh, and what it saw is forgotten.
+func (s *Runner) load(first bool) {
+	triggers, err := s.cfg.Store.Triggers()
 	if err != nil {
-		s.cfg.OnEvent(Event{Kind: JobInvalid, Err: err})
+		s.cfg.OnEvent(Event{Kind: Invalid, Err: err})
 		return
 	}
 	now := s.cfg.Clock.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	seen := map[string]planned{}
-	for _, j := range jobs {
-		when, err := j.Check()
+	kept := map[string]planned{}
+	for _, t := range triggers {
+		when, err := t.Check()
 		if err != nil {
-			s.cfg.OnEvent(Event{Kind: JobInvalid, Job: j.Name, Err: err})
+			s.cfg.OnEvent(Event{Kind: Invalid, Trigger: t.Name, Err: err})
 			continue
 		}
-		p, known := s.jobs[j.Name]
-		if !known || p.job.When != j.When || p.job.TimeZone != j.TimeZone {
-			p.next = s.firstRun(j, when, now, first)
+		s.own(t)
+		p, known := s.triggers[t.Name]
+		if !known || replanned(p.trigger, t) {
+			p.next = s.firstRun(t, when, now, first)
 		}
-		p.job, p.when = j, when
-		seen[j.Name] = p
+		p.trigger, p.when = t, when
+		kept[t.Name] = p
 	}
-	s.jobs = seen
+	s.triggers = kept
+	s.prune(kept)
 }
 
-// firstRun is a job's first planned run: the next on its timetable, or
-// now when it catches up a run missed since its last.
-func (s *Scheduler) firstRun(j Job, when When, now time.Time, first bool) time.Time {
-	if last := s.status[j.Name].LastFire; first && j.CatchUp && !last.IsZero() {
+// own starts a fresh status for a trigger whose Target is not its
+// status's: a new trigger by an old name, or one set off by something
+// else now (whose old Seen and LastFire mean nothing); s.mu held.
+func (s *Runner) own(t Trigger) {
+	target := t.target()
+	st, ok := s.status[t.Name]
+	switch {
+	case ok && st.Target == target:
+		return
+	case ok && st.Target == "": // a status from before targets were kept: its own
+		st.Target = target
+	default:
+		st = Status{Target: target}
+		delete(s.seen, t.Name)
+	}
+	s.status[t.Name] = st
+	s.save()
+}
+
+// prune forgets the status of triggers no longer there; s.mu held.
+func (s *Runner) prune(kept map[string]planned) {
+	changed := false
+	for name := range s.status {
+		if _, ok := kept[name]; !ok && !s.running[name] {
+			delete(s.status, name)
+			delete(s.seen, name)
+			changed = true
+		}
+	}
+	if changed {
+		s.save()
+	}
+}
+
+// replanned: b sets off differently from a (kind, timetable, target).
+func replanned(a, b Trigger) bool {
+	return a.kind() != b.kind() || a.When != b.When || a.TimeZone != b.TimeZone || !sameTarget(a, b)
+}
+
+// sameTarget: a and b look at the same thing (tool and arguments, path).
+func sameTarget(a, b Trigger) bool {
+	return a.target() == b.target()
+}
+
+// firstRun is a trigger's first planned time: the next on its timetable,
+// or now when it catches up a run missed since its last; zero for the
+// triggers the host sets off.
+func (s *Runner) firstRun(t Trigger, when When, now time.Time, first bool) time.Time {
+	if when == nil {
+		return time.Time{}
+	}
+	if last := s.status[t.Name].LastFire; first && t.CatchUp && t.kind() == Time && !last.IsZero() {
 		if missed := when.Next(last); !missed.IsZero() && missed.Before(now) {
 			return now
 		}
@@ -252,78 +355,157 @@ func (s *Scheduler) firstRun(j Job, when When, now time.Time, first bool) time.T
 }
 
 type dueRun struct {
-	job Job
-	at  time.Time
+	trigger Trigger
+	at      time.Time
 }
 
-// due takes the jobs whose time has come and plans their next run from
-// now: a scheduler that slept through several runs makes one, not all.
-func (s *Scheduler) due(now time.Time) []dueRun {
+// due takes the triggers whose time has come and plans their next from
+// now: a runner that slept through several times makes one, not all.
+func (s *Runner) due(now time.Time) []dueRun {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []dueRun
-	for name, p := range s.jobs {
+	for name, p := range s.triggers {
 		if p.next.IsZero() || p.next.After(now) {
 			continue
 		}
 		at := p.next
 		p.next = p.when.Next(now)
-		s.jobs[name] = p
-		if !p.job.Paused {
-			out = append(out, dueRun{job: p.job, at: at})
+		s.triggers[name] = p
+		if !p.trigger.Paused {
+			out = append(out, dueRun{trigger: p.trigger, at: at})
 		}
 	}
 	return out
 }
 
-// untilNext is the wait until the earliest planned run.
-func (s *Scheduler) untilNext(now time.Time) time.Duration {
+// untilNext is the wait until the earliest planned time.
+func (s *Runner) untilNext(now time.Time) time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	wait := s.cfg.Poll
-	for _, p := range s.jobs {
-		if !p.next.IsZero() && !p.job.Paused {
+	for _, p := range s.triggers {
+		if !p.next.IsZero() && !p.trigger.Paused {
 			wait = min(wait, max(p.next.Sub(now), 0))
 		}
 	}
 	return wait
 }
 
-// fire runs one job, unless its last run is still going.
-func (s *Scheduler) fire(ctx context.Context, job Job, at time.Time) {
-	if !s.begin(job.Name, at) {
-		s.cfg.OnEvent(Event{Kind: JobSkipped, Job: job.Name, At: at})
+// fire handles a trigger whose time has come: a Time trigger runs, a
+// Tool or File trigger looks and runs if what it sees changed.
+func (s *Runner) fire(ctx context.Context, t Trigger, at time.Time) {
+	if t.kind() == Time {
+		s.start(ctx, t, Fired{Kind: Time, At: at})
 		return
 	}
-	s.cfg.OnEvent(Event{Kind: JobStarted, Job: job.Name, At: at})
-	out, err := s.cfg.Run(ctx, job)
-	s.end(job.Name, out, err)
-	kind := JobFinished
-	if err != nil {
-		kind = JobFailed
+	if !s.hold(t.Name) {
+		return // still looking, or its run still going: the next look sees the change
 	}
-	s.cfg.OnEvent(Event{Kind: kind, Job: job.Name, At: at, Run: out.Run, Err: err})
+	lookCtx, cancel := context.WithTimeout(ctx, lookTimeout)
+	detail, changed, err := s.look(lookCtx, t)
+	cancel()
+	if err != nil || !changed {
+		s.release(t.Name)
+		if err != nil {
+			s.cfg.OnEvent(Event{Kind: LookFailed, Trigger: t.Name, At: at, Err: err})
+		}
+		return
+	}
+	s.run(ctx, t, Fired{Kind: t.kind(), At: s.cfg.Clock.Now(), Detail: clipTo(detail, MaxDetail)})
+	if t.kind() == File {
+		s.rebase(t) // what its own run wrote does not set it off again
+	}
 }
 
-func (s *Scheduler) begin(name string, at time.Time) bool {
+// lookTimeout bounds a look: a tool that hangs fails the look, which is
+// tried again at the next time.
+const lookTimeout = 2 * time.Minute
+
+// rebase takes note of what a File trigger's path holds after its run:
+// the run may have written there, and that must not set it off again
+// (nor, then, what others wrote there while it ran).
+func (s *Runner) rebase(t Trigger) {
+	if !s.hold(t.Name) {
+		return
+	}
+	defer s.release(t.Name)
+	if _, _, err := s.look(context.Background(), t); err != nil {
+		s.cfg.OnEvent(Event{Kind: LookFailed, Trigger: t.Name, Err: err})
+	}
+}
+
+// start runs a trigger, unless its last run is still going.
+func (s *Runner) start(ctx context.Context, t Trigger, f Fired) {
+	if !s.hold(t.Name) {
+		s.skipped(t.Name)
+		s.cfg.OnEvent(Event{Kind: Skipped, Trigger: t.Name, At: f.At})
+		return
+	}
+	s.run(ctx, t, f)
+}
+
+// run runs a trigger held for it.
+func (s *Runner) run(ctx context.Context, t Trigger, f Fired) {
+	s.begin(t.Name, f.At)
+	s.cfg.OnEvent(Event{Kind: Started, Trigger: t.Name, At: f.At})
+	limit, _ := t.limit() // checked when loaded
+	s.mu.Lock()
+	if s.shortLimit > 0 {
+		limit = s.shortLimit
+	}
+	s.mu.Unlock()
+	runCtx, cancel := context.WithTimeout(ctx, limit)
+	out, err := s.cfg.Run(runCtx, t, f)
+	if runCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		err = errors.New(ErrTimeout, "stopped after "+limit.String())
+	}
+	cancel()
+	s.end(t.Name, out, err)
+	kind := Finished
+	if err != nil {
+		kind = Failed
+	}
+	s.cfg.OnEvent(Event{Kind: kind, Trigger: t.Name, At: f.At, Run: out.Run, Err: err})
+}
+
+// hold marks a trigger busy; false when it already is.
+func (s *Runner) hold(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.status[name]
 	if s.running[name] {
-		st.Skipped++
-		s.status[name] = st
-		s.save()
 		return false
 	}
 	s.running[name] = true
+	return true
+}
+
+func (s *Runner) release(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.running, name)
+}
+
+func (s *Runner) skipped(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.status[name]
+	st.Skipped++
+	s.status[name] = st
+	s.save()
+}
+
+func (s *Runner) begin(name string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.status[name]
 	st.LastFire, st.LastRun, st.LastError, st.LastText = at, "", "", ""
 	st.Runs++
 	s.status[name] = st
 	s.save()
-	return true
 }
 
-func (s *Scheduler) end(name string, out Outcome, err error) {
+func (s *Runner) end(name string, out Outcome, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.running, name)
@@ -336,15 +518,75 @@ func (s *Scheduler) end(name string, out Outcome, err error) {
 	s.save()
 }
 
-// save writes the status; a failure is reported, the jobs keep running.
-func (s *Scheduler) save() {
+// save writes the status; a failure is reported, the triggers keep
+// running.
+func (s *Runner) save() {
 	if err := s.cfg.Store.saveStatus(s.status); err != nil {
-		s.cfg.OnEvent(Event{Kind: JobInvalid, Err: err})
+		s.cfg.OnEvent(Event{Kind: Invalid, Err: err})
 	}
 }
 
-// Status returns every job's status as the scheduler holds it.
-func (s *Scheduler) Status() map[string]Status {
+// Fire sets off a Message or Webhook trigger the host heard of, with
+// what happened (clipped to MaxDetail). Its run goes on after Fire
+// returns; one set off while the last is still going is skipped.
+func (s *Runner) Fire(name, detail string) (err error) {
+	started := false
+	s.mu.Lock()
+	ctx := s.ctx
+	p, ok := s.triggers[name]
+	if ctx != nil {
+		s.wg.Add(1) // under s.mu: Run stops taking runs (ctx nil) before it waits
+	}
+	s.mu.Unlock()
+	if ctx != nil {
+		defer func() {
+			if !started {
+				s.wg.Done()
+			}
+		}()
+	}
+	switch {
+	case ctx == nil:
+		return errors.New(ErrStopped, "the triggers are not running")
+	case !ok:
+		return errors.New(ErrNotFound, "no trigger "+name)
+	case p.trigger.kind() != Message && p.trigger.kind() != Webhook:
+		return errors.New(ErrConfig, "trigger "+name+" is set off by its "+string(p.trigger.kind())+", not by the host")
+	case p.trigger.Paused:
+		return errors.New(ErrConfig, "trigger "+name+" is paused")
+	}
+	f := Fired{Kind: p.trigger.kind(), At: s.cfg.Clock.Now(), Detail: clipTo(detail, MaxDetail)}
+	started = true
+	go func() {
+		defer s.wg.Done()
+		s.start(ctx, p.trigger, f)
+	}()
+	return nil
+}
+
+// Heard sets off the Message triggers of chat whose words are in text
+// (letter case aside), and returns their names.
+func (s *Runner) Heard(chat, text string) []string {
+	s.mu.Lock()
+	var names []string
+	for name, p := range s.triggers {
+		t := p.trigger
+		if t.kind() == Message && !t.Paused && t.Chat == chat && strings.Contains(strings.ToLower(text), strings.ToLower(t.Match)) {
+			names = append(names, name)
+		}
+	}
+	s.mu.Unlock()
+	var fired []string
+	for _, name := range names {
+		if s.Fire(name, text) == nil {
+			fired = append(fired, name)
+		}
+	}
+	return fired
+}
+
+// Status returns every trigger's status as the runner holds it.
+func (s *Runner) Status() map[string]Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make(map[string]Status, len(s.status))
@@ -354,21 +596,27 @@ func (s *Scheduler) Status() map[string]Status {
 	return out
 }
 
-// NextRun is the job's next planned run, zero when it has none.
-func (s *Scheduler) NextRun(name string) time.Time {
+// NextRun is the trigger's next planned time, zero when it has none.
+func (s *Runner) NextRun(name string) time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.jobs[name].next
+	return s.triggers[name].next
 }
 
 // clip keeps the first MaxText bytes of text, cut on a character.
 func clip(text string) string {
-	if len(text) <= MaxText {
+	return clipTo(text, MaxText)
+}
+
+// clipTo keeps the first max bytes of text, cut on a character.
+func clipTo(text string, max int) string {
+	if len(text) <= max {
 		return text
 	}
-	cut := MaxText
+	const more = " [...]"
+	cut := max - len(more)
 	for cut > 0 && !utf8.RuneStart(text[cut]) {
 		cut--
 	}
-	return text[:cut] + " [...]"
+	return text[:cut] + more
 }
