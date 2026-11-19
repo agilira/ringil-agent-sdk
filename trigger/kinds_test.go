@@ -157,7 +157,7 @@ func TestCheckKinds(t *testing.T) {
 	ok := []Trigger{
 		{Name: "a", When: "@daily", Prompt: "x"},
 		{Name: "b", Kind: Tool, Tool: "mail_unread", Skill: "triage"},
-		{Name: "c", Kind: File, Path: "/tmp/in", Skill: "file-in"},
+		{Name: "c", Kind: File, Path: filepath.Join(os.TempDir(), "in"), Skill: "file-in"},
 		{Name: "d", Kind: Message, Chat: "telegram:1", Prompt: "x"},
 		{Name: "e", Kind: Webhook, Secret: strings.Repeat("k", 32), Prompt: "x", Allow: []string{"write_file"}},
 	}
@@ -215,7 +215,7 @@ func TestFieldsOfAnotherKind(t *testing.T) {
 		"path on time":     {Name: "a", When: "@daily", Path: "/x", Prompt: "x"},
 		"secret on tool":   {Name: "a", Kind: Tool, Tool: "t", Secret: strings.Repeat("s", 32), Prompt: "x"},
 		"when on webhook":  {Name: "a", Kind: Webhook, Secret: strings.Repeat("s", 32), When: "@daily", Prompt: "x"},
-		"catch-up on file": {Name: "a", Kind: File, Path: "/x", CatchUp: true, Prompt: "x"},
+		"catch-up on file": {Name: "a", Kind: File, Path: filepath.Join(os.TempDir(), "x"), CatchUp: true, Prompt: "x"},
 	} {
 		if _, err := tr.Check(); err == nil {
 			t.Errorf("%s accepted", name)
