@@ -573,7 +573,21 @@ func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
 // unasked: --no-approvals, and not in a chat's run, whose Bridge decides
 // by who started it (an owner's runs go unasked, the others' are refused).
 func (c *cli) unasked() bool {
-	return c.noApprovals && !channel.Owns("telegram", c.runConversation)
+	return c.noApprovals && !c.chatRun()
+}
+
+// chats are the channels serve bridges: their runs' approvals are the
+// Bridge's to decide, and they talk in chat style.
+var chats = []string{"telegram"}
+
+// chatRun: this run continues a chat's conversation.
+func (c *cli) chatRun() bool {
+	for _, name := range chats {
+		if channel.Owns(name, c.runConversation) {
+			return true
+		}
+	}
+	return false
 }
 
 // serveApprove: under serve, the API's caller decides what the chat

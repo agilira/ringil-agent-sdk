@@ -240,7 +240,7 @@ func (c *cli) system(ctx *orpheus.Context) string {
 // chatSystem is system with what an agent should know to talk in a chat
 // app, in a run of a Telegram chat.
 func (c *cli) chatSystem(system string) string {
-	if !channel.Owns("telegram", c.runConversation) {
+	if !c.chatRun() {
 		return system
 	}
 	if system == "" {

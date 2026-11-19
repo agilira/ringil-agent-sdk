@@ -307,7 +307,13 @@ const (
 // a line per field, in the order given, made visible; a very long one is
 // cut in the middle, saying so.
 func showInput(raw json.RawMessage) string {
-	r := []rune(visible(fields(raw)))
+	return capped(fields(raw))
+}
+
+// capped is s made visible, cut in the middle past maxShown characters,
+// saying how much is not shown.
+func capped(s string) string {
+	r := []rune(visible(s))
 	if len(r) <= maxShown {
 		return string(r)
 	}

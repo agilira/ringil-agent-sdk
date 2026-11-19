@@ -7,7 +7,10 @@ package channel
 
 import (
 	"encoding/json"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // question is an approval as the chat reads it: a sentence, and what it
@@ -46,21 +49,21 @@ type asking struct {
 // command is asked about.
 var knownTools = map[string]asking{
 	"write_file": {[]string{"path", "content"}, func(sp speech, f *callFields) question {
-		return question{text: sp.t(mAskWrite, f.text("path")), code: f.text("content")}
+		return question{text: sp.t(mAskWrite, f.path("path")), code: f.text("content")}
 	}},
 	"edit_file": {[]string{"path", "old_string", "new_string", "replace_all"}, func(sp speech, f *callFields) question {
 		m := mAskEdit
 		if f.flag("replace_all") {
 			m = mAskEditAll
 		}
-		return question{text: sp.t(m, f.text("path")), code: diff(f.text("old_string"), f.text("new_string"))}
+		return question{text: sp.t(m, f.path("path")), code: diff(f.text("old_string"), f.text("new_string"))}
 	}},
 	"write_protected_file": {[]string{"path"}, func(sp speech, f *callFields) question {
-		return question{text: sp.t(mAskProtected, f.text("path"))}
+		return question{text: sp.t(mAskProtected, f.path("path"))}
 	}},
 	"bash_": {[]string{"command", "reason", "why", "explanation"}, askCommand},
 	"network_domain": {[]string{"domain"}, func(sp speech, f *callFields) question {
-		return question{text: sp.t(mAskDomain, f.text("domain"))}
+		return question{text: sp.t(mAskDomain, inline(f.text("domain")))}
 	}},
 }
 
@@ -88,10 +91,10 @@ func askCommand(sp speech, f *callFields) question {
 		lines = append(lines, sp.t(mOutside))
 	}
 	for _, why := range f.texts("why") {
-		lines = append(lines, "• "+why)
+		lines = append(lines, "• "+inline(why))
 	}
 	if e := f.text("explanation"); e != "" {
-		lines = append(lines, sp.t(mAgentSays, e))
+		lines = append(lines, sp.t(mAgentSays, quote(e)))
 	}
 	return question{text: strings.Join(lines, "\n"), code: f.text("command")}
 }
@@ -145,6 +148,52 @@ func (f *callFields) text(name string) string {
 		f.ok = false
 	}
 	return visible(s)
+}
+
+// path is a path field as the tools read it (cleaned: "a\n\n/../b" is
+// b), on one line.
+func (f *callFields) path(name string) string {
+	p := f.text(name)
+	if p == "" {
+		return inline(p)
+	}
+	return inline(filepath.Clean(p))
+}
+
+// inline is a value inside a sentence: as it is when it reads plainly on
+// one line, else quoted, its line breaks and odd blanks escaped, so that
+// it cannot make lines or gaps of its own.
+func inline(s string) string {
+	plain := s != "" && strings.TrimSpace(s) == s && !strings.Contains(s, "  ") && !strings.ContainsAny(s, "\"")
+	for _, r := range s {
+		if unicode.IsSpace(r) && r != ' ' {
+			plain = false
+		}
+	}
+	if plain {
+		return s
+	}
+	return quote(s)
+}
+
+// quote puts s in double quotes, escaping quotes, backslashes, every
+// blank but the space and whatever does not print; letters of any
+// language stay as they are.
+func quote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			b.WriteString("\\" + string(r))
+		case r == ' ' || (unicode.IsGraphic(r) && !unicode.IsSpace(r)):
+			b.WriteRune(r)
+		default:
+			b.WriteString(strings.Trim(strconv.QuoteRuneToASCII(r), "'"))
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // texts is a list of texts, made visible.
