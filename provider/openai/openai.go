@@ -55,6 +55,10 @@ type Config struct {
 	// require (NVIDIA NIM's embedding models refuse requests without it).
 	// Chat requests ignore it.
 	EmbedInputType bool
+	// Images sends the images of user messages to the model, which must
+	// read them (a vision model). Without it, the model is told the user
+	// sent images it cannot see.
+	Images bool
 	// Headers are added to every request (e.g. OpenRouter's HTTP-Referer).
 	// They cannot replace Authorization, Content-Type, Accept or Host.
 	Headers map[string]string

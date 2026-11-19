@@ -7,6 +7,11 @@
 // receiving with long polling (no public address needed). Make the bot
 // with @BotFather and give its token; the senders are the users' numeric
 // IDs, which the Bridge reports when someone not allowed writes.
+//
+// Messages bring their photos (an album as one message), voice messages,
+// audio, documents and videos, fetched up to 20 MB as the Bot API allows.
+// A local Bot API server (--local) is not supported: it gives files as
+// paths on its own disk.
 package telegram
 
 import (
@@ -54,8 +59,9 @@ type Channel struct {
 	token, base string
 	client      *http.Client
 	poll        time.Duration
+	fetcher     *http.Client
 	offset      int64
-	queue       []channel.Message
+	queue       []queued
 }
 
 var validToken = regexp.MustCompile(`^[0-9]{1,20}:[A-Za-z0-9_-]{20,100}$`)
@@ -80,7 +86,8 @@ func New(ctx context.Context, cfg Config) (*Channel, error) {
 		poll = 30 * time.Second
 	}
 	c := &Channel{token: cfg.Token, base: base, poll: poll,
-		client: safehttp.Client(cfg.Client, nil, maxBody, false)}
+		client:  safehttp.Client(cfg.Client, nil, maxBody, false),
+		fetcher: safehttp.Client(cfg.Client, nil, 0, false)}
 	if err := c.call(ctx, "getMe", struct{}{}, nil); err != nil {
 		return nil, err
 	}
@@ -90,16 +97,46 @@ func New(ctx context.Context, cfg Config) (*Channel, error) {
 // Name is "telegram".
 func (c *Channel) Name() string { return "telegram" }
 
-// Receive returns the next message or button pressed.
+// Receive returns the next message or button pressed. The photos of an
+// album, which Telegram sends one by one, come as one message.
 func (c *Channel) Receive(ctx context.Context) (channel.Message, error) {
 	for len(c.queue) == 0 {
-		if err := c.fetch(ctx); err != nil {
+		if err := c.fetch(ctx, c.poll); err != nil {
 			return channel.Message{}, err
 		}
 	}
+	c.completeAlbum(ctx)
 	m := c.queue[0]
 	c.queue = c.queue[1:]
-	return m, nil
+	return m.Message, nil
+}
+
+// Telegram sends an album photo by photo, and a phone uploads them one
+// at a time: Receive waits for more while more come, each time up to
+// albumWait, at most albumRounds times.
+const (
+	albumWait   = 2 * time.Second
+	albumRounds = 10
+)
+
+// completeAlbum waits for the rest of an album at the head of the queue;
+// a failure here shows again at the next receive.
+func (c *Channel) completeAlbum(ctx context.Context) {
+	if len(c.queue) != 1 || c.queue[0].group == "" {
+		return // only a lone album waits: what follows it shows it is complete
+	}
+	for range albumRounds {
+		files := len(c.queue[0].Files)
+		if c.fetch(ctx, albumWait) != nil || len(c.queue) > 1 || len(c.queue[0].Files) == files {
+			return
+		}
+	}
+}
+
+// queued is a message received, with the album it belongs to.
+type queued struct {
+	channel.Message
+	group string
 }
 
 type updatesIn struct {
@@ -108,22 +145,35 @@ type updatesIn struct {
 	Allowed []string `json:"allowed_updates"`
 }
 
-// fetch waits for updates and queues their messages.
-func (c *Channel) fetch(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, c.poll+15*time.Second)
+// fetch waits for updates up to wait and queues their messages.
+func (c *Channel) fetch(ctx context.Context, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, wait+15*time.Second)
 	defer cancel()
 	var updates []update
-	in := updatesIn{Offset: c.offset, Timeout: int(c.poll / time.Second), Allowed: []string{"message", "callback_query"}}
+	in := updatesIn{Offset: c.offset, Timeout: int(wait / time.Second), Allowed: []string{"message", "callback_query"}}
 	if err := c.call(ctx, "getUpdates", in, &updates); err != nil {
 		return err
 	}
 	for _, u := range updates {
 		c.offset = max(c.offset, u.ID+1)
 		if m, ok := c.message(ctx, u); ok {
-			c.queue = append(c.queue, m)
+			c.enqueue(m)
 		}
 	}
 	return nil
+}
+
+// enqueue adds a message, or merges it into the album it continues.
+func (c *Channel) enqueue(m queued) {
+	if n := len(c.queue); n > 0 && m.group != "" {
+		last := &c.queue[n-1]
+		if last.group == m.group && last.Chat == m.Chat && last.From == m.From {
+			last.Files = append(last.Files, m.Files...)
+			last.Text = strings.TrimSpace(last.Text + "\n" + m.Text)
+			return
+		}
+	}
+	c.queue = append(c.queue, m)
 }
 
 type update struct {
@@ -133,10 +183,29 @@ type update struct {
 }
 
 type message struct {
-	Chat    struct{ ID int64 } `json:"chat"`
-	From    *user              `json:"from"`
-	Text    string             `json:"text"`
-	Caption string             `json:"caption"`
+	Chat     struct{ ID int64 } `json:"chat"`
+	From     *user              `json:"from"`
+	Text     string             `json:"text"`
+	Caption  string             `json:"caption"`
+	Group    string             `json:"media_group_id"`
+	Photo    []photoSize        `json:"photo"`
+	Voice    *media             `json:"voice"`
+	Audio    *media             `json:"audio"`
+	Document *media             `json:"document"`
+	Video    *media             `json:"video"`
+	Note     *media             `json:"video_note"`
+}
+
+type photoSize struct {
+	FileID string `json:"file_id"`
+	Size   int64  `json:"file_size"`
+}
+
+type media struct {
+	FileID string `json:"file_id"`
+	Name   string `json:"file_name"`
+	MIME   string `json:"mime_type"`
+	Size   int64  `json:"file_size"`
 }
 
 type user struct {
@@ -152,18 +221,18 @@ type callback struct {
 
 // message turns an update into a channel message; ok is false for what
 // is neither a message with a sender nor a button of one of ours.
-func (c *Channel) message(ctx context.Context, u update) (channel.Message, bool) {
+func (c *Channel) message(ctx context.Context, u update) (queued, bool) {
 	switch {
 	case u.Message != nil && u.Message.From != nil:
 		m := u.Message
-		return channel.Message{Chat: id(m.Chat.ID), From: id(m.From.ID), Text: m.Text + m.Caption}, true
+		return queued{channel.Message{Chat: id(m.Chat.ID), From: id(m.From.ID), Text: m.Text + m.Caption, Files: c.files(m)}, m.Group}, true
 	case u.Callback != nil && u.Callback.Message != nil:
 		cb := u.Callback
 		// Stops the button's spinner; only cosmetic, so not retried.
 		_ = c.call(ctx, "answerCallbackQuery", map[string]string{"callback_query_id": cb.ID}, nil)
-		return channel.Message{Chat: id(cb.Message.Chat.ID), From: id(cb.From.ID), Pressed: cb.Data}, true
+		return queued{Message: channel.Message{Chat: id(cb.Message.Chat.ID), From: id(cb.From.ID), Pressed: cb.Data}}, true
 	}
-	return channel.Message{}, false
+	return queued{}, false
 }
 
 func id(n int64) string { return strconv.FormatInt(n, 10) }
@@ -264,7 +333,7 @@ func pauseFor(ctx context.Context, d time.Duration) {
 }
 
 func (c *Channel) post(ctx context.Context, method string, in any) (reply, error) {
-	body, err := json.Marshal(in)
+	body, contentType, err := encode(in)
 	if err != nil {
 		return reply{}, errors.Wrap(err, ErrAPI, "telegram "+method+": cannot encode the request")
 	}
@@ -272,7 +341,7 @@ func (c *Channel) post(ctx context.Context, method string, in any) (reply, error
 	if err != nil {
 		return reply{}, errors.New(ErrNetwork, "telegram "+method+": bad request")
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return reply{}, errors.New(ErrNetwork, "telegram "+method+": "+c.scrub(netError(err)))
@@ -301,4 +370,9 @@ func netError(err error) string {
 // scrub removes the token from a text, wherever it came from.
 func (c *Channel) scrub(s string) string {
 	return strings.ReplaceAll(s, c.token, "<token>")
+}
+
+// Typing shows "typing…" in the chat for about five seconds.
+func (c *Channel) Typing(ctx context.Context, chat string) error {
+	return c.call(ctx, "sendChatAction", map[string]string{"chat_id": chat, "action": "typing"}, nil)
 }

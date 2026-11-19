@@ -87,6 +87,10 @@ type cli struct {
 	// server, under `ringil serve`, decides the calls the chat would ask
 	// about, through its API; there is no terminal.
 	server *serve.Server
+	// inboxRoot, under serve with a chat app, is where the documents sent
+	// in the chats are kept, a directory per conversation; inbox, in a
+	// run, is its own conversation's, granted to the file tools.
+	inboxRoot, inbox string
 	// remote are the MCP and remote agents' tools, connected once when
 	// shared (under serve) for every run.
 	remote []agent.Tool
@@ -147,7 +151,9 @@ func (c *cli) app() *orpheus.App {
 		AddIntFlag("max-runs", "", 4, "runs going at once").
 		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token").
 		AddBoolFlag("no-schedule", "", false, "do not run the scheduled jobs (ringil schedule)").
-		AddFlag("telegram-allow", "", "", "Telegram user IDs whose messages are answered, comma-separated (the bot's token: RINGIL_TELEGRAM_TOKEN)")))
+		AddFlag("telegram-allow", "", "", "Telegram user IDs whose messages are answered, comma-separated (the bot's token: RINGIL_TELEGRAM_TOKEN)").
+		AddFlag("new-after", "", "24h", "a chat silent this long starts a new conversation (24h, 90m...), or never; /new starts one at any time").
+		AddFlag("replies", "", "voice", "how chats' voice messages are answered: voice (needs RINGIL_SPEECH_MODEL) or text; each chat can change it with /voice and /text")))
 	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
 		SetUsage("run <prompt...>")))
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).
@@ -267,12 +273,9 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 		return nil, err
 	}
 	reg = c.addEach(reg, remote)
-	dirs := ctx.GetFlagStringSlice("workspace")
-	if len(dirs) == 0 {
-		var err error
-		if dirs, err = c.defaultDirs(); err != nil {
-			return nil, err
-		}
+	dirs, err := c.workspaceDirs(ctx)
+	if err != nil {
+		return nil, err
 	}
 	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected})
 	if err != nil {
@@ -284,6 +287,23 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 		return nil, err
 	}
 	return reg.With(append(append(c.readTools, ws.WriteTools()...), sh)...)
+}
+
+// workspaceDirs are the directories granted to the file tools: those of
+// --workspace, or the default ones, and under serve the documents of the
+// run's chat.
+func (c *cli) workspaceDirs(ctx *orpheus.Context) ([]string, error) {
+	dirs := ctx.GetFlagStringSlice("workspace")
+	if len(dirs) == 0 {
+		var err error
+		if dirs, err = c.defaultDirs(); err != nil {
+			return nil, err
+		}
+	}
+	if c.inbox != "" {
+		dirs = append(dirs, c.inbox)
+	}
+	return dirs, nil
 }
 
 // addEach adds remote tools one by one: a name that clashes with another
@@ -598,6 +618,7 @@ func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
 		Model:     model,
 		KeyFunc:   keyFunc(res, keyName),
 		AllowHTTP: ctx.GetGlobalFlagBool("allow-http"),
+		Images:    c.images(ctx.Context(), res),
 	})
 }
 

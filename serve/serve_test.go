@@ -485,3 +485,63 @@ func TestPendingInTheOrderAsked(t *testing.T) {
 		t.Fatalf("order %s %s", p[8].ID, p[9].ID)
 	}
 }
+
+func TestStartMessageChecksTheInput(t *testing.T) {
+	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New(fake.Reply("ok"))})}})
+	img := agent.Part{Type: agent.PartImage, MIME: "image/png", Data: []byte("not a png")}
+	bad := []agent.Message{
+		agent.UserMessage("look", img),
+		{Role: agent.RoleUser},
+		agent.AssistantText("hi"),
+	}
+	for i, m := range bad {
+		if _, err := a.srv.StartMessage("default", "", m); err == nil {
+			t.Errorf("input %d accepted", i)
+		}
+	}
+}
+
+func TestConversationOf(t *testing.T) {
+	seen := make(chan string, 1)
+	p := Profile{Name: "default", New: func(ctx context.Context) (Instance, error) {
+		seen <- ConversationOf(ctx)
+		return Instance{}, nil
+	}}
+	store, err := file.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAPI(t, Config{Profiles: []Profile{p}, Store: store})
+	if _, err := a.srv.Start("default", "telegram-5", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-seen; got != "telegram-5" {
+		t.Fatalf("conversation %q", got)
+	}
+	if ConversationOf(context.Background()) != "" {
+		t.Fatal("a conversation outside a run")
+	}
+}
+
+func TestConversationsListsTheStore(t *testing.T) {
+	store, err := file.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New(fake.Reply("ok"))})}, Store: store})
+	run, err := a.srv.Start("default", "telegram-5", "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.srv.Wait(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := a.srv.Conversations(context.Background())
+	if err != nil || len(ids) != 1 || ids[0] != "telegram-5" {
+		t.Fatalf("%v %v", ids, err)
+	}
+	none := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
+	if ids, err := none.srv.Conversations(context.Background()); ids != nil || err != nil {
+		t.Fatalf("without a store: %v %v", ids, err)
+	}
+}

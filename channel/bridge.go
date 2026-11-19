@@ -14,6 +14,7 @@ import (
 
 	"github.com/agilira/go-errors"
 
+	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/serve"
 )
 
@@ -35,6 +36,27 @@ type Config struct {
 	// its sender, for the host to add if wanted: empty, nobody is heard,
 	// which is how a user learns their own ID.
 	Allow []string
+	// Transcriber turns voice messages into text; nil, the chat is told
+	// they cannot be heard.
+	Transcriber agent.Transcriber
+	// Inbox is the directory where the documents sent in the chats are
+	// saved, each conversation in its own directory (Bridge.InboxOf), for the
+	// agent to read; the agent is told where. Empty, the chat is told
+	// documents are not taken.
+	Inbox string
+	// Synthesizer speaks answers. With it, a voice message is answered
+	// with voice when VoiceReplies is set or the chat asked for it with
+	// /voice (and not with /text); every other answer is text.
+	Synthesizer  agent.Synthesizer
+	VoiceReplies bool
+	// Sessions is the file where each chat's conversation number and last
+	// message are kept, so that /new and IdleReset hold across restarts;
+	// empty keeps them in memory only.
+	Sessions string
+	// IdleReset starts a new conversation at the first message after a
+	// silence this long (the chat is told): default DefaultIdleReset (24
+	// hours), negative never. /new starts one at any time.
+	IdleReset time.Duration
 	// OnEvent hears what the chats do not see. It is called from several
 	// goroutines at once and must not block.
 	OnEvent func(Event)
@@ -51,6 +73,15 @@ const (
 	ReceiveFailed
 	// SendFailed: a reply could not be sent.
 	SendFailed
+	// FileFailed: a file sent in a chat could not be fetched, heard or
+	// saved; the chat is told.
+	FileFailed
+	// VoiceFailed: an answer could not be spoken or sent as voice; it
+	// went as text.
+	VoiceFailed
+	// SessionsFailed: the sessions file could not be written; the chats
+	// go on, but a restart forgets their /new and silences.
+	SessionsFailed
 )
 
 // Event is something the host should know.
@@ -70,13 +101,22 @@ type Bridge struct {
 	chats map[string]*chat   // chats with a run going, by chat ID
 	asks  map[string]*ask    // by token
 	boxes map[string]*outbox // replies waiting, by chat ID
-	wg    sync.WaitGroup
+	voice map[string]bool    // /voice and /text, by chat ID
+	// sessions are the chats' conversations, by chat ID.
+	sessions   map[string]session
+	reconciled map[string]bool // chats whose number was checked against the server
+	saving     sync.Mutex      // one write of the sessions file at a time
+	now        func() time.Time
+	wg         sync.WaitGroup
 }
 
-// chat is a chat with a run going.
+// chat is a chat with a run going, or its message being prepared (its
+// files fetched): run is empty until it starts.
 type chat struct {
-	run  string
-	open []*ask // oldest first
+	conv   string // the conversation the message goes to
+	run    string
+	cancel context.CancelFunc // stops the preparing
+	open   []*ask             // oldest first
 }
 
 // NewBridge checks cfg and returns a Bridge.
@@ -85,7 +125,7 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	case cfg.Channel == nil || cfg.Server == nil:
 		return nil, errors.New(ErrConfig, "a bridge needs a channel and a server")
 	case !validName.MatchString(cfg.Channel.Name()):
-		return nil, errors.New(ErrConfig, "the channel's name must be 1-20 lower-case letters, digits or -")
+		return nil, errors.New(ErrConfig, "the channel's name must be 1-20 lower-case letters or digits")
 	}
 	allow := map[string]bool{}
 	for _, id := range cfg.Allow {
@@ -96,7 +136,12 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	if cfg.Profile == "" {
 		cfg.Profile = "default"
 	}
-	return &Bridge{cfg: cfg, allow: allow, chats: map[string]*chat{}, asks: map[string]*ask{}, boxes: map[string]*outbox{}}, nil
+	sessions, err := loadSessions(cfg.Sessions)
+	if err != nil {
+		return nil, err
+	}
+	return &Bridge{cfg: cfg, allow: allow, chats: map[string]*chat{}, asks: map[string]*ask{}, boxes: map[string]*outbox{},
+		voice: map[string]bool{}, sessions: sessions, reconciled: map[string]bool{}, now: time.Now}, nil
 }
 
 // Run receives and answers until ctx ends, then waits for the replies
@@ -146,56 +191,127 @@ func (b *Bridge) handle(ctx context.Context, m Message) {
 	}
 	text := strings.TrimSpace(m.Text)
 	switch {
-	case text == "":
-		b.say(ctx, m.Chat, "I can read only text messages.")
-	case command(text, "/start"):
-		b.say(ctx, m.Chat, "Hello. Write to me and I will answer; /stop stops what I am doing.")
-	case command(text, "/stop"):
-		b.stop(ctx, m.Chat)
-	case b.answered(ctx, m.Chat, text):
+	case text == "" && len(m.Files) == 0:
+		b.say(ctx, m.Chat, "I cannot read this kind of message.")
+	case len(m.Files) == 0 && b.command(ctx, m.Chat, text):
+	case len(m.Files) == 0 && b.answered(ctx, m.Chat, text):
 	default:
-		b.start(ctx, m.Chat, text)
+		b.start(ctx, m.Chat, text, m.Files)
 	}
+}
+
+// command runs a chat command; false when text is not one.
+func (b *Bridge) command(ctx context.Context, chatID, text string) bool {
+	switch {
+	case command(text, "/start"):
+		b.say(ctx, chatID, "Hello. Write to me and I will answer. /new starts a new conversation, /stop stops what I am doing, /voice and /text choose how I answer voice messages.")
+	case command(text, "/stop"):
+		b.stop(ctx, chatID)
+	case command(text, "/new"):
+		b.renew(ctx, chatID)
+	case command(text, "/voice"):
+		b.setVoice(ctx, chatID, true)
+	case command(text, "/text"):
+		b.setVoice(ctx, chatID, false)
+	default:
+		return false
+	}
+	return true
 }
 
 func (b *Bridge) stop(ctx context.Context, chatID string) {
 	b.mu.Lock()
 	c := b.chats[chatID]
-	b.mu.Unlock()
-	if c == nil {
-		b.say(ctx, chatID, "Nothing to stop.")
-		return
+	var run string
+	if c != nil {
+		run = c.run
+		if run == "" {
+			c.cancel()
+		}
 	}
-	_ = b.cfg.Server.Cancel(c.run) // the run's end says it stopped
+	b.mu.Unlock()
+	switch {
+	case c == nil:
+		b.say(ctx, chatID, "Nothing to stop.")
+	case run != "":
+		_ = b.cfg.Server.Cancel(run) // the run's end says it stopped
+	}
 }
 
-// start begins a run on the chat's conversation; one at a time per chat.
-func (b *Bridge) start(ctx context.Context, chatID, text string) {
+// start prepares the message and runs it on the chat's conversation;
+// one at a time per chat.
+func (b *Bridge) start(ctx context.Context, chatID, text string, files []File) {
 	b.mu.Lock()
 	if b.chats[chatID] != nil {
 		b.mu.Unlock()
 		b.say(ctx, chatID, "I am still working on your last message; send /stop to stop it.")
 		return
 	}
-	snap, err := b.cfg.Server.Start(b.cfg.Profile, Conversation(b.cfg.Channel.Name(), chatID), text)
-	if err != nil {
-		b.mu.Unlock()
-		b.say(ctx, chatID, userMessage(err))
-		return
+	b.mu.Unlock()
+	conv, renewed := b.touch(ctx, chatID)
+	if renewed {
+		b.say(ctx, chatID, "This chat was quiet for a while, so this is a new conversation: I no longer see the earlier messages.")
 	}
-	b.chats[chatID] = &chat{run: snap.ID}
+	b.mu.Lock() // still free: only Run's goroutine starts runs
+	prep, cancel := context.WithCancel(ctx)
+	b.chats[chatID] = &chat{conv: conv, cancel: cancel}
 	b.wg.Add(1)
 	b.mu.Unlock()
-	go b.follow(ctx, chatID, snap.ID)
+	go b.converse(ctx, prep, chatID, text, files)
+}
+
+// converse fetches the message's files, starts its run and follows it.
+func (b *Bridge) converse(ctx, prep context.Context, chatID, text string, files []File) {
+	defer b.wg.Done()
+	typing := b.typing(ctx, chatID)
+	defer typing.stop()
+	run, reply := b.launch(ctx, prep, chatID, text, files)
+	spoken := hasVoice(files)
+	if run == "" {
+		typing.stop() // before the reply, which ends what the app shows
+		if reply != "" {
+			b.say(ctx, chatID, reply)
+		}
+		return
+	}
+	b.follow(ctx, chatID, run, typing, spoken)
+}
+
+// launch builds the message and starts its run; without a run, the chat
+// is free again and reply says why.
+func (b *Bridge) launch(ctx, prep context.Context, chatID, text string, files []File) (run, reply string) {
+	msg, problem := b.message(prep, chatID, text, files)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := b.chats[chatID]
+	stopped := prep.Err() != nil && ctx.Err() == nil // by /stop, not by the end of Run
+	c.cancel()
+	switch {
+	case ctx.Err() != nil: // Run is ending: no run nobody would follow
+	case stopped:
+		reply = "Stopped."
+	case problem != "":
+		reply = problem
+	default:
+		snap, err := b.cfg.Server.StartMessage(b.cfg.Profile, c.conv, msg)
+		if err == nil {
+			c.run = snap.ID
+			return snap.ID, ""
+		}
+		reply = userMessage(err)
+	}
+	delete(b.chats, chatID)
+	return "", reply
 }
 
 // follow asks the run's approvals in the chat and sends its answer.
-func (b *Bridge) follow(ctx context.Context, chatID, run string) {
-	defer b.wg.Done()
+// A voice message (spoken) may be answered with voice.
+func (b *Bridge) follow(ctx context.Context, chatID, run string, typing *typer, spoken bool) {
 	asked := map[string]bool{}
 	var last serve.Snapshot
 	err := b.cfg.Server.Watch(ctx, run, func(s serve.Snapshot) {
 		last = s
+		typing.waiting.Store(len(s.Pending) > 0)
 		b.prune(chatID, s.Pending)
 		for _, p := range s.Pending {
 			if !asked[p.ID] {
@@ -204,15 +320,30 @@ func (b *Bridge) follow(ctx context.Context, chatID, run string) {
 			}
 		}
 	})
+	// The chat stays busy until its answer is posted, in order; /stop
+	// now cancels the speaking (the answer then goes as text).
+	speaking, cancel := context.WithCancel(ctx)
+	defer cancel()
 	b.mu.Lock()
-	for _, a := range b.chats[chatID].open {
+	c := b.chats[chatID]
+	for _, a := range c.open {
 		delete(b.asks, a.token)
 	}
-	delete(b.chats, chatID)
+	c.open, c.run, c.cancel = nil, "", cancel
 	b.mu.Unlock()
 	if err == nil {
-		b.say(ctx, chatID, final(last))
+		out := Out{Text: final(last)}
+		if spoken && last.State == serve.Completed {
+			out.Voice = b.speak(speaking, chatID, out.Text)
+		}
+		typing.stop() // before the reply, which ends what the app shows
+		b.post(ctx, chatID, out, nil)
 	}
+	typing.stop()
+	b.mu.Lock()
+	delete(b.chats, chatID)
+	b.mu.Unlock()
+	b.stamp(chatID)
 }
 
 // final is what the chat reads when a run ends.

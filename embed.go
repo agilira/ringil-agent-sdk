@@ -35,3 +35,19 @@ type QueryEmbedder interface {
 
 // ErrEmbed marks a failed embedding.
 const ErrEmbed errors.ErrorCode = "EMBED_FAILED"
+
+// Transcriber turns speech into text. Implementations: provider/openai
+// (any OpenAI-compatible /audio/transcriptions endpoint: Whisper and its
+// kin, hosted or local).
+type Transcriber interface {
+	// Transcribe returns what is said in audio, of the MIME type given
+	// (audio/ogg, audio/mpeg, audio/wav, audio/webm, audio/mp4...).
+	Transcribe(ctx context.Context, audio []byte, mime string) (string, error)
+}
+
+// Synthesizer turns text into speech. Implementations: provider/openai
+// (any OpenAI-compatible /audio/speech endpoint).
+type Synthesizer interface {
+	// Synthesize returns text spoken, and its MIME type.
+	Synthesize(ctx context.Context, text string) (audio []byte, mime string, err error)
+}

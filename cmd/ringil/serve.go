@@ -76,19 +76,18 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 // (unless --no-schedule) and the chat apps. The function returned stops
 // them.
 func (c *cli) startBackground(ctx *orpheus.Context, run context.Context, srv *serve.Server) (func(), error) {
+	stopChannels, err := c.startChannels(ctx, run, srv)
+	if err != nil {
+		return nil, err
+	}
 	stopJobs := func() {}
 	if !ctx.GetFlagBool("no-schedule") {
-		var err error
 		if stopJobs, err = c.startSchedule(run, srv); err != nil {
+			stopChannels()
 			return nil, err
 		}
 	}
-	stopChannels, err := c.startChannels(ctx, run, srv)
-	if err != nil {
-		stopJobs()
-		return nil, err
-	}
-	return func() { stopChannels(); stopJobs() }, nil
+	return func() { stopJobs(); stopChannels() }, nil
 }
 
 // newServer builds the server: its token, the shared remote tools, the
@@ -144,8 +143,9 @@ func a2aProfile(ctx *orpheus.Context) string {
 // runInstance builds a run's agent: a CLI of its own, so that its crew,
 // notebooks, task list and approvals are the run's alone.
 func (c *cli) runInstance(ctx *orpheus.Context, role *profile) func(context.Context) (serve.Instance, error) {
-	return func(context.Context) (serve.Instance, error) {
+	return func(run context.Context) (serve.Instance, error) {
 		r := c.forRun()
+		r.inbox = c.inboxOf(serve.ConversationOf(run))
 		r.role = role
 		a, err := r.agent(ctx)
 		if err != nil {

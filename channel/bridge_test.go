@@ -7,6 +7,7 @@ package channel
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -318,7 +319,7 @@ func TestServerWithoutConversations(t *testing.T) {
 func TestEmptyMessage(t *testing.T) {
 	r := newRig(t, true)
 	r.app.say("  ")
-	if got := r.app.next(t).Text; !strings.Contains(got, "only text") {
+	if got := r.app.next(t).Text; !strings.Contains(got, "cannot read this kind") {
 		t.Fatalf("reply %q", got)
 	}
 }
@@ -343,6 +344,7 @@ func TestBridgeConfig(t *testing.T) {
 		{Server: srv, Allow: []string{me}},
 		{Channel: newApp(), Allow: []string{me}},
 		{Channel: named("Bad Name"), Server: srv, Allow: []string{me}},
+		{Channel: named("tg-x"), Server: srv, Allow: []string{me}},
 	}
 	for i, cfg := range bad {
 		if _, err := NewBridge(cfg); err == nil {
@@ -358,17 +360,31 @@ func (named) Receive(context.Context) (Message, error) { return Message{}, nil }
 func (named) Send(context.Context, string, Out) error  { return nil }
 
 func TestConversation(t *testing.T) {
-	if got := Conversation("telegram", "-100123"); got != "telegram--100123" {
-		t.Fatalf("plain %q", got)
-	}
-	for _, chat := range []string{"a/b", "x@y.z", strings.Repeat("9", 41), "../etc"} {
-		got := Conversation("slack", chat)
-		if agent.ValidateSessionID(got) != nil || !strings.HasPrefix(got, "slack-h") {
-			t.Fatalf("%q gave %q", chat, got)
+	for want, c := range map[string]struct {
+		chat string
+		n    int
+	}{
+		"telegram--100123":   {"-100123", 1},
+		"telegram--100123_2": {"-100123", 2},
+		"telegram-7_12":      {"7", 12},
+	} {
+		if got := Conversation("telegram", c.chat, c.n); got != want {
+			t.Errorf("%+v: %q", c, got)
 		}
 	}
-	if Conversation("a", "x/y") == Conversation("a", "x/z") {
-		t.Fatal("two chats share a conversation")
+	seen := map[string]string{}
+	for _, chat := range []string{"a/b", "x@y.z", strings.Repeat("9", 33), "../etc", "a_2", "h" + strings.Repeat("0", 32), "a"} {
+		for n := 1; n <= 3; n++ {
+			got := Conversation("slack", chat, n)
+			if agent.ValidateSessionID(got) != nil {
+				t.Fatalf("%q %d gave %q", chat, n, got)
+			}
+			key := chat + "#" + strconv.Itoa(n)
+			if other, dup := seen[got]; dup {
+				t.Fatalf("%s and %s share %q", other, key, got)
+			}
+			seen[got] = key
+		}
 	}
 }
 

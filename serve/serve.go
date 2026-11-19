@@ -188,12 +188,19 @@ func (s *Server) Profiles() []ProfileInfo {
 // it is not empty. It fails at once when the server is full or the
 // conversation is in use: there is no queue.
 func (s *Server) Start(profile, conversation, input string) (Snapshot, error) {
+	return s.StartMessage(profile, conversation, agent.UserText(input))
+}
+
+// StartMessage is Start with a user message that may hold images.
+func (s *Server) StartMessage(profile, conversation string, input agent.Message) (Snapshot, error) {
 	p, ok := s.profiles[profile]
-	switch {
-	case !ok:
+	if !ok {
 		return Snapshot{}, fail(ErrNotFound, "no such profile")
-	case input == "":
-		return Snapshot{}, fail(ErrInput, "the input is empty")
+	}
+	if err := checkInput(input); err != nil {
+		return Snapshot{}, err
+	}
+	switch {
 	case conversation != "" && s.cfg.Store == nil:
 		return Snapshot{}, fail(ErrInput, "this server keeps no conversations")
 	case conversation != "" && agent.ValidateSessionID(conversation) != nil:
@@ -213,8 +220,32 @@ func (s *Server) Start(profile, conversation, input string) (Snapshot, error) {
 	s.runs[j.id] = j
 	s.active++
 	s.wg.Add(1)
-	go s.execute(ctx, cancel, j, p, input)
+	go s.execute(ctx, cancel, j, p, input.Clone())
 	return j.snapshot(), nil
+}
+
+// checkInput accepts a user message with text or images, its images as
+// the model APIs would take them.
+func checkInput(input agent.Message) error {
+	switch {
+	case input.Role != agent.RoleUser || len(input.Calls) > 0 || input.Result != nil:
+		return fail(ErrInput, "the input must be a user message")
+	case input.Text() == "" && input.Images() == 0:
+		return fail(ErrInput, "the input is empty")
+	case !imagesOK(input):
+		return fail(ErrInput, "an image is too large or not JPEG, PNG, GIF or WebP")
+	}
+	return nil
+}
+
+// imagesOK checks the input's images as the model APIs would.
+func imagesOK(m agent.Message) bool {
+	for _, p := range m.Parts {
+		if p.Type == agent.PartImage && agent.CheckImage(p.MIME, p.Data) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) admit(conversation string) error {
@@ -235,7 +266,7 @@ func (s *Server) admit(conversation string) error {
 }
 
 // execute runs one job to its end.
-func (s *Server) execute(ctx context.Context, cancel context.CancelFunc, j *job, p Profile, input string) {
+func (s *Server) execute(ctx context.Context, cancel context.CancelFunc, j *job, p Profile, input agent.Message) {
 	defer s.wg.Done()
 	defer func() {
 		s.mu.Lock()
@@ -248,7 +279,7 @@ func (s *Server) execute(ctx context.Context, cancel context.CancelFunc, j *job,
 
 // work makes the run's agent and runs it, then on each background
 // report.
-func (s *Server) work(ctx context.Context, j *job, p Profile, input string) (err error) {
+func (s *Server) work(ctx context.Context, j *job, p Profile, input agent.Message) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fail(ErrConfig, "the profile's agent panicked")
@@ -267,7 +298,7 @@ func (s *Server) work(ctx context.Context, j *job, p Profile, input string) (err
 		return err
 	}
 	defer closeConv()
-	err = turn(ctx, j, inst.Agent, conv, agent.UserText(input))
+	err = turn(ctx, j, inst.Agent, conv, input)
 	for err == nil && inst.Crew != nil {
 		f, ok := inst.Crew.Next(ctx)
 		if !ok {
@@ -377,6 +408,23 @@ func (s *Server) Watch(ctx context.Context, id string, see func(Snapshot)) error
 			return ctx.Err()
 		}
 	}
+}
+
+// Conversations lists the IDs of the conversations the server keeps;
+// none without a store.
+func (s *Server) Conversations(ctx context.Context) ([]string, error) {
+	if s.cfg.Store == nil {
+		return nil, nil
+	}
+	infos, err := s.cfg.Store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(infos))
+	for _, i := range infos {
+		out = append(out, i.ID)
+	}
+	return out, nil
 }
 
 // Cancel stops a run; it ends as cancelled once its tools return.

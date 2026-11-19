@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -36,6 +37,9 @@ type profile struct {
 	EmbedModel string `json:"embed_model,omitempty"`
 	System     string `json:"system,omitempty"`
 	MaxTurns   int    `json:"max_turns,omitempty"`
+	// Images says the role's model reads images; for a role with its own
+	// model only (else RINGIL_IMAGES decides).
+	Images bool `json:"images,omitempty"`
 }
 
 type profilesFile struct {
@@ -171,4 +175,14 @@ func (c *cli) maxTurns(ctx *orpheus.Context) int {
 		return c.role.MaxTurns
 	}
 	return ctx.GetGlobalFlagInt("max-turns")
+}
+
+// images says whether the model reads images: the role's, for a role
+// with its own model, else RINGIL_IMAGES=1 (environment or --env-file).
+func (c *cli) images(ctx context.Context, res secrets.Resolver) bool {
+	if c.role != nil && c.role.Model != "" {
+		return c.role.Images
+	}
+	v, _, err := secrets.Lookup(ctx, res, "RINGIL_IMAGES")
+	return err == nil && v == "1"
 }
