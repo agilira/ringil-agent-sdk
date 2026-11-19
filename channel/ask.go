@@ -82,6 +82,7 @@ func (b *Bridge) answered(ctx context.Context, chatID, text string) bool {
 }
 
 func (b *Bridge) decide(ctx context.Context, a *ask, allow bool) {
+	b.stamp(a.chat)
 	if err := b.cfg.Server.Decide(a.run, a.approval, allow); err != nil {
 		b.say(ctx, a.chat, "That question is closed.")
 		return

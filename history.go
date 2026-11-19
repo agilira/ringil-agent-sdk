@@ -70,13 +70,14 @@ type historyLine struct {
 	N      int      `json:"n"`
 	Role   Role     `json:"role"`
 	Text   string   `json:"text,omitempty"`
+	Images int      `json:"images,omitempty"`
 	Calls  []string `json:"calls,omitempty"`
 	Result string   `json:"result,omitempty"`
 	Error  bool     `json:"error,omitempty"`
 }
 
 func encodeMessage(n int, m Message, part int) string {
-	h := historyLine{N: n, Role: m.Role, Text: clipText(m.Text(), part)}
+	h := historyLine{N: n, Role: m.Role, Text: clipText(m.Text(), part), Images: m.Images()}
 	for i, c := range m.Calls {
 		if i == 16 {
 			h.Calls = append(h.Calls, "... "+strconv.Itoa(len(m.Calls)-16)+" more calls")

@@ -74,7 +74,7 @@ func (b *Bridge) drain(ctx context.Context, chatID string, box *outbox) {
 		next := box.queue[0]
 		box.queue = box.queue[1:]
 		b.mu.Unlock()
-		if err := b.cfg.Channel.Send(ctx, chatID, next.out); err != nil {
+		if err := b.deliver(ctx, chatID, next.out); err != nil {
 			b.failed(chatID, next, err)
 		}
 	}
@@ -85,4 +85,21 @@ func (b *Bridge) failed(chatID string, o outgoing, err error) {
 	if o.failed != nil {
 		o.failed()
 	}
+}
+
+// deliver sends out: as voice when it has some and the channel can,
+// else (or when the voice fails) as text. A voice that failed only in
+// the app's answer (a timeout after it took it) is then also text: an
+// answer twice rather than none.
+func (b *Bridge) deliver(ctx context.Context, chatID string, out Out) error {
+	voice := out.Voice
+	out.Voice = nil
+	if vs, ok := b.cfg.Channel.(VoiceSender); ok && voice != nil {
+		err := vs.SendVoice(ctx, chatID, *voice)
+		if err == nil {
+			return nil
+		}
+		b.report(Event{Kind: VoiceFailed, Chat: chatID, Err: err})
+	}
+	return b.cfg.Channel.Send(ctx, chatID, out)
 }

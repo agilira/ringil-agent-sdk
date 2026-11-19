@@ -75,6 +75,15 @@ type Approval struct {
 
 type jobKey struct{}
 
+// ConversationOf is the conversation a run of a server continues, from
+// the context its profile's New gets; "" for a run without one.
+func ConversationOf(ctx context.Context) string {
+	if j, ok := ctx.Value(jobKey{}).(*job); ok {
+		return j.conversation
+	}
+	return ""
+}
+
 type entry struct {
 	id   int
 	data []byte

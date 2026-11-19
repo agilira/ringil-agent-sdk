@@ -130,7 +130,7 @@ func transcript(msgs []Message) string {
 		case RoleTool:
 			b.WriteString("Tool result: " + clip(m.Result.Content, transcriptTool) + "\n")
 		default:
-			b.WriteString(label(m.Role) + ": " + clip(m.Text(), transcriptText) + "\n")
+			b.WriteString(label(m.Role) + ": " + clip(m.Text(), transcriptText) + imagesNote(m) + "\n")
 		}
 		for _, call := range m.Calls {
 			b.WriteString("Assistant called " + call.Name + " with " + clip(string(call.Input), transcriptTool) + "\n")
@@ -188,4 +188,17 @@ func wrapSummary(body string, n int, hash, hint string) string {
 func shortHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
+}
+
+// imagesNote says that a message had images, which a transcript cannot
+// carry.
+func imagesNote(m Message) string {
+	switch n := m.Images(); n {
+	case 0:
+		return ""
+	case 1:
+		return " [an image]"
+	default:
+		return " [" + strconv.Itoa(n) + " images]"
+	}
 }

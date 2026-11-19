@@ -261,6 +261,7 @@ type run struct {
 	system     string
 	compactor  *compactor
 	lastBytes  int
+	lastImages int // images in the last request: its usage does not teach the ratio
 	conv       Conversation
 	events     *eventer
 	msgs       []Message
@@ -476,7 +477,9 @@ func (r *run) request(ctx context.Context, system string) (*Response, error) {
 
 // keep adds the model's answer to the conversation.
 func (r *run) keep(ctx context.Context, resp *Response) (*Response, error) {
-	r.compactor.learn(r.lastBytes, resp.Usage.Input)
+	if r.lastImages == 0 { // what an image costs varies by provider: text alone teaches
+		r.compactor.learn(r.lastBytes, resp.Usage.Input)
+	}
 	r.result.Turns++
 	r.result.Usage = r.result.Usage.Add(resp.Usage)
 	msg := resp.Message.Clone()
@@ -510,7 +513,12 @@ func (r *run) generate(ctx context.Context, full *Request, budget int) (*Respons
 		}
 	}
 	req.Tools = r.withHistory(req.Tools)
+	req.Messages = latestImagesOnly(req.Messages)
 	r.lastBytes = requestBytes(&req)
+	r.lastImages = 0
+	for _, m := range req.Messages {
+		r.lastImages += m.Images()
+	}
 	streamed := false
 	resp, err := r.cfg.Provider.Generate(ctx, &req, func(delta string) error {
 		streamed = true

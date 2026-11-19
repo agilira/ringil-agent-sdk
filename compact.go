@@ -139,12 +139,37 @@ func (c *compactor) learn(bytes, tokens int) {
 	c.ratio = min(max(float64(bytes)/float64(tokens), minBytesPerTok), maxBytesPerTok)
 }
 
+// imageTokens is what an image is counted as: about the most the main
+// model APIs charge for one, never its bytes, which the model does not
+// read as text.
+const imageTokens = 1600
+
 func requestBytes(req *Request) int {
-	data, err := json.Marshal(req)
+	r := *req
+	r.Messages = make([]Message, len(req.Messages))
+	images := 0
+	for i, m := range req.Messages {
+		r.Messages[i], images = withoutImageData(m), images+m.Images()
+	}
+	data, err := json.Marshal(r)
 	if err != nil {
 		return 0 // unmeasurable: the retry then compacts as hard as it can
 	}
-	return len(data)
+	return len(data) + images*imageTokens*bytesPerToken
+}
+
+// withoutImageData is m with its images' bytes left out, for measuring.
+func withoutImageData(m Message) Message {
+	if m.Images() == 0 {
+		return m
+	}
+	parts := make([]Part, len(m.Parts))
+	for i, p := range m.Parts {
+		p.Data = nil
+		parts[i] = p
+	}
+	m.Parts = parts
+	return m
 }
 
 // compacted is a view and what it took to build it.
@@ -353,11 +378,11 @@ func (v *sized) clone() *sized {
 }
 
 func messageBytes(msg Message) int {
-	data, err := json.Marshal(msg)
+	data, err := json.Marshal(withoutImageData(msg))
 	if err != nil {
 		return 0
 	}
-	return len(data) + 1
+	return len(data) + 1 + msg.Images()*imageTokens*bytesPerToken
 }
 
 func (v *sized) resize(i int) {

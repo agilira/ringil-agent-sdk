@@ -53,9 +53,13 @@ func (b *botAPI) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, _ := io.ReadAll(r.Body)
 	var body map[string]any
-	_ = json.Unmarshal(data, &body)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+		body = multipartBody(r)
+	} else {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &body)
+	}
 	b.mu.Lock()
 	b.calls = append(b.calls, call{method, body})
 	list := b.replies[method]
@@ -146,7 +150,7 @@ func TestReceive(t *testing.T) {
 	}
 	for i, w := range want {
 		m, err := c.Receive(context.Background())
-		if err != nil || m != w {
+		if err != nil || !sameText(m, w) {
 			t.Fatalf("message %d: %+v %v", i, m, err)
 		}
 	}
@@ -261,4 +265,65 @@ func FuzzSplit(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestTyping(t *testing.T) {
+	b, srv := newBotAPI(t)
+	b.set("sendChatAction", `{"ok":true,"result":true}`)
+	if err := open(t, srv.URL).Typing(context.Background(), "-5"); err != nil {
+		t.Fatal(err)
+	}
+	if a := b.called("sendChatAction"); len(a) != 1 || a[0]["chat_id"] != "-5" || a[0]["action"] != "typing" {
+		t.Fatalf("calls %v", a)
+	}
+}
+
+// sameText compares two messages without files.
+func sameText(a, b channel.Message) bool {
+	return len(a.Files) == 0 && len(b.Files) == 0 && a.Chat == b.Chat && a.From == b.From && a.Text == b.Text && a.Pressed == b.Pressed
+}
+
+// multipartBody is a form's fields, and its file as "file:<field>" =
+// "<name> <type> <bytes>".
+func multipartBody(r *http.Request) map[string]any {
+	body := map[string]any{}
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		return body
+	}
+	for k, v := range r.MultipartForm.Value {
+		body[k] = v[0]
+	}
+	for k, fs := range r.MultipartForm.File {
+		f, err := fs[0].Open()
+		if err != nil {
+			continue
+		}
+		data, _ := io.ReadAll(f)
+		_ = f.Close()
+		body["file:"+k] = fs[0].Filename + " " + fs[0].Header.Get("Content-Type") + " " + string(data)
+	}
+	return body
+}
+
+func TestSendVoice(t *testing.T) {
+	b, srv := newBotAPI(t)
+	b.set("sendVoice", `{"ok":true,"result":{}}`)
+	b.set("sendAudio", `{"ok":true,"result":{}}`)
+	c := open(t, srv.URL)
+	ctx := context.Background()
+	if err := c.SendVoice(ctx, "-5", channel.Audio{MIME: "audio/ogg", Data: []byte("OggS")}); err != nil {
+		t.Fatal(err)
+	}
+	if v := b.called("sendVoice"); len(v) != 1 || v[0]["chat_id"] != "-5" || v[0]["file:voice"] != "voice.ogg audio/ogg OggS" {
+		t.Fatalf("voice %v", v)
+	}
+	if err := c.SendVoice(ctx, "-5", channel.Audio{MIME: "audio/mpeg", Data: []byte("ID3")}); err != nil {
+		t.Fatal(err)
+	}
+	if a := b.called("sendAudio"); len(a) != 1 || a[0]["file:audio"] != "answer.mp3 audio/mpeg ID3" {
+		t.Fatalf("audio %v", a)
+	}
+	if err := c.SendVoice(ctx, "-5", channel.Audio{MIME: "audio/ogg"}); err == nil {
+		t.Fatal("empty voice sent")
+	}
 }

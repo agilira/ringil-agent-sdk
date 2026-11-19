@@ -7,7 +7,9 @@ package openai
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"strings"
 
 	agent "github.com/agilira/ringil-agent-sdk"
 )
@@ -29,7 +31,7 @@ type streamOptions struct {
 
 type wireMessage struct {
 	Role       string         `json:"role"`
-	Content    *string        `json:"content"`
+	Content    any            `json:"content"` // *string, or []wirePart for a user message with images
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
@@ -70,7 +72,7 @@ var emptySchema = json.RawMessage(`{"type":"object","properties":{}}`)
 func (p *provider) encode(req *agent.Request, stream bool) ([]byte, error) {
 	wire := wireRequest{
 		Model:       p.cfg.Model,
-		Messages:    encodeMessages(req),
+		Messages:    encodeMessages(req, p.cfg.Images),
 		Tools:       encodeTools(req.Tools),
 		ToolChoice:  string(req.ToolChoice),
 		MaxTokens:   req.MaxTokens,
@@ -86,28 +88,66 @@ func (p *provider) encode(req *agent.Request, stream bool) ([]byte, error) {
 	return json.Marshal(wire)
 }
 
-func encodeMessages(req *agent.Request) []wireMessage {
+func encodeMessages(req *agent.Request, images bool) []wireMessage {
 	out := make([]wireMessage, 0, len(req.Messages)+1)
 	if req.System != "" {
 		out = append(out, wireMessage{Role: "system", Content: text(req.System)})
 	}
 	for _, msg := range req.Messages {
-		out = append(out, encodeMessage(msg))
+		out = append(out, encodeMessage(msg, images))
 	}
 	return out
 }
 
 func text(s string) *string { return &s }
 
-func encodeMessage(msg agent.Message) wireMessage {
+func encodeMessage(msg agent.Message, images bool) wireMessage {
 	switch msg.Role {
 	case agent.RoleTool:
 		return encodeResult(msg.Result)
 	case agent.RoleAssistant:
 		return encodeAssistant(msg)
+	case agent.RoleUser:
+		return encodeUser(msg, images)
 	default:
 		return wireMessage{Role: string(msg.Role), Content: text(msg.Text())}
 	}
+}
+
+type wirePart struct {
+	Type     string   `json:"type"`
+	Text     string   `json:"text,omitempty"`
+	ImageURL *wireURL `json:"image_url,omitempty"`
+}
+
+type wireURL struct {
+	URL string `json:"url"`
+}
+
+// noImages tells a model that cannot see images that the user sent some,
+// so that it says so instead of answering as if they were not there.
+const noImages = "[The user sent images here, which this model cannot see: tell them.]"
+
+// encodeUser sends a user message's images, in order with its text, as
+// data URLs; to a model configured without images, a note in their place.
+func encodeUser(msg agent.Message, images bool) wireMessage {
+	if msg.Images() == 0 {
+		return wireMessage{Role: "user", Content: text(msg.Text())}
+	}
+	if !images {
+		return wireMessage{Role: "user", Content: text(strings.TrimSpace(msg.Text() + "\n" + noImages))}
+	}
+	parts := make([]wirePart, 0, len(msg.Parts))
+	for _, p := range msg.Parts {
+		switch p.Type {
+		case agent.PartText:
+			parts = append(parts, wirePart{Type: "text", Text: p.Text})
+		case agent.PartImage:
+			url := "data:" + p.MIME + ";base64," + base64.StdEncoding.EncodeToString(p.Data)
+			parts = append(parts, wirePart{Type: "image_url", ImageURL: &wireURL{URL: url}})
+		}
+	}
+	return wireMessage{Role: "user", Content: parts}
 }
 
 func encodeResult(result *agent.ToolResult) wireMessage {

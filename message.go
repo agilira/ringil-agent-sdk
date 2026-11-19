@@ -7,8 +7,15 @@ package agent
 
 import (
 	"encoding/json"
+	"net/http"
+	"strconv"
 	"strings"
+
+	"github.com/agilira/go-errors"
 )
+
+// ErrImage: an image the model APIs would not take.
+const ErrImage errors.ErrorCode = "IMAGE"
 
 // Role identifies who produced a [Message].
 type Role string
@@ -25,15 +32,78 @@ const (
 // PartType identifies the kind of content a [Part] carries.
 type PartType string
 
-// PartText is plain text. Other part types (images, reasoning) will be added
-// as new constants and fields; Part is a struct so that adding them does not
-// break existing code.
-const PartText PartType = "text"
+// Part types. Others (reasoning) will be added as new constants and
+// fields; Part is a struct so that adding them does not break existing
+// code.
+const (
+	// PartText is plain text.
+	PartText PartType = "text"
+	// PartImage is an image a user sent: MIME and Data. It is kept whole
+	// in the conversation; [CheckImage] says which ones are accepted.
+	PartImage PartType = "image"
+)
 
 // Part is one piece of message content.
 type Part struct {
 	Type PartType `json:"type"`
 	Text string   `json:"text,omitempty"`
+	// MIME and Data are an image's: image/jpeg, image/png, image/gif or
+	// image/webp, and its bytes.
+	MIME string `json:"mime,omitempty"`
+	Data []byte `json:"data,omitempty"`
+}
+
+// MaxImageBytes bounds an image: the smallest limit of the main model
+// APIs.
+const MaxImageBytes = 5 << 20
+
+// imageTypes are the image formats the model APIs take.
+var imageTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true}
+
+// CheckImage accepts an image the model APIs take: at most MaxImageBytes,
+// of a format they read, and of the format its bytes are, whatever its
+// label says.
+func CheckImage(mime string, data []byte) error {
+	switch {
+	case len(data) == 0 || len(data) > MaxImageBytes:
+		return errors.New(ErrImage, "an image must be 1 byte to 5 MiB")
+	case !imageTypes[mime]:
+		return errors.New(ErrImage, "images must be JPEG, PNG, GIF or WebP")
+	case http.DetectContentType(data) != mime:
+		return errors.New(ErrImage, "the image is not the format it says")
+	}
+	return nil
+}
+
+// Image returns an image part, checked by CheckImage; its MIME type is
+// taken from its bytes.
+func Image(data []byte) (Part, error) {
+	mime := http.DetectContentType(data)
+	if err := CheckImage(mime, data); err != nil {
+		return Part{}, err
+	}
+	return Part{Type: PartImage, MIME: mime, Data: data}, nil
+}
+
+// UserMessage returns a user message holding text and images (parts of
+// type PartImage); text may be empty when there are images.
+func UserMessage(text string, images ...Part) Message {
+	var parts []Part
+	if text != "" {
+		parts = append(parts, Part{Type: PartText, Text: text})
+	}
+	return Message{Role: RoleUser, Parts: append(parts, images...)}
+}
+
+// Images counts m's images.
+func (m Message) Images() int {
+	n := 0
+	for _, part := range m.Parts {
+		if part.Type == PartImage {
+			n++
+		}
+	}
+	return n
 }
 
 // ToolCall is a request from the model to run a tool.
@@ -95,6 +165,11 @@ func (m Message) Text() string {
 // affected by later changes made by whoever produced it.
 func (m Message) Clone() Message {
 	m.Parts = append([]Part(nil), m.Parts...)
+	for i := range m.Parts {
+		if m.Parts[i].Data != nil {
+			m.Parts[i].Data = append([]byte(nil), m.Parts[i].Data...)
+		}
+	}
 	if m.Calls != nil {
 		calls := make([]ToolCall, len(m.Calls))
 		for i, call := range m.Calls {
@@ -142,3 +217,42 @@ const (
 	StopCancelled StopReason = "cancelled"  // the context was cancelled
 	StopLoop      StopReason = "loop"       // the loop detector stopped the run (LoopStop)
 )
+
+// latestImagesOnly is msgs with the images of the last message that has
+// some, and a note in place of the earlier ones: a conversation does not
+// send every image it ever had on every turn (some servers take one image
+// per request; all of them charge for each). msgs is not changed.
+func latestImagesOnly(msgs []Message) []Message {
+	last := -1
+	for i := len(msgs) - 1; i >= 0 && last < 0; i-- {
+		if msgs[i].Images() > 0 {
+			last = i
+		}
+	}
+	if last < 0 {
+		return msgs
+	}
+	out := append([]Message(nil), msgs...)
+	for i := range last {
+		if n := out[i].Images(); n > 0 {
+			out[i] = imagesAsNote(out[i], n)
+		}
+	}
+	return out
+}
+
+// imagesAsNote is m with its n images replaced by a note at the end.
+func imagesAsNote(m Message, n int) Message {
+	parts := make([]Part, 0, len(m.Parts)+1)
+	for _, p := range m.Parts {
+		if p.Type != PartImage {
+			parts = append(parts, p)
+		}
+	}
+	note := "[an image sent here earlier is no longer shown]"
+	if n > 1 {
+		note = "[" + strconv.Itoa(n) + " images sent here earlier are no longer shown]"
+	}
+	m.Parts = append(parts, Part{Type: PartText, Text: "\n" + note})
+	return m
+}
