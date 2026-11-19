@@ -426,6 +426,23 @@ func closeQuietly(c io.Closer) {
 	}
 }
 
+// allowOnce allows each question a snapshot shows, once: a question can
+// show in several snapshots.
+func allowOnce(t *testing.T, s *Server, run string) func(Snapshot) {
+	decided := map[string]bool{}
+	return func(sn Snapshot) {
+		for _, p := range sn.Pending {
+			if decided[p.ID] {
+				continue
+			}
+			decided[p.ID] = true
+			if err := s.Decide(run, p.ID, true); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+}
+
 func TestWatch(t *testing.T) {
 	var s *Server
 	var ran bool
@@ -439,15 +456,10 @@ func TestWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen []Snapshot
-	decided := map[string]bool{} // a question can show in several snapshots: decided once
+	allow := allowOnce(t, s, run.ID)
 	err = s.Watch(context.Background(), run.ID, func(sn Snapshot) {
 		seen = append(seen, sn)
-		if len(sn.Pending) == 1 && !decided[sn.Pending[0].ID] {
-			decided[sn.Pending[0].ID] = true
-			if err := s.Decide(run.ID, sn.Pending[0].ID, true); err != nil {
-				t.Error(err)
-			}
-		}
+		allow(sn)
 	})
 	if err != nil {
 		t.Fatal(err)
