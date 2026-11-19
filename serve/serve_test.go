@@ -439,9 +439,11 @@ func TestWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen []Snapshot
+	decided := map[string]bool{} // a question can show in several snapshots: decided once
 	err = s.Watch(context.Background(), run.ID, func(sn Snapshot) {
 		seen = append(seen, sn)
-		if len(sn.Pending) == 1 {
+		if len(sn.Pending) == 1 && !decided[sn.Pending[0].ID] {
+			decided[sn.Pending[0].ID] = true
 			if err := s.Decide(run.ID, sn.Pending[0].ID, true); err != nil {
 				t.Error(err)
 			}
