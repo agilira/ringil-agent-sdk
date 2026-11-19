@@ -25,6 +25,9 @@ type question struct {
 // about by name, with every field shown: nothing the call does is left
 // out of what is read.
 func describe(sp speech, tool string, raw json.RawMessage) question {
+	if tool == "create_trigger" {
+		return askTrigger(sp, raw)
+	}
 	var in map[string]json.RawMessage
 	if json.Unmarshal(raw, &in) == nil {
 		if q, ok := known(sp, tool, in); ok {
@@ -88,6 +91,24 @@ func known(sp speech, tool string, in map[string]json.RawMessage) (question, boo
 	}
 	q := k.ask(sp, f)
 	return q, f.ok
+}
+
+// askTrigger asks about a trigger the agent would make: its name and
+// what its runs may do without asking in the sentence, every field below,
+// for it is asked once and then runs on its own.
+func askTrigger(sp speech, raw json.RawMessage) question {
+	var fields map[string]json.RawMessage // exact keys: "NAME" is not "name"
+	_ = json.Unmarshal(raw, &fields)
+	f := fieldsOf(fields)
+	allowed := sp.t(mNothing)
+	if list := f.texts("allow"); len(list) > 0 {
+		names := make([]string, len(list))
+		for i, a := range list {
+			names[i] = inline(a)
+		}
+		allowed = strings.Join(names, ", ")
+	}
+	return question{text: sp.t(mAskTrigger, inline(f.text("name")), allowed), code: showInput(raw)}
 }
 
 // askCommand asks about a command: why it needs a yes (outside the sandbox,

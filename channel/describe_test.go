@@ -204,3 +204,16 @@ func TestNoAlwaysForASkill(t *testing.T) {
 		t.Fatal("key")
 	}
 }
+
+func TestDescribeTrigger(t *testing.T) {
+	q := describe(texts[English], "create_trigger", []byte(`{"name":"morning","kind":"time","when":"0 8 * * *","prompt":"brief me","allow":["write_file","bash"]}`))
+	if q.text != "May I make the trigger morning? It will run by itself, with no one to ask: its runs may use without asking: write_file, bash." {
+		t.Fatalf("%q", q.text)
+	}
+	if !strings.Contains(q.code, "when: 0 8 * * *") || !strings.Contains(q.code, "prompt: brief me") {
+		t.Fatalf("%q", q.code)
+	}
+	if q := describe(texts[English], "create_trigger", []byte(`{"name":"x","kind":"time","when":"@daily","prompt":"y"}`)); !strings.HasSuffix(q.text, "asking: nothing.") {
+		t.Fatalf("%q", q.text)
+	}
+}

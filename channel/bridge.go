@@ -168,6 +168,7 @@ type Bridge struct {
 // files fetched): run is empty until it starts.
 type chat struct {
 	conv   string // the conversation the message goes to
+	source string // what the run is, for the host: Automate, or ""
 	group  bool
 	role   role   // of who started the run
 	from   string // who started it
@@ -313,10 +314,16 @@ func (b *Bridge) dispatch(ctx context.Context, m Message, r role) {
 		b.say(ctx, m.Chat, b.tr(m.Chat, mTooMany))
 	case text == "" && len(m.Files) == 0:
 		b.say(ctx, m.Chat, b.tr(m.Chat, mUnreadable))
-	case len(m.Files) == 0 && b.command(ctx, m, r, text):
+	case b.commanded(ctx, m, r, text):
 	default:
 		b.start(ctx, m, r)
 	}
+}
+
+// commanded runs /automate (which may bring files) or another command
+// (which may not); false when text is no command.
+func (b *Bridge) commanded(ctx context.Context, m Message, r role, text string) bool {
+	return b.automate(ctx, m, r, text) || (len(m.Files) == 0 && b.command(ctx, m, r, text))
 }
 
 // command runs a chat command; false when text is not one. In a group,
@@ -389,6 +396,11 @@ func (b *Bridge) startedBy(chatID, from string) bool {
 // start prepares the message and runs it on the chat's conversation;
 // one at a time per chat.
 func (b *Bridge) start(ctx context.Context, m Message, r role) {
+	b.startFrom(ctx, m, r, "")
+}
+
+// startFrom is start for a run labelled with its source (Automate).
+func (b *Bridge) startFrom(ctx context.Context, m Message, r role, source string) {
 	chatID, text, files := m.Chat, strings.TrimSpace(m.Text), m.Files
 	if m.Group && b.groupProfile() == "" {
 		b.say(ctx, chatID, b.tr(chatID, mNoGroups))
@@ -407,7 +419,7 @@ func (b *Bridge) start(ctx context.Context, m Message, r role) {
 	}
 	b.mu.Lock() // still free: only Run's goroutine starts runs
 	prep, cancel := context.WithCancel(ctx)
-	b.chats[chatID] = &chat{conv: conv, group: m.Group, role: r, from: m.From, cancel: cancel}
+	b.chats[chatID] = &chat{conv: conv, group: m.Group, role: r, from: m.From, cancel: cancel, source: source}
 	b.wg.Add(1)
 	b.mu.Unlock()
 	go b.converse(ctx, prep, chatID, text, files)
@@ -446,7 +458,7 @@ func (b *Bridge) launch(ctx, prep context.Context, chatID, text string, files []
 	case problem != "":
 		reply = problem
 	default:
-		snap, err := b.cfg.Server.StartMessage(b.profileFor(c.role, c.group), c.conv, msg)
+		snap, err := b.cfg.Server.StartFrom(c.source, b.profileFor(c.role, c.group), c.conv, msg)
 		if err == nil {
 			c.run = snap.ID
 			return snap.ID, ""

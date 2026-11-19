@@ -52,8 +52,8 @@ func splitList(s string) []string {
 // confirmCommand asks about a command outside the sandbox or a dangerous
 // one: in the terminal, or under serve through the API.
 func (c *cli) confirmCommand(ctx context.Context, req bash.Request) (bool, error) {
-	if allow, decided := c.triggerAllowed("bash"); decided {
-		return allow, nil
+	if _, decided := c.triggerAllowed("bash"); decided {
+		return false, nil // a trigger's runs run commands in the sandbox only: no one sees the others
 	}
 	if c.unasked() {
 		return true, nil

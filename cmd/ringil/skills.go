@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -333,9 +334,31 @@ func (c *cli) showSkill(call agent.ToolCall) {
 	}
 }
 
+// showTrigger shows, before asking, every field of the trigger
+// create_trigger would make: it is asked once, then runs on its own.
+func (c *cli) showTrigger(call agent.ToolCall) {
+	var fields map[string]any
+	if json.Unmarshal(call.Input, &fields) != nil {
+		return
+	}
+	c.note("\n  Trigger, asked once: its runs then ask no one")
+	names := make([]string, 0, len(fields))
+	for k := range fields {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		v, _ := json.Marshal(fields[k])
+		c.note("    " + clean(k) + ": " + clean(string(v)))
+	}
+}
+
 // replacesSkill: a create_skill call that would replace a skill, which a
 // trigger's run may not do, allowed or not: no one sees what goes.
 func replacesSkill(call agent.ToolCall) bool {
+	if call.Name == "create_trigger" {
+		return true // nor make triggers: it would widen itself, unseen
+	}
 	if call.Name != "create_skill" {
 		return false
 	}

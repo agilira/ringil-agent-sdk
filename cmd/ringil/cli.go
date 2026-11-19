@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/todo"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
+	"github.com/agilira/ringil-agent-sdk/trigger"
 	"github.com/agilira/ringil-agent-sdk/workflow"
 )
 
@@ -109,6 +111,14 @@ type cli struct {
 	// was allowed, the only calls that would ask it may make.
 	inTrigger    bool
 	triggerAllow []string
+	// automating: a run started with /automate or `ringil automate`, the
+	// only kind that may make triggers.
+	automating bool
+	// roleName is the profile a run of serve talks with; finalTools the
+	// run's tools once made; triggers the runner serve runs (shared).
+	roleName   string
+	finalTools agent.Registry
+	triggers   *atomic.Pointer[trigger.Runner]
 	// role is the profile in use (--profile, or a profile served); nil
 	// keeps the flags and environment.
 	role *profile
@@ -122,6 +132,7 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
 		configDir:  os.UserConfigDir,
+		triggers:   &atomic.Pointer[trigger.Runner]{},
 		newSandbox: sandbox.New,
 		cwd:        os.Getwd,
 		home:       os.UserHomeDir,
@@ -192,6 +203,8 @@ func (c *cli) app() *orpheus.App {
 		AddSubcommand(orpheus.NewCommand("backup", "Save the agent's state to a new archive").SetHandler(c.cmdStateBackup).SetUsage("state backup <file.tar.gz>")).
 		AddSubcommand(orpheus.NewCommand("verify", "Check an archive without extracting it").SetHandler(c.cmdStateVerify).SetUsage("state verify <file.tar.gz>")).
 		AddSubcommand(orpheus.NewCommand("restore", "Restore an archive into a new directory, in quarantine").SetHandler(c.cmdStateRestore).SetUsage("state restore <file.tar.gz> <dir>")))
+	app.AddCommand(withWorkspace(orpheus.NewCommand("automate", "Make something happen by itself from now on: a trigger, shown before it is made").SetHandler(c.cmdAutomate).
+		SetUsage("automate <what, e.g. every weekday at 8 summarize my mail>")))
 	app.AddCommand(orpheus.NewCommand("trigger", "List the triggers `ringil serve` runs: on a time, a change, a message, a webhook").SetHandler(c.cmdTrigger).
 		AddSubcommand(orpheus.NewCommand("add", "Add or replace a trigger").SetHandler(c.cmdTriggerAdd).
 			SetUsage("trigger add <name> [--kind time|tool|file|message|webhook] [--skill <skill>] <prompt...>").
@@ -231,6 +244,9 @@ const ErrUsage errors.ErrorCode = "USAGE"
 
 func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	c.acceptEdits = ctx.GetGlobalFlagBool("accept-edits")
+	if c.roleName == "" {
+		c.roleName = a2aProfile(ctx) // --profile, else default: what triggers made here run with
+	}
 	c.noApprovals = ctx.GetGlobalFlagBool("no-approvals")
 	if err := c.chooseProfile(ctx); err != nil {
 		return nil, err
@@ -256,7 +272,8 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 	if tools, err = c.finishTools(ctx, model, tools); err != nil {
 		return nil, err
 	}
-	system := c.chatSystem(c.system(ctx))
+	c.finalTools = tools
+	system := c.automateSystem(c.chatSystem(c.system(ctx)))
 	if cat != nil {
 		system += cat.Instructions()
 	}
@@ -301,7 +318,7 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 	if err != nil {
 		return nil, err
 	}
-	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected})
+	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected, Exclude: ownStateExcluded})
 	if err != nil {
 		return nil, err
 	}
@@ -471,6 +488,9 @@ func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
 	}
 	if dir, err := c.skillsDir(); err == nil && !c.restricted() {
 		extra = append(extra, skills.CreateTool(dir, nil)) // destructive: asked, showing what it writes
+		if c.automating {
+			extra = append(extra, c.createTrigger())
+		}
 	}
 	return extra
 }
@@ -638,6 +658,13 @@ func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 	return c.notes != nil && c.notes.NeedsApproval(call)
 }
 
+// ownStateExcluded are the file tools' exclusions plus the agent's own
+// state: its triggers, skills, profiles, tokens and chat records change
+// only through their tools and commands, which ask.
+var ownStateExcluded = append(slices.Clone(files.DefaultExclude),
+	"ringil/triggers", "ringil/skills", "ringil/profiles.json", "ringil/serve-token",
+	"ringil/telegram-phones.json", "ringil/telegram-sessions.json")
+
 // showCall shows, before asking, what a call would do in full when a
 // line cannot: a workflow's plan, a skill's instructions.
 func (c *cli) showCall(call agent.ToolCall) {
@@ -646,6 +673,8 @@ func (c *cli) showCall(call agent.ToolCall) {
 		c.showPlan(call)
 	case "create_skill":
 		c.showSkill(call)
+	case "create_trigger":
+		c.showTrigger(call)
 	}
 }
 

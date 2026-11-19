@@ -7,12 +7,15 @@ package main
 
 import (
 	"context"
+	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/tools/bash"
+	"github.com/agilira/ringil-agent-sdk/tools/files"
 	"github.com/agilira/ringil-agent-sdk/trigger"
 )
 
@@ -83,5 +86,80 @@ func TestATriggerRunNeverReplacesASkill(t *testing.T) {
 	}
 	if ok, _ := c.approve(context.Background(), agent.ToolCall{Name: "create_skill", Input: []byte(`{"name":"a"}`)}, destructive); !ok {
 		t.Fatal("an allowed create refused")
+	}
+}
+
+func TestATriggerMadeInAChatDeliversThere(t *testing.T) {
+	dir := t.TempDir()
+	c := &cli{configDir: func() (string, error) { return dir, nil }, runConversation: "telegram-42_3", roleName: "team"}
+	reg, err := agent.NewRegistry(c.createTrigger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Execute(context.Background(), agent.ToolCall{ID: "1", Name: "create_trigger", Input: []byte(`{"name":"m","kind":"time","when":"@daily","prompt":"x"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := c.triggerStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeQuietly(store)
+	list, _ := store.Triggers()
+	if len(list) != 1 || list[0].Deliver != "telegram-42" || list[0].Profile != "team" {
+		t.Fatalf("%+v", list)
+	}
+}
+
+func TestATriggerRunMakesNoTriggerAndRunsNoAskedCommand(t *testing.T) {
+	c := &cli{inTrigger: true, triggerAllow: []string{"create_trigger", "bash"}}
+	destructive := agent.ToolSpec{Annotations: agent.Annotations{Destructive: true}}
+	if ok, _ := c.approve(context.Background(), agent.ToolCall{Name: "create_trigger", Input: []byte(`{}`)}, destructive); ok {
+		t.Fatal("a trigger's run made a trigger")
+	}
+	if ok, _ := c.confirmCommand(context.Background(), bashRequest("rm -rf build")); ok {
+		t.Fatal("a trigger's run ran a command that asks")
+	}
+}
+
+func TestTheAgentsStateIsNotForTheFileTools(t *testing.T) {
+	for _, p := range []string{"/home/u/.config/ringil/triggers/triggers.json", "/home/u/.config/ringil/skills/a/SKILL.md", "/home/u/.config/ringil/profiles.json"} {
+		if !files.Excluded(p, ownStateExcluded) {
+			t.Errorf("%s visible", p)
+		}
+	}
+	if files.Excluded("/home/u/.config/ringil/inbox/telegram-42/doc.txt", ownStateExcluded) {
+		t.Error("the inbox hidden")
+	}
+}
+
+func TestATriggerWatchesNoSecrets(t *testing.T) {
+	dir := t.TempDir()
+	c := &cli{configDir: func() (string, error) { return dir, nil }}
+	for _, p := range []string{"/home/u/.ssh", filepath.Join(dir, "ringil", "triggers")} {
+		if err := c.checkTrigger(context.Background(), trigger.Trigger{Kind: trigger.File, Path: p}); err == nil {
+			t.Errorf("%s watched", p)
+		}
+	}
+}
+
+func TestOnlyAutomateRunsMakeTriggers(t *testing.T) {
+	has := func(c *cli) bool {
+		for _, tool := range c.extraTools(nil, nil) {
+			if tool.Spec().Name == "create_trigger" {
+				return true
+			}
+		}
+		return false
+	}
+	dir := t.TempDir()
+	plain := newCLI(strings.NewReader(""), io.Discard, io.Discard)
+	plain.configDir = func() (string, error) { return dir, nil }
+	if has(plain) {
+		t.Fatal("a plain run may make triggers")
+	}
+	auto := newCLI(strings.NewReader(""), io.Discard, io.Discard)
+	auto.configDir, auto.automating = plain.configDir, true
+	if !has(auto) || !strings.Contains(auto.automateSystem(""), "create_trigger") {
+		t.Fatal("an automate run may not")
 	}
 }
