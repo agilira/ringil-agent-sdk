@@ -39,7 +39,7 @@ func (b *Bridge) speaks(chatID string) bool {
 
 func (b *Bridge) setVoice(ctx context.Context, chatID string, on bool) {
 	if on && !b.canSpeak() {
-		b.say(ctx, chatID, "I cannot answer with voice here.")
+		b.say(ctx, chatID, b.tr(chatID, mNoVoiceOut))
 		return
 	}
 	b.mu.Lock()
@@ -49,9 +49,9 @@ func (b *Bridge) setVoice(ctx context.Context, chatID string, on bool) {
 	b.voice[chatID] = on
 	b.mu.Unlock()
 	if on {
-		b.say(ctx, chatID, "I will answer your voice messages with voice.")
+		b.say(ctx, chatID, b.tr(chatID, mVoiceOn))
 	} else {
-		b.say(ctx, chatID, "I will answer your voice messages in text.")
+		b.say(ctx, chatID, b.tr(chatID, mVoiceOff))
 	}
 }
 

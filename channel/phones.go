@@ -18,7 +18,7 @@ import (
 // only to the sender's own number, as the app vouches for it. The Bridge
 // needs it for Config.MemberPhones. AskPhone is called as Send is.
 type PhoneAsker interface {
-	AskPhone(ctx context.Context, chat, text string) error
+	AskPhone(ctx context.Context, chat, text, button string) error
 }
 
 // maxPhonesFile bounds the shared phones file read back.
@@ -115,18 +115,16 @@ func (b *Bridge) phoneMember(from string) bool {
 	return ok && b.phones[p]
 }
 
-const askText = "To talk with me, share your phone number with the button below."
-
 // askPhone asks a sender in their own chat for their phone, when the host
 // lets members in by phone; at most MaxPerHour times an hour (30 when
 // there is no bound): a stranger writing on and on is not answered on
 // and on.
-func (b *Bridge) askPhone(ctx context.Context, m Message, text string) {
+func (b *Bridge) askPhone(ctx context.Context, m Message, text msg) {
 	if m.Group || len(b.phones) == 0 || !b.within(m.From, stranger) {
 		return
 	}
 	b.mu.Lock()
-	b.queue(ctx, m.Chat, outgoing{out: Out{Text: text}, askPhone: true})
+	b.queue(ctx, m.Chat, outgoing{out: Out{Text: b.tr(m.Chat, text)}, askPhone: true})
 	b.mu.Unlock()
 }
 
@@ -140,14 +138,14 @@ func (b *Bridge) sharedPhone(ctx context.Context, m Message) {
 	phone, ok := normalPhone(m.Phone, false)
 	if !ok || !b.phones[phone] {
 		b.report(Event{Kind: Refused, Chat: m.Chat, From: m.From})
-		b.say(ctx, m.Chat, "This number is not among those allowed here.")
+		b.say(ctx, m.Chat, b.tr(m.Chat, mPhoneNo))
 		return
 	}
 	b.mu.Lock()
 	b.shared[m.From] = phone
 	b.mu.Unlock()
 	b.persistShared()
-	b.say(ctx, m.Chat, "Thank you: you can write to me now.")
+	b.say(ctx, m.Chat, b.tr(m.Chat, mPhoneYes))
 }
 
 // persistShared writes the shared phones, as persist the sessions.

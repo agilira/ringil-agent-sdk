@@ -118,7 +118,8 @@ func (c *cli) bridgeConfig(ctx *orpheus.Context, res secrets.Resolver) (channel.
 		MemberPhones: splitList(ctx.GetFlagString("telegram-member-phones")), SharedPhones: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-phones.json"),
 		PublicProfile: ctx.GetFlagString("public-profile"), MaxPerHour: ctx.GetFlagInt("max-per-hour"),
 		Transcriber: ear, Synthesizer: mouth, VoiceReplies: replies == "voice", Inbox: c.inboxRoot,
-		Sessions: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-sessions.json"), IdleReset: idle, OnEvent: c.channelEvent}, nil
+		Sessions: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-sessions.json"), IdleReset: idle, OnEvent: c.channelEvent,
+		Language: ctx.GetFlagString("language"), NoApprovals: ctx.GetGlobalFlagBool("no-approvals")}, nil
 }
 
 // newAfter reads --new-after: a duration (at least a minute), or never.

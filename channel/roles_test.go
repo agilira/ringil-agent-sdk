@@ -177,7 +177,7 @@ func TestGroups(t *testing.T) {
 func TestOnlyOwnersApprove(t *testing.T) {
 	b, app, p, _ := teamBridge(t, Config{Members: []string{worker}, MemberProfile: "team"})
 	say(b, worker, worker, "delete it")
-	if got := app.nextIn(t, worker).Text; !strings.Contains(got, "needs an owner") {
+	if got := app.nextIn(t, worker).Text; !strings.Contains(got, "only an owner") {
 		t.Fatalf("member's own chat: %q", got)
 	}
 	app.nextIn(t, worker) // the run's answer
@@ -195,7 +195,7 @@ func TestOnlyOwnersApprove(t *testing.T) {
 		t.Fatalf("member pressed: %q", got)
 	}
 	b.handle(ctx, Message{Chat: office, From: me, Group: true, Pressed: q.Buttons[0].ID})
-	if got := app.nextIn(t, office).Text; got != "Allowed: delete_file." {
+	if got := app.nextIn(t, office).Text; got != "Allowed." {
 		t.Fatalf("owner pressed: %q", got)
 	}
 	app.nextIn(t, office)

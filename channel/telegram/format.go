@@ -6,9 +6,12 @@
 package telegram
 
 import (
+	"context"
 	"html"
 	"regexp"
 	"strings"
+
+	"github.com/agilira/ringil-agent-sdk/channel"
 )
 
 // Models write markdown; Telegram shows it as written (stars and
@@ -64,4 +67,23 @@ func marks(text string) string {
 	s = italic.ReplaceAllString(s, "$1<i>$2</i>$3")
 	s = strike.ReplaceAllString(s, "<s>$1</s>")
 	return mdLink.ReplaceAllString(s, `<a href="$2">$1</a>`)
+}
+
+// sendCode sends a text with its code in one message, the code in
+// monospace; false, sending nothing, when it does not fit in one.
+func (c *Channel) sendCode(ctx context.Context, chat string, out channel.Out) (bool, error) {
+	text := html.EscapeString(strings.TrimRight(out.Text, "\n"))
+	if out.Markdown {
+		text = format(out.Text)
+	}
+	in := sendIn{Chat: chat, Text: text + "\n<pre>" + html.EscapeString(out.Code) + "</pre>", Parse: "HTML"}
+	if fit(in.Text, maxText) < len(in.Text) {
+		return false, nil
+	}
+	if len(out.Buttons) > 0 {
+		in.Markup = keyboard(out.Buttons)
+	} else if c.unkeyed(chat) {
+		in.Markup = noKeyboard{Remove: true}
+	}
+	return true, c.call(ctx, "sendMessage", in, nil)
 }

@@ -109,6 +109,13 @@ type rig struct {
 // delete_file tool needs approval.
 func newRig(t *testing.T, store bool, steps ...fake.Step) *rig {
 	t.Helper()
+	return rigWith(t, Config{}, store, steps...)
+}
+
+// rigWith is newRig with the Bridge's cfg (its channel, server, owners
+// and events are the rig's).
+func rigWith(t *testing.T, bc Config, store bool, steps ...fake.Step) *rig {
+	t.Helper()
 	r := &rig{app: newApp(), model: fake.New(steps...), events: make(chan Event, 16)}
 	tool := agent.NewTool("delete_file", "deletes", func(context.Context, struct{}) (string, error) {
 		r.ran.Store(true)
@@ -134,7 +141,8 @@ func newRig(t *testing.T, store bool, steps ...fake.Step) *rig {
 	if r.srv, err = serve.New(cfg); err != nil {
 		t.Fatal(err)
 	}
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, OnEvent: func(e Event) { r.events <- e }})
+	bc.Channel, bc.Server, bc.Owners, bc.OnEvent = r.app, r.srv, []string{me}, func(e Event) { r.events <- e }
+	b, err := NewBridge(bc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +214,7 @@ func approval(t *testing.T, steps ...fake.Step) (*rig, Out) {
 	r := newRig(t, true, append([]fake.Step{fake.Call("delete_file", `{}`)}, steps...)...)
 	r.app.say("clean up")
 	q := r.app.next(t)
-	if !strings.Contains(q.Text, "delete_file") || len(q.Buttons) != 2 {
+	if !strings.Contains(q.Text, "delete_file") || len(q.Buttons) != 3 {
 		t.Fatalf("ask %+v", q)
 	}
 	return r, q
@@ -215,12 +223,12 @@ func approval(t *testing.T, steps ...fake.Step) (*rig, Out) {
 func TestApprovalByButton(t *testing.T) {
 	for _, allow := range []bool{true, false} {
 		r, q := approval(t, fake.Reply("finished"))
-		b := q.Buttons[1]
+		b := q.Buttons[2]
 		if allow {
 			b = q.Buttons[0]
 		}
 		r.app.press(b.ID)
-		want := map[bool]string{true: "Allowed: delete_file.", false: "Refused: delete_file."}[allow]
+		want := map[bool]string{true: "Allowed.", false: "Refused."}[allow]
 		if got := r.app.next(t).Text; got != want {
 			t.Fatalf("after the button: %q", got)
 		}
@@ -236,7 +244,7 @@ func TestApprovalByButton(t *testing.T) {
 func TestApprovalWritten(t *testing.T) {
 	r, _ := approval(t, fake.Reply("finished"))
 	r.app.say("Sì")
-	if got := r.app.next(t).Text; got != "Allowed: delete_file." {
+	if got := r.app.next(t).Text; got != "Allowed." {
 		t.Fatalf("after yes: %q", got)
 	}
 	r.app.next(t)
@@ -251,15 +259,15 @@ func TestButtonsOfAnotherChatDoNothing(t *testing.T) {
 	if got := r.app.nextIn(t, "8").Text; got != "That question is closed." {
 		t.Fatalf("other chat: %q", got)
 	}
-	r.app.press(q.Buttons[1].ID) // still open here
-	if got := r.app.next(t).Text; got != "Refused: delete_file." {
+	r.app.press(q.Buttons[2].ID) // still open here
+	if got := r.app.next(t).Text; got != "Refused." {
 		t.Fatalf("after no: %q", got)
 	}
 }
 
 func TestAButtonCountsOnce(t *testing.T) {
 	r, q := approval(t, fake.Reply("finished"))
-	r.app.press(q.Buttons[1].ID)
+	r.app.press(q.Buttons[2].ID)
 	r.app.next(t) // Refused.
 	r.app.next(t) // finished
 	r.app.press(q.Buttons[0].ID)
@@ -277,7 +285,7 @@ func TestOneRunAtATimePerChat(t *testing.T) {
 	if got := r.app.next(t).Text; !strings.Contains(got, "/stop") {
 		t.Fatalf("busy: %q", got)
 	}
-	r.app.press(q.Buttons[1].ID)
+	r.app.press(q.Buttons[2].ID)
 	r.app.next(t)
 	if got := r.app.next(t).Text; got != "finished" {
 		t.Fatalf("end %q", got)

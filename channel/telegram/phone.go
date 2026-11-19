@@ -47,9 +47,9 @@ type noKeyboard struct {
 // (in a private chat: Telegram shows it nowhere else). The next text
 // without buttons sent to the chat after a contact comes takes the
 // button away.
-func (c *Channel) AskPhone(ctx context.Context, chat, text string) error {
+func (c *Channel) AskPhone(ctx context.Context, chat, text, button string) error {
 	in := sendIn{Chat: chat, Text: text, Markup: replyKeyboard{
-		Keyboard: [][]contactButton{{{Text: "Share my phone number", Contact: true}}}, OneTime: true, Resize: true}}
+		Keyboard: [][]contactButton{{{Text: button, Contact: true}}}, OneTime: true, Resize: true}}
 	return c.call(ctx, "sendMessage", in, nil)
 }
 

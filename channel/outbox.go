@@ -104,7 +104,7 @@ func (b *Bridge) failed(chatID string, o outgoing, err error) {
 func (b *Bridge) deliver(ctx context.Context, chatID string, o outgoing) error {
 	out := o.out
 	if pa, ok := b.cfg.Channel.(PhoneAsker); ok && o.askPhone {
-		return pa.AskPhone(ctx, chatID, out.Text)
+		return pa.AskPhone(ctx, chatID, out.Text, b.tr(chatID, mPhoneButton))
 	}
 	voice := out.Voice
 	out.Voice = nil
