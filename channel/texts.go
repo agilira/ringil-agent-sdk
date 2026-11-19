@@ -78,11 +78,15 @@ const (
 	mAskDomain       msg = "ask_domain"
 	mAskSkill        msg = "ask_skill"
 	mAskSkillReplace msg = "ask_skill_replace"
+	mAskTrigger      msg = "ask_trigger"
+	mNothing         msg = "nothing"
+	mAutomateOwner   msg = "automate_owner"
+	mAutomateHelp    msg = "automate_help"
 )
 
 var texts = map[string]speech{
 	English: {
-		mHello:           "Hello. Write to me and I will answer. /new starts a new conversation, /stop stops what I am doing, /voice and /text choose how I answer voice messages.",
+		mHello:           "Hello. Write to me and I will answer. /new starts a new conversation, /stop stops what I am doing, /voice and /text choose how I answer voice messages, /automate makes something happen by itself from now on.",
 		mHelloPhone:      "If you work here, share your phone number with the button below.",
 		mAskPhone:        "To talk with me, share your phone number with the button below.",
 		mPhoneButton:     "Share my phone number",
@@ -138,9 +142,13 @@ var texts = map[string]speech{
 		mAskDomain:       "A command wants to reach {}. May it?",
 		mAskSkill:        "May I write the skill {} ({}) with these instructions?",
 		mAskSkillReplace: "May I replace the skill {} ({}) with these instructions?",
+		mAskTrigger:      "May I make the trigger {}? It will run by itself, with no one to ask: its runs may use without asking: {}.",
+		mNothing:         "nothing",
+		mAutomateOwner:   "Only an owner, in their own chat, can make automations.",
+		mAutomateHelp:    "Say what to automate, for example: /automate every weekday at 8, summarize my mail. I will show you what it does before making it.",
 	},
 	Italian: {
-		mHello:           "Ciao. Scrivimi e ti rispondo. /new apre una nuova conversazione, /stop ferma quello che sto facendo, /voice e /text scelgono come rispondo ai vocali.",
+		mHello:           "Ciao. Scrivimi e ti rispondo. /new apre una nuova conversazione, /stop ferma quello che sto facendo, /voice e /text scelgono come rispondo ai vocali, /automate fa succedere qualcosa da solo d'ora in poi.",
 		mHelloPhone:      "Se lavori qui, condividi il tuo numero con il bottone qui sotto.",
 		mAskPhone:        "Per parlare con me, condividi il tuo numero con il bottone qui sotto.",
 		mPhoneButton:     "Condividi il mio numero",
@@ -196,6 +204,10 @@ var texts = map[string]speech{
 		mAskDomain:       "Un comando vuole raggiungere {}. Glielo permetto?",
 		mAskSkill:        "Posso scrivere la skill {} ({}) con queste istruzioni?",
 		mAskSkillReplace: "Posso sostituire la skill {} ({}) con queste istruzioni?",
+		mAskTrigger:      "Posso creare il trigger {}? Partirà da solo, senza nessuno a cui chiedere: le sue run potranno usare senza chiedere: {}.",
+		mNothing:         "niente",
+		mAutomateOwner:   "Solo un proprietario, nella sua chat, può creare automazioni.",
+		mAutomateHelp:    "Dimmi cosa automatizzare, per esempio: /automate ogni giorno feriale alle 8 riassumimi la posta. Prima di crearla ti mostro cosa farà.",
 	},
 }
 

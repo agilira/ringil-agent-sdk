@@ -21,7 +21,9 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/serve"
+	"github.com/agilira/ringil-agent-sdk/tools/files"
 	"github.com/agilira/ringil-agent-sdk/trigger"
 )
 
@@ -292,6 +294,7 @@ func (c *cli) startTriggers(octx *orpheus.Context, ctx context.Context, srv *ser
 		closeQuietly(store)
 		return nil, err
 	}
+	c.triggers.Store(runner)
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -303,6 +306,7 @@ func (c *cli) startTriggers(octx *orpheus.Context, ctx context.Context, srv *ser
 	return func() {
 		cancel()
 		<-done
+		c.triggers.Store(nil)
 		closeQuietly(store)
 	}, nil
 }
@@ -458,4 +462,116 @@ func (c *cli) triggerEvent(e trigger.Event) {
 	case trigger.Invalid:
 		c.note("triggers: " + clean(oneLine(e.Err.Error(), 300)))
 	}
+}
+
+// createTrigger is create_trigger for this run: its tools are the run's,
+// a trigger made in a chat delivers there, and runs with the run's role;
+// serve takes it at once.
+func (c *cli) createTrigger() agent.Tool {
+	return trigger.CreateTool(c.triggerStore, trigger.ToolOptions{
+		Check:    c.checkTrigger,
+		Defaults: c.triggerDefaults,
+		Added:    func(trigger.Trigger) { c.reloadTriggers() },
+	})
+}
+
+// checkTrigger is the CLI's say on a trigger the agent makes: the tool it
+// asks exists and only reads, the tools it allows exist, the path it
+// watches is one the file tools may show and not the agent's own state.
+func (c *cli) checkTrigger(_ context.Context, t trigger.Trigger) error {
+	if err := c.checkLookTool(t.Tool); err != nil {
+		return err
+	}
+	for _, name := range t.Allow {
+		if _, ok := specOf(c.finalTools, name); !ok {
+			return errors.New(ErrUsage, "no such tool: "+name)
+		}
+	}
+	if t.Path != "" && (files.Excluded(t.Path, nil) || c.inOwnState(t.Path)) {
+		return errors.New(ErrUsage, "a trigger may not watch "+t.Path+": it holds credentials or the agent's own state")
+	}
+	return nil
+}
+
+// checkLookTool: the tool a trigger asks, if any, is there and only reads.
+func (c *cli) checkLookTool(tool string) error {
+	if tool == "" {
+		return nil
+	}
+	spec, ok := specOf(c.finalTools, tool)
+	if !ok || spec.Annotations.Destructive || !spec.Annotations.ReadOnly {
+		return errors.New(ErrUsage, "a trigger looks only with a tool there is and that only reads; "+tool+" is not one")
+	}
+	return nil
+}
+
+// inOwnState: path is in the agent's configuration directory.
+func (c *cli) inOwnState(path string) bool {
+	base, err := c.configDir()
+	if err != nil {
+		return true
+	}
+	rel, err := filepath.Rel(filepath.Join(base, "ringil"), path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// triggerDefaults fills what the agent left out of a trigger it makes.
+func (c *cli) triggerDefaults(_ context.Context, t *trigger.Trigger) {
+	chat := ""
+	if c.chatRun() {
+		chat = channel.ChatOf(c.runConversation)
+	}
+	if t.Deliver == "" {
+		t.Deliver = chat
+	}
+	if t.Profile == "" && c.roleName != "default" {
+		t.Profile = c.roleName
+	}
+}
+
+// reloadTriggers has serve take the triggers' edits at once.
+func (c *cli) reloadTriggers() {
+	if c.triggers == nil {
+		return
+	}
+	if r := c.triggers.Load(); r != nil {
+		r.Reload()
+	}
+}
+
+// automateNote tells a run started to make an automation what to do.
+const automateNote = "This run makes an automation the user asked for with /automate: something that will happen by itself from now on. " +
+	"Make it with create_trigger (first write a skill with create_skill when the steps deserve one). " +
+	"Ask the user only what you cannot infer; the approval will show them all of it. Give its runs only the tools they need."
+
+// automateSystem adds, in a run started to make an automation, what it
+// is for.
+func (c *cli) automateSystem(system string) string {
+	if !c.automating {
+		return system
+	}
+	if system == "" {
+		system = agent.DefaultSystem
+	}
+	return system + "\n\n" + automateNote
+}
+
+// cmdAutomate makes an automation from the terminal: a run that may make
+// triggers, asking before it does.
+func (c *cli) cmdAutomate(ctx *orpheus.Context) error {
+	what := strings.TrimSpace(strings.Join(ctx.Positional(), " "))
+	if what == "" {
+		return errors.New(ErrUsage, `nothing to automate; usage: ringil automate "every weekday at 8, summarize my mail"`)
+	}
+	c.automating = true
+	defer c.shutdown()
+	a, err := c.agent(ctx)
+	if err != nil {
+		return err
+	}
+	conv, release, err := c.conversation(ctx)
+	if err != nil {
+		return err
+	}
+	return closing(c.turn(ctx.Context(), a, conv, "Make this automation: "+what), release)
 }

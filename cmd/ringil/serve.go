@@ -25,6 +25,7 @@ import (
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/a2a"
+	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/eventlog"
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
 	"github.com/agilira/ringil-agent-sdk/serve"
@@ -125,10 +126,10 @@ func (c *cli) servedProfiles(ctx *orpheus.Context) ([]serve.Profile, error) {
 			return nil, errors.New(ErrUsage, "no profile "+p+" in "+c.profilesPath(ctx))
 		}
 	}
-	out := []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx, nil)}}
+	out := []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx, "default", nil)}}
 	for _, name := range names(roles) {
 		role := roles[name]
-		out = append(out, serve.Profile{Name: name, Description: role.Description, New: c.runInstance(ctx, &role)})
+		out = append(out, serve.Profile{Name: name, Description: role.Description, New: c.runInstance(ctx, name, &role)})
 	}
 	return out, nil
 }
@@ -142,13 +143,14 @@ func a2aProfile(ctx *orpheus.Context) string {
 
 // runInstance builds a run's agent: a CLI of its own, so that its crew,
 // notebooks, task list and approvals are the run's alone.
-func (c *cli) runInstance(ctx *orpheus.Context, role *profile) func(context.Context) (serve.Instance, error) {
+func (c *cli) runInstance(ctx *orpheus.Context, name string, role *profile) func(context.Context) (serve.Instance, error) {
 	return func(run context.Context) (serve.Instance, error) {
 		r := c.forRun()
 		r.runConversation = serve.ConversationOf(run)
 		r.setUpTrigger(serve.SourceOf(run))
+		r.automating = serve.SourceOf(run) == channel.Automate
 		r.inbox = c.inboxOf(r.runConversation)
-		r.role = role
+		r.role, r.roleName = role, name
 		a, err := r.agent(ctx)
 		if err != nil {
 			r.shutdown()
@@ -163,7 +165,8 @@ func (c *cli) runInstance(ctx *orpheus.Context, role *profile) func(context.Cont
 func (c *cli) forRun() *cli {
 	return &cli{in: strings.NewReader(""), out: io.Discard, errOut: io.Discard, getenv: c.getenv,
 		newProvider: c.newProvider, turnContext: c.turnContext, configDir: c.configDir, newEmbedder: c.newEmbedder,
-		newSandbox: c.newSandbox, cwd: c.cwd, home: c.home, server: c.server, remote: c.remote, shared: true, events: c.events}
+		newSandbox: c.newSandbox, cwd: c.cwd, home: c.home, server: c.server, remote: c.remote, shared: true, events: c.events,
+		triggers: c.triggers}
 }
 
 // exposeA2A offers a profile (--profile, else default) to other agents, at /a2a on the

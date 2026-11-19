@@ -40,8 +40,8 @@ const (
 )
 
 // Trigger is a run of an agent set off by something: a time, a change, a
-// message, a request. The struct is the Go API, and the input of the
-// create_trigger tool to come.
+// message, a request. The struct is the Go API; create_trigger makes
+// the kinds the agent may (CreateTool).
 type Trigger struct {
 	// Name identifies the trigger: 1-48 letters, digits, - and _.
 	Name string `json:"name"`

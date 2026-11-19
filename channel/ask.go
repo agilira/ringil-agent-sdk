@@ -89,7 +89,7 @@ func (b *Bridge) question(a *ask, p serve.Approval, group bool) Out {
 
 // askEveryTime are the tools asked about every time, without "always":
 // each call is something new to read (a skill's instructions).
-var askEveryTime = map[string]bool{"create_skill": true}
+var askEveryTime = map[string]bool{"create_skill": true, "create_trigger": true}
 
 // validChoice: yes, always, no, or show all.
 func validChoice(c string) bool {
