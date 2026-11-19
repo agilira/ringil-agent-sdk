@@ -63,15 +63,32 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	}
 	run, stop := signal.NotifyContext(ctx.Context(), os.Interrupt)
 	defer stop()
-	if !ctx.GetFlagBool("no-schedule") {
-		stopJobs, err := c.startSchedule(run, srv)
-		if err != nil {
-			return err
-		}
-		defer stopJobs()
+	stopAll, err := c.startBackground(ctx, run, srv)
+	if err != nil {
+		return err
 	}
+	defer stopAll()
 	c.note("serving on http://" + l.Addr().String() + "/v1/ ; bearer token " + where)
 	return srv.Serve(run, l)
+}
+
+// startBackground starts what works beside the API: the scheduled jobs
+// (unless --no-schedule) and the chat apps. The function returned stops
+// them.
+func (c *cli) startBackground(ctx *orpheus.Context, run context.Context, srv *serve.Server) (func(), error) {
+	stopJobs := func() {}
+	if !ctx.GetFlagBool("no-schedule") {
+		var err error
+		if stopJobs, err = c.startSchedule(run, srv); err != nil {
+			return nil, err
+		}
+	}
+	stopChannels, err := c.startChannels(ctx, run, srv)
+	if err != nil {
+		stopJobs()
+		return nil, err
+	}
+	return func() { stopChannels(); stopJobs() }, nil
 }
 
 // newServer builds the server: its token, the shared remote tools, the

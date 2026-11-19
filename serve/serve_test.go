@@ -425,3 +425,63 @@ func closeQuietly(c io.Closer) {
 		return
 	}
 }
+
+func TestWatch(t *testing.T) {
+	var s *Server
+	var ran bool
+	a := newAPI(t, Config{Profiles: []Profile{approvalProfile(t, &s, &ran, fake.Call("delete_file", `{}`), fake.Reply("done"))}})
+	s = a.srv
+	if err := s.Watch(context.Background(), "nope", func(Snapshot) {}); err == nil {
+		t.Fatal("watched a run that does not exist")
+	}
+	run, err := s.Start("default", "", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []Snapshot
+	err = s.Watch(context.Background(), run.ID, func(sn Snapshot) {
+		seen = append(seen, sn)
+		if len(sn.Pending) == 1 {
+			if err := s.Decide(run.ID, sn.Pending[0].ID, true); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := seen[len(seen)-1]; last.State != Completed || last.Text != "done" || !ran {
+		t.Fatalf("last %+v ran %v", last, ran)
+	}
+}
+
+func TestWatchEndsWithItsContext(t *testing.T) {
+	var s *Server
+	var ran bool
+	a := newAPI(t, Config{Profiles: []Profile{approvalProfile(t, &s, &ran, fake.Call("delete_file", `{}`), fake.Reply("done"))}})
+	s = a.srv
+	run, err := s.Start("default", "", "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = s.Watch(ctx, run.ID, func(sn Snapshot) {
+		if sn.State == Waiting {
+			cancel()
+		}
+	})
+	if err != context.Canceled {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestPendingInTheOrderAsked(t *testing.T) {
+	j := newJob("r", "p", "", &Server{now: time.Now, cfg: Config{}})
+	for range 10 {
+		j.ask(agent.ToolCall{Name: "x"}, "")
+	}
+	p := j.snapshot().Pending
+	if p[8].ID != "a9" || p[9].ID != "a10" {
+		t.Fatalf("order %s %s", p[8].ID, p[9].ID)
+	}
+}

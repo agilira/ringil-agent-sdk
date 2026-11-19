@@ -17,6 +17,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/delegate"
 )
 
 // State is where a run is.
@@ -67,6 +68,9 @@ type Approval struct {
 	CallID string          `json:"call_id"`
 	Tool   string          `json:"tool"`
 	Input  json.RawMessage `json:"input"`
+	// Worker, when a worker of the agent asks, is its name and task, as
+	// "researcher 2".
+	Worker string `json:"worker,omitzero"`
 }
 
 type jobKey struct{}
@@ -232,7 +236,10 @@ func (j *job) snapshot() Snapshot {
 	for _, p := range j.waiting {
 		s.Pending = append(s.Pending, p.approval)
 	}
-	sort.Slice(s.Pending, func(a, b int) bool { return s.Pending[a].ID < s.Pending[b].ID })
+	sort.Slice(s.Pending, func(a, b int) bool { // in the order asked: "a9" before "a10"
+		x, y := s.Pending[a].ID, s.Pending[b].ID
+		return len(x) < len(y) || (len(x) == len(y) && x < y)
+	})
 	if len(s.Pending) > 0 && j.state == Running {
 		s.State = Waiting
 	}
@@ -262,7 +269,7 @@ func (s *Server) Approve(ctx context.Context, call agent.ToolCall, _ agent.ToolS
 	if !ok || j.srv != s {
 		return false, fail(ErrInput, "not a run of this server")
 	}
-	p := j.ask(call)
+	p := j.ask(call, worker(ctx))
 	timer := time.NewTimer(s.approvalTimeout())
 	defer timer.Stop()
 	var allowed bool
@@ -277,12 +284,20 @@ func (s *Server) Approve(ctx context.Context, call agent.ToolCall, _ agent.ToolS
 	return j.settle(p, allowed, how), nil
 }
 
+// worker names the worker asking, "" for the agent itself.
+func worker(ctx context.Context) string {
+	if info, ok := delegate.Current(ctx); ok {
+		return info.Worker + " " + strconv.Itoa(info.Task)
+	}
+	return ""
+}
+
 // ask records a call waiting for approval.
-func (j *job) ask(call agent.ToolCall) *pending {
+func (j *job) ask(call agent.ToolCall, worker string) *pending {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.asked++
-	p := &pending{approval: Approval{ID: "a" + strconv.Itoa(j.asked), CallID: call.ID, Tool: call.Name, Input: safeJSON(call.Input)}, decide: make(chan bool, 1)}
+	p := &pending{approval: Approval{ID: "a" + strconv.Itoa(j.asked), CallID: call.ID, Tool: call.Name, Input: safeJSON(call.Input), Worker: worker}, decide: make(chan bool, 1)}
 	j.waiting[p.approval.ID] = p
 	a := p.approval
 	j.append(wireEvent{Kind: "approval", Approval: &a})

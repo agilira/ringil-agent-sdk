@@ -419,6 +419,8 @@ prima del commit dopo:
 | 19 | Bash sandbox/host (2.6) | host mode senza fuga di env da /proc/$PPID; timeout che uccide anche i figli setsid |
 | 20 | Pianificazione (4.1): trigger a tempo e a evento, consegna, retry + notifica | DST con libreria matura; ogni difetto di studio diventa un test |
 | 21 | A2A (5.1) | CLIENT FATTO 18/11: modulo a2a/ su a2a-go v2.8.0, agente remoto come tool, credenziali solo all'origine della card; server con serve (16) |
+| 22 | Canali — API e Telegram FATTI 19/11 (pacchetto channel, Bridge, serve.Watch, `ringil serve --telegram-allow`), manca la prova dal vivo; poi WhatsApp, Slack, iMessage, WeChat come adapter | ogni chat = una conversazione di serve; approvazioni (bash Confirm, askDomain, serve.Approve) in chat con bottoni sì/no |
+| 23 | Probe + `create_skill` (decisione 19/11) | due tool: `create_probe` e `create_skill`. Cinque tipi fissi e deterministici: tempo (lo scheduler attuale), tool (chiama un tool configurato, MCP/Composio/fetch/bash in sandbox, con argomenti fissi; copre URL e comandi), file (fsnotify), messaggio sul canale, webhook (endpoint di serve con segreto/firma). Ogni probe emette `drift_event` e lancia una skill normale in markdown. Pre-autorizzati: le azioni pericolose si approvano una volta alla creazione; fuori scope = rifiuto + notifica, mai attese appese. Unico limite: run precedente in corso = salto. API Go per i power user (stessa struct del tool), probe persistiti e riavviati da serve |
 
 Conferma prima dei tool distruttivi e tool in sola lettura in parallelo entrano con il
 punto 1, quando esistono i primi tool reali su cui provarli.

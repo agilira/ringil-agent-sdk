@@ -1,0 +1,88 @@
+// outbox.go: replies sent in order, apart from receiving
+//
+// Copyright (c) 2026 AGILira - A. Giordano
+// SPDX-License-Identifier: MPL-2.0
+
+package channel
+
+import (
+	"context"
+
+	"github.com/agilira/go-errors"
+)
+
+// maxQueued bounds the replies waiting for one chat; past it the oldest
+// is dropped, and reported.
+const maxQueued = 64
+
+// outbox is a chat's replies waiting, sent one at a time in order.
+type outbox struct {
+	queue   []outgoing
+	sending bool
+}
+
+type outgoing struct {
+	out Out
+	// failed, when set, runs if out could not be sent.
+	failed func()
+}
+
+func (b *Bridge) say(ctx context.Context, chatID, text string) {
+	b.post(ctx, chatID, Out{Text: text}, nil)
+}
+
+// post queues a reply for a chat and returns at once.
+func (b *Bridge) post(ctx context.Context, chatID string, out Out, failed func()) {
+	b.mu.Lock()
+	box := b.boxes[chatID]
+	if box == nil {
+		box = &outbox{}
+		b.boxes[chatID] = box
+	}
+	var dropped *outgoing
+	if len(box.queue) >= maxQueued {
+		d := box.queue[0]
+		dropped = &d
+		box.queue = box.queue[1:]
+	}
+	box.queue = append(box.queue, outgoing{out, failed})
+	start := !box.sending
+	box.sending = true
+	if start {
+		b.wg.Add(1)
+	}
+	b.mu.Unlock()
+	if dropped != nil {
+		b.failed(chatID, *dropped, errors.New(ErrQueue, "too many replies waiting for this chat"))
+	}
+	if start {
+		go b.drain(ctx, chatID, box)
+	}
+}
+
+// drain sends a chat's replies until none is left.
+func (b *Bridge) drain(ctx context.Context, chatID string, box *outbox) {
+	defer b.wg.Done()
+	for {
+		b.mu.Lock()
+		if len(box.queue) == 0 {
+			box.sending = false
+			delete(b.boxes, chatID)
+			b.mu.Unlock()
+			return
+		}
+		next := box.queue[0]
+		box.queue = box.queue[1:]
+		b.mu.Unlock()
+		if err := b.cfg.Channel.Send(ctx, chatID, next.out); err != nil {
+			b.failed(chatID, next, err)
+		}
+	}
+}
+
+func (b *Bridge) failed(chatID string, o outgoing, err error) {
+	b.report(Event{Kind: SendFailed, Chat: chatID, Err: err})
+	if o.failed != nil {
+		o.failed()
+	}
+}
