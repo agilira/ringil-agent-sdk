@@ -25,8 +25,9 @@ import (
 // startChannels connects Telegram when RINGIL_TELEGRAM_TOKEN is set (in
 // the environment or the --env-file). The owners (--telegram-owners) talk
 // with --profile, else default, and approve; the members (listed, or in
-// --telegram-company-group) with --member-profile; with --public-profile,
-// anyone else with it. A message from anyone else is noted with its ID.
+// --telegram-company-group, or sharing a --telegram-member-phones number)
+// with --member-profile; with --public-profile, anyone else with it. A
+// message from anyone else is noted with its ID.
 func (c *cli) startChannels(ctx *orpheus.Context, run context.Context, srv *serve.Server) (func(), error) {
 	res, err := c.resolver(ctx)
 	if err != nil {
@@ -114,6 +115,7 @@ func (c *cli) bridgeConfig(ctx *orpheus.Context, res secrets.Resolver) (channel.
 	}
 	return channel.Config{Profile: a2aProfile(ctx), Owners: splitList(ctx.GetFlagString("telegram-owners")),
 		Members: splitList(ctx.GetFlagString("telegram-members")), MemberProfile: ctx.GetFlagString("member-profile"),
+		MemberPhones: splitList(ctx.GetFlagString("telegram-member-phones")), SharedPhones: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-phones.json"),
 		PublicProfile: ctx.GetFlagString("public-profile"), MaxPerHour: ctx.GetFlagInt("max-per-hour"),
 		Transcriber: ear, Synthesizer: mouth, VoiceReplies: replies == "voice", Inbox: c.inboxRoot,
 		Sessions: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-sessions.json"), IdleReset: idle, OnEvent: c.channelEvent}, nil
@@ -137,19 +139,24 @@ func (c *cli) channelEvent(e channel.Event) {
 		c.note("telegram: message from user " + clean(e.From) + " not allowed (--telegram-owners or --telegram-members " + clean(e.From) + " to let them in)")
 	case channel.Limited:
 		c.note("telegram: user " + clean(e.From) + " went past --max-per-hour")
-	case channel.MemberCheckFailed:
-		c.note("telegram: cannot check whether user " + clean(e.From) + " is in the company group: " + clean(oneLine(e.Err.Error(), 300)))
-	case channel.ReceiveFailed:
-		c.note("telegram: cannot receive, retrying: " + clean(oneLine(e.Err.Error(), 300)))
-	case channel.FileFailed:
-		c.note("telegram: a file in chat " + clean(e.Chat) + " could not be taken: " + clean(oneLine(e.Err.Error(), 300)))
-	case channel.VoiceFailed:
-		c.note("telegram: an answer went as text, not voice: " + clean(oneLine(e.Err.Error(), 300)))
-	case channel.SessionsFailed:
-		c.note("telegram: the chats' conversations could not be saved: " + clean(oneLine(e.Err.Error(), 300)))
-	case channel.SendFailed:
-		c.note("telegram: cannot send to chat " + clean(e.Chat) + ": " + clean(oneLine(e.Err.Error(), 300)))
+	default:
+		if what := failures(e); what != "" && e.Err != nil {
+			c.note("telegram: " + what + ": " + clean(oneLine(e.Err.Error(), 300)))
+		}
 	}
+}
+
+// failures says what failed, for the events that carry an error.
+func failures(e channel.Event) string {
+	return map[channel.EventKind]string{
+		channel.MemberCheckFailed: "cannot check whether user " + clean(e.From) + " is in the company group",
+		channel.ReceiveFailed:     "cannot receive, retrying",
+		channel.FileFailed:        "a file in chat " + clean(e.Chat) + " could not be taken",
+		channel.VoiceFailed:       "an answer went as text, not voice",
+		channel.SessionsFailed:    "the chats' conversations could not be saved",
+		channel.PhonesFailed:      "the phone numbers shared could not be saved",
+		channel.SendFailed:        "cannot send to chat " + clean(e.Chat),
+	}[e.Kind]
 }
 
 // inboxDir is where the documents sent in the chats are kept, a

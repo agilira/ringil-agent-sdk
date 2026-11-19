@@ -18,6 +18,7 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
@@ -234,6 +235,18 @@ func (c *cli) system(ctx *orpheus.Context) string {
 		return c.role.System
 	}
 	return ctx.GetGlobalFlagString("system")
+}
+
+// chatSystem is system with what an agent should know to talk in a chat
+// app, in a run of a Telegram chat.
+func (c *cli) chatSystem(system string) string {
+	if !channel.Owns("telegram", c.runConversation) {
+		return system
+	}
+	if system == "" {
+		system = agent.DefaultSystem
+	}
+	return system + "\n\n" + channel.Style
 }
 
 func (c *cli) maxTurns(ctx *orpheus.Context) int {

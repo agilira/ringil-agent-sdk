@@ -43,6 +43,16 @@ type Config struct {
 	IsMember      func(ctx context.Context, from string) (bool, error)
 	MemberCheck   time.Duration
 	MemberProfile string
+	// MemberPhones are phone numbers of members, with their country code
+	// ("+39 333 1234567", never with a trunk "(0)"). Anyone else writing
+	// in their own chat is asked to share their number, with the app's
+	// button (the Channel must be a PhoneAsker); on a public bot, at
+	// /start. Who shares a listed one is a member from then on, by their
+	// sender ID, kept in the file SharedPhones (empty: in memory only);
+	// taking the number off the list (and restarting) takes them out,
+	// also when they changed number since.
+	MemberPhones []string
+	SharedPhones string
 	// PublicProfile, when set, answers anyone else: a public bot. Without
 	// it, a message from anyone else is not answered, and is reported as
 	// Refused with its sender, for the host to add if wanted (which is how
@@ -101,6 +111,9 @@ const (
 	// SessionsFailed: the sessions file could not be written; the chats
 	// go on, but a restart forgets their /new and silences.
 	SessionsFailed
+	// PhonesFailed: the SharedPhones file could not be written; a restart
+	// forgets who shared their phone since.
+	PhonesFailed
 )
 
 // Event is something the host should know.
@@ -116,6 +129,7 @@ type Bridge struct {
 	cfg     Config
 	owners  map[string]bool
 	members map[string]bool
+	phones  map[string]bool // MemberPhones, normalized
 
 	mu      sync.Mutex
 	chats   map[string]*chat       // chats with a run going, by chat ID
@@ -124,6 +138,7 @@ type Bridge struct {
 	voice   map[string]bool        // /voice and /text, by chat ID
 	checked map[string]memberCheck // IsMember's answers, by sender
 	recent  map[string][]time.Time // messages answered in the last hour, by sender
+	shared  map[string]string      // listed phones shared, by sender
 	// sessions are the chats' conversations, by chat ID.
 	sessions   map[string]session
 	reconciled map[string]bool // chats whose number was checked against the server
@@ -153,8 +168,9 @@ func NewBridge(cfg Config) (*Bridge, error) {
 		return nil, errors.New(ErrConfig, "the channel's name must be 1-20 lower-case letters or digits")
 	}
 	owners, members := idSet(cfg.Owners), idSet(cfg.Members)
-	if (len(members) > 0 || cfg.IsMember != nil) && cfg.MemberProfile == "" {
-		return nil, errors.New(ErrConfig, "members need a MemberProfile: the tools they may use")
+	phones, err := checkMembers(cfg, members)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.Profile == "" {
 		cfg.Profile = "default"
@@ -163,9 +179,33 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Bridge{cfg: cfg, owners: owners, members: members, chats: map[string]*chat{}, asks: map[string]*ask{},
+	shared, pruned, err := loadShared(cfg.SharedPhones, phones)
+	if err != nil {
+		return nil, err
+	}
+	b := &Bridge{cfg: cfg, owners: owners, members: members, phones: phones, shared: shared, chats: map[string]*chat{}, asks: map[string]*ask{},
 		boxes: map[string]*outbox{}, voice: map[string]bool{}, checked: map[string]memberCheck{}, recent: map[string][]time.Time{},
-		sessions: sessions, reconciled: map[string]bool{}, now: time.Now}, nil
+		sessions: sessions, reconciled: map[string]bool{}, now: time.Now}
+	if pruned {
+		b.persistShared() // the numbers taken off the list leave the disk too
+	}
+	return b, nil
+}
+
+// checkMembers checks how members are let in, and returns MemberPhones
+// normalized.
+func checkMembers(cfg Config, members map[string]bool) (map[string]bool, error) {
+	phones, err := phoneSet(cfg.MemberPhones)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := cfg.Channel.(PhoneAsker); len(phones) > 0 && !ok {
+		return nil, errors.New(ErrConfig, "this channel cannot ask for phone numbers: no MemberPhones")
+	}
+	if (len(members) > 0 || len(phones) > 0 || cfg.IsMember != nil) && cfg.MemberProfile == "" {
+		return nil, errors.New(ErrConfig, "members need a MemberProfile: the tools they may use")
+	}
+	return phones, nil
 }
 
 // Run receives and answers until ctx ends, then waits for the replies
@@ -210,8 +250,11 @@ func (b *Bridge) handle(ctx context.Context, m Message) {
 	}
 	r := b.roleOf(ctx, m.From)
 	switch {
+	case b.sharesPhone(m) && r != owner && r != member:
+		b.sharedPhone(ctx, m)
 	case r == stranger:
 		b.report(Event{Kind: Refused, Chat: m.Chat, From: m.From})
+		b.askPhone(ctx, m, askText)
 	case m.Pressed != "":
 		b.press(ctx, m, r)
 	default:
@@ -245,6 +288,9 @@ func (b *Bridge) command(ctx context.Context, m Message, r role, text string) bo
 		b.say(ctx, chatID, "Only an owner can do that here.")
 	case command(text, "/start"):
 		b.say(ctx, chatID, "Hello. Write to me and I will answer. /new starts a new conversation, /stop stops what I am doing, /voice and /text choose how I answer voice messages.")
+		if r == public {
+			b.askPhone(ctx, m, "If you work here, share your phone number with the button below.")
+		}
 	case command(text, "/stop"):
 		b.stop(ctx, chatID)
 	case command(text, "/new"):
@@ -400,7 +446,7 @@ func (b *Bridge) follow(ctx context.Context, chatID, run string, typing *typer, 
 	b.mu.Unlock()
 	var out Out
 	if err == nil {
-		out.Text = final(last)
+		out.Text, out.Markdown = final(last), last.State == serve.Completed
 		if spoken && last.State == serve.Completed {
 			out.Voice = b.speak(speaking, chatID, out.Text)
 		}
