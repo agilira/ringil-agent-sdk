@@ -6,15 +6,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -27,97 +23,45 @@ import (
 // profile is a role: what it overrides of the command line's settings.
 // Empty fields keep the flag or environment value.
 type profile struct {
-	Description string `json:"description,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Base        string `json:"base,omitempty"`
+	Description string `argus:"description"`
+	Model       string `argus:"model"`
+	Base        string `argus:"base"`
 	// KeyEnv names the variable holding this role's API key. A role with
 	// its own base sends only this key, none without it: the main key
 	// never goes to another endpoint. It needs base: a role's key never
 	// goes to the main endpoint either.
-	KeyEnv string `json:"key_env,omitempty"`
+	KeyEnv string `argus:"key_env"`
 	// EmbedModel is the embedding model at the role's base, for memory by
 	// meaning. A role with its own base and none keeps memory by words:
 	// memories never go to another endpoint.
-	EmbedModel string `json:"embed_model,omitempty"`
+	EmbedModel string `argus:"embed_model"`
 	// Instructions is a file of the role's own instructions, added to
 	// the prompt after the base and after --instructions; a relative
-	// path is from the profiles file's directory.
-	Instructions string `json:"instructions,omitempty"`
-	MaxTurns     int    `json:"max_turns,omitempty"`
+	// path is from the directory of ringil.yaml.
+	Instructions string `argus:"instructions"`
+	MaxTurns     int    `argus:"max_turns"`
 	// Images says the role's model reads images; for a role with its own
 	// model only (else RINGIL_IMAGES decides).
-	Images bool `json:"images,omitempty"`
+	Images bool `argus:"images"`
 	// Tools, when present, are the only tools the role has (by name; an
 	// empty list, none): what a chat's members or the public may use.
 	// Absent, every tool.
-	Tools *[]string `json:"tools,omitempty"`
+	Tools *[]string `argus:"tools"`
 	// Memory is what the role remembers: "" the user's own memory,
 	// "chat" a memory for each chat (its conversations share it, nobody
 	// else sees it), "off" none.
-	Memory string `json:"memory,omitempty"`
-}
-
-type profilesFile struct {
-	Profiles map[string]profile `json:"profiles"`
+	Memory string `argus:"memory"`
 }
 
 var profileName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-func (c *cli) profilesPath(ctx *orpheus.Context) string {
-	if p := ctx.GetGlobalFlagString("profiles-config"); p != "" {
-		return p
-	}
-	base, err := c.configDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(base, "ringil", "profiles.json")
-}
-
-// loadProfiles reads the roles: a private file, like the other settings
-// that decide where prompts go. A missing default file is no roles.
-func (c *cli) loadProfiles(ctx *orpheus.Context) (map[string]profile, error) {
-	path := c.profilesPath(ctx)
-	if path == "" {
-		return nil, nil
-	}
-	data, err := readPrivate(path)
-	if err != nil {
-		if ctx.GetGlobalFlagString("profiles-config") == "" && os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, errors.Wrap(err, ErrUsage, "cannot read the profiles in "+path)
-	}
-	var f profilesFile
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil || dec.More() {
-		return nil, errors.New(ErrUsage, path+" is not one valid profiles object"+profilesHint(err))
-	}
-	for name, p := range f.Profiles {
-		if err := p.check(name); err != nil {
-			return nil, err
-		}
-		f.Profiles[name] = p.from(filepath.Dir(path))
-	}
-	return f.Profiles, nil
-}
-
-// from makes the role's instructions file absolute, from dir (the
-// profiles file's).
+// from makes the role's instructions file absolute, from dir (that of
+// ringil.yaml).
 func (p profile) from(dir string) profile {
 	if p.Instructions != "" && !rooted(p.Instructions) {
 		p.Instructions = filepath.Join(dir, p.Instructions)
 	}
 	return p
-}
-
-// profilesHint says what changed when a profiles file is refused for it.
-func profilesHint(err error) string {
-	if err != nil && strings.Contains(err.Error(), `"system"`) {
-		return ` ("system" is now "instructions": the path of a file added to the base prompt)`
-	}
-	return ""
 }
 
 // rooted: path does not hang from a directory given (on Windows also
@@ -180,7 +124,7 @@ func (c *cli) onlyTools(tools agent.Registry) (agent.Registry, error) {
 }
 
 // checkChatProfile accepts a profile for a chat's members or the public:
-// one of the profiles file, listing its tools, with memory per chat or
+// one of ringil.yaml, listing its tools, with memory per chat or
 // none: never the user's own agent, tools or memory.
 func checkChatProfile(roles map[string]profile, name string) error {
 	p, ok := roles[name]
@@ -188,7 +132,7 @@ func checkChatProfile(roles map[string]profile, name string) error {
 	case name == "":
 		return nil
 	case !ok:
-		return errors.New(ErrUsage, "no profile "+name+" in the profiles file (and not default: it is the owner's)")
+		return errors.New(ErrUsage, "no profile "+name+" in ringil.yaml (and not default: it is the owner's)")
 	case p.Tools == nil:
 		return errors.New(ErrUsage, "profile "+name+" serves chats: list its tools (\"tools\": [] for none)")
 	case p.Memory != "chat" && p.Memory != "off":
@@ -199,19 +143,15 @@ func checkChatProfile(roles map[string]profile, name string) error {
 
 // chooseProfile applies --profile: the named role's settings. A role
 // already set (a profile served) stays; under serve --profile only names
-// the profile --a2a offers.
+// the profile serve.a2a offers.
 func (c *cli) chooseProfile(ctx *orpheus.Context) error {
 	name := ctx.GetGlobalFlagString("profile")
 	if c.role != nil || c.server != nil || name == "" || name == "default" {
 		return nil
 	}
-	all, err := c.loadProfiles(ctx)
-	if err != nil {
-		return err
-	}
-	p, ok := all[name]
+	p, ok := c.conf().Profiles[name]
 	if !ok {
-		return errors.New(ErrUsage, "no profile "+name+" in "+c.profilesPath(ctx))
+		return errors.New(ErrUsage, "no profile "+name+" in "+c.configName())
 	}
 	c.role = &p
 	return nil
@@ -247,7 +187,7 @@ func (c *cli) keyEnv(ctx *orpheus.Context) string {
 	if c.role != nil && c.role.Base != "" {
 		return c.role.KeyEnv
 	}
-	return ctx.GetGlobalFlagString("key-env")
+	return c.flagString(ctx, "key-env")
 }
 
 // embedModel is the embedding model to use: the role's at the role's own
@@ -260,15 +200,24 @@ func (c *cli) embedModel(ctx *orpheus.Context, res secrets.Resolver) (string, er
 }
 
 // instructions are what the operator adds to the agent's prompt: the
-// file of --instructions (for every role), then the role's own. They
-// follow the base prompt and do not replace it. Read at every agent
-// made, so that serve's runs take an edit at once.
+// file of --instructions or of ringil.yaml (for every role), then the
+// role's own. They follow the base prompt and do not replace it. They
+// come from the revision in force, so that serve's runs take an edit at
+// once, and a run's are those of one revision.
 func (c *cli) instructions(ctx *orpheus.Context) (string, error) {
+	f := c.conf()
+	global := f.Instructions
+	if c.settings != nil && c.settings.instructions != "" {
+		global = c.settings.instructions
+	}
 	var parts []string
-	for _, path := range []string{ctx.GetGlobalFlagString("instructions"), c.roleInstructions()} {
-		text, err := readInstructions(path)
-		if err != nil {
-			return "", err
+	for _, path := range []string{global, c.roleInstructions()} {
+		if path == "" {
+			continue
+		}
+		text, ok := f.texts[path]
+		if !ok {
+			return "", errors.New(ErrUsage, "the instructions in "+path+" are not loaded (restart to follow a file named only now)")
 		}
 		if text != "" {
 			parts = append(parts, text)
@@ -279,21 +228,6 @@ func (c *cli) instructions(ctx *orpheus.Context) (string, error) {
 		return "", errors.New(ErrUsage, "the instructions together are at most 64 KiB")
 	}
 	return text, nil
-}
-
-// readInstructions reads a file of instructions; "" for no path.
-func readInstructions(path string) (string, error) {
-	if path == "" {
-		return "", nil
-	}
-	data, err := readPrivate(path)
-	if err != nil {
-		return "", errors.Wrap(err, ErrUsage, "cannot read the instructions in "+path)
-	}
-	if len(data) > agent.MaxInstructions || !utf8.Valid(data) {
-		return "", errors.New(ErrUsage, path+": instructions are UTF-8 text of at most 64 KiB")
-	}
-	return strings.TrimSpace(string(data)), nil
 }
 
 func (c *cli) roleInstructions() string {
@@ -316,15 +250,16 @@ func (c *cli) maxTurns(ctx *orpheus.Context) int {
 	if c.role != nil && c.role.MaxTurns > 0 {
 		return c.role.MaxTurns
 	}
-	return ctx.GetGlobalFlagInt("max-turns")
+	return c.flagInt(ctx, "max-turns")
 }
 
 // images says whether the model reads images: the role's, for a role
-// with its own model, else RINGIL_IMAGES=1 (environment or --env-file).
+// with its own model, else RINGIL_IMAGES=1 (environment or --env-file) or
+// images in ringil.yaml.
 func (c *cli) images(ctx context.Context, res secrets.Resolver) bool {
 	if c.role != nil && c.role.Model != "" {
 		return c.role.Images
 	}
 	v, _, err := secrets.Lookup(ctx, res, "RINGIL_IMAGES")
-	return err == nil && v == "1"
+	return (err == nil && v == "1") || c.conf().Images
 }

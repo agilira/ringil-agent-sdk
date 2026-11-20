@@ -256,7 +256,7 @@ func (w *workspace) vet(ctx context.Context, real string) (bool, error) {
 	if w.policy.excluded(real) {
 		return false, excludedError()
 	}
-	if !w.protected.excluded(real) {
+	if !w.protects(real) {
 		return false, nil
 	}
 	return true, w.confirm(ctx, real)
@@ -327,7 +327,7 @@ func (w *workspace) check(ctx context.Context, t *target) error {
 	if err := w.existing(t); err != nil {
 		return err
 	}
-	if w.protected.excluded(t.real) && !t.confirmed {
+	if w.protects(t.real) && !t.confirmed {
 		return w.confirm(ctx, t.real) // the real place turned out protected
 	}
 	return nil

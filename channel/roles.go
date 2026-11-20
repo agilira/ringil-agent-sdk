@@ -40,14 +40,15 @@ func idSet(ids []string) map[string]bool {
 // roleOf is a sender's role: listed owner or member, a member by a
 // listed phone they shared or by IsMember, the public when there is a public profile, else a stranger.
 func (b *Bridge) roleOf(ctx context.Context, from string) role {
+	who := b.people()
 	switch {
 	case from == "":
 		return stranger
-	case b.owners[from]:
+	case who.owners[from]:
 		return owner
-	case b.members[from] || b.phoneMember(from) || b.isMember(ctx, from):
+	case who.members[from] || b.phoneMember(from) || b.isMember(ctx, from):
 		return member
-	case b.cfg.PublicProfile != "":
+	case who.publicProfile != "":
 		return public
 	}
 	return stranger
@@ -61,7 +62,7 @@ func (b *Bridge) known(from string) bool {
 	if from == "" {
 		return false
 	}
-	if b.owners[from] || b.members[from] || b.phoneMember(from) {
+	if who := b.people(); who.owners[from] || who.members[from] || b.phoneMember(from) {
 		return true
 	}
 	b.mu.Lock()
@@ -125,18 +126,18 @@ func (b *Bridge) profileFor(r role, group bool) string {
 	case r == owner:
 		return b.cfg.Profile
 	case r == member:
-		return b.cfg.MemberProfile
+		return b.people().memberProfile
 	}
-	return b.cfg.PublicProfile
+	return b.people().publicProfile
 }
 
 // groupProfile is PublicProfile when there is one, else MemberProfile;
 // "" when neither: then the Bridge does not talk in groups.
 func (b *Bridge) groupProfile() string {
-	if b.cfg.PublicProfile != "" {
-		return b.cfg.PublicProfile
+	if b.people().publicProfile != "" {
+		return b.people().publicProfile
 	}
-	return b.cfg.MemberProfile
+	return b.people().memberProfile
 }
 
 // within records a message of a member, public or stranger sender and
@@ -169,7 +170,7 @@ func (b *Bridge) within(from string, r role) bool {
 
 // limit is the messages an hour of a sender of role r; negative, none.
 func (b *Bridge) limit(r role) int {
-	limit := b.cfg.MaxPerHour
+	limit := b.people().maxPerHour
 	if limit == 0 || (limit < 0 && r == stranger) {
 		limit = 30
 	}

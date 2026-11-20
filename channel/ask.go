@@ -37,7 +37,7 @@ func (b *Bridge) ask(ctx context.Context, chatID, run string, p serve.Approval) 
 	c := b.chats[chatID]
 	a.conv = c.conv
 	switch {
-	case (c.role == owner && b.cfg.NoApprovals) || ((c.role == owner || c.group) && b.always[a.conv+"\x00"+a.key]):
+	case (c.role == owner && b.people().noApprovals) || ((c.role == owner || c.group) && b.always[a.conv+"\x00"+a.key]):
 		b.mu.Unlock()
 		_ = b.cfg.Server.Decide(run, p.ID, true)
 		return

@@ -58,8 +58,9 @@ var DefaultProtected = []string{
 	".claude", ".codex", ".cursor", ".gemini", ".windsurf", ".continue", ".aider*", ".vscode", ".idea", ".zed", ".devcontainer",
 	// the repository and its automation
 	".git", ".github", ".gitlab-ci.yml", ".gitignore", ".gitattributes", ".gitmodules", ".pre-commit-config.yaml", ".husky",
-	// files that make other tools run code: MCP servers, direnv
-	".mcp.json", ".envrc",
+	// files that make other tools run code: MCP servers, direnv; ringil's
+	// own configuration
+	".mcp.json", ".envrc", "ringil.yaml",
 }
 
 // Protected reports whether abs matches the protected patterns

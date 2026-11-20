@@ -40,7 +40,7 @@ const tokenFile = "serve-token"
 // chat would confirm wait for a decision through the API.
 func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	defer c.shutdown()
-	listen := ctx.GetFlagString("listen")
+	listen := c.conf().Serve.listen()
 	l, err := net.Listen("tcp", listen)
 	if err != nil {
 		return errors.Wrap(err, ErrUsage, "cannot listen on "+listen)
@@ -58,7 +58,7 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	}
 	c.server = srv
 	defer srv.Close()
-	if ctx.GetFlagBool("a2a") {
+	if c.conf().Serve.A2A {
 		if err := c.exposeA2A(srv, a2aProfile(ctx), l.Addr().String()); err != nil {
 			return err
 		}
@@ -75,18 +75,15 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 }
 
 // startBackground starts what works beside the API: the triggers (unless
-// --no-triggers) and the chat apps. The function returned stops
+// serve.no_triggers) and the chat apps. The function returned stops
 // them.
 func (c *cli) startBackground(ctx *orpheus.Context, run context.Context, srv *serve.Server) (func(), error) {
-	if ctx.GetFlagBool("no-triggers") && ctx.GetFlagString("webhooks") != "" {
-		return nil, errors.New(ErrUsage, "--webhooks sets off triggers: it does not go with --no-triggers")
-	}
 	stopChannels, err := c.startChannels(ctx, run, srv)
 	if err != nil {
 		return nil, err
 	}
 	stopTriggers := func() {}
-	if !ctx.GetFlagBool("no-triggers") {
+	if !c.conf().Serve.NoTriggers {
 		if stopTriggers, err = c.startTriggers(ctx, run, srv); err != nil {
 			stopChannels()
 			return nil, err
@@ -109,51 +106,49 @@ func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	c.events = []agent.Observer{eventlog.Slog(slog.New(slog.NewTextHandler(c.errOut, nil)))}
+	c.log = slog.New(slog.NewTextHandler(c.errOut, nil))
+	c.events = []agent.Observer{eventlog.Slog(c.log)}
 	profiles, err := c.servedProfiles(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: ctx.GetFlagInt("max-runs"), Profiles: profiles})
+	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: c.conf().Serve.maxRuns(), Profiles: profiles})
 	return srv, where, err
 }
 
 // servedProfiles are "default" (the flags and environment) and every
-// role of the profiles file.
+// profile of ringil.yaml.
 func (c *cli) servedProfiles(ctx *orpheus.Context) ([]serve.Profile, error) {
-	roles, err := c.loadProfiles(ctx)
-	if err != nil {
-		return nil, err
-	}
+	roles := c.conf().Profiles
 	if p := ctx.GetGlobalFlagString("profile"); p != "" && p != "default" {
 		if _, ok := roles[p]; !ok {
-			return nil, errors.New(ErrUsage, "no profile "+p+" in "+c.profilesPath(ctx))
+			return nil, errors.New(ErrUsage, "no profile "+p+" in "+c.configName())
 		}
 	}
-	if err := checkInstructions(ctx, roles); err != nil {
-		return nil, err
+	out := []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx, "default")}}
+	if c.settings != nil {
+		served := map[string]bool{"default": true}
+		for name := range roles {
+			served[name] = true
+		}
+		c.settings.served.Store(&served)
 	}
-	out := []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx, "default", nil)}}
 	for _, name := range names(roles) {
-		role := roles[name]
-		out = append(out, serve.Profile{Name: name, Description: role.Description, New: c.runInstance(ctx, name, &role)})
+		out = append(out, serve.Profile{Name: name, Description: roles[name].Description, New: c.runInstance(ctx, name)})
 	}
 	return out, nil
 }
 
-// checkInstructions reads the instructions once at the start: a file
-// that cannot be read is told now, not as a failed run in a chat.
-func checkInstructions(ctx *orpheus.Context, roles map[string]profile) error {
-	paths := []string{ctx.GetGlobalFlagString("instructions")}
-	for _, name := range names(roles) {
-		paths = append(paths, roles[name].Instructions)
+// servedRole is profile name as ringil.yaml has it now; nil for default.
+func (c *cli) servedRole(name string) (*profile, error) {
+	if name == "default" {
+		return nil, nil
 	}
-	for _, path := range paths {
-		if _, err := readInstructions(path); err != nil {
-			return err
-		}
+	p, ok := c.conf().Profiles[name]
+	if !ok {
+		return nil, errors.New(ErrUsage, "profile "+name+" is no longer in "+c.configName()+" (restart serve to drop it)")
 	}
-	return nil
+	return &p, nil
 }
 
 func a2aProfile(ctx *orpheus.Context) string {
@@ -164,10 +159,20 @@ func a2aProfile(ctx *orpheus.Context) string {
 }
 
 // runInstance builds a run's agent: a CLI of its own, so that its crew,
-// notebooks, task list and approvals are the run's alone.
-func (c *cli) runInstance(ctx *orpheus.Context, name string, role *profile) func(context.Context) (serve.Instance, error) {
+// notebooks, task list and approvals are the run's alone. The role is
+// read from ringil.yaml as it is now, so that an edit applies to the
+// next run.
+func (c *cli) runInstance(ctx *orpheus.Context, name string) func(context.Context) (serve.Instance, error) {
 	return func(run context.Context) (serve.Instance, error) {
 		r := c.forRun()
+		r.settings = c.settings.pinned() // the whole run on one revision
+		role, err := r.servedRole(name)
+		if err != nil {
+			return serve.Instance{}, err
+		}
+		if c.log != nil {
+			r.events = []agent.Observer{eventlog.Slog(c.log.With("config", r.conf().shortDigest()))}
+		}
 		r.runConversation = serve.ConversationOf(run)
 		r.setUpTrigger(serve.SourceOf(run))
 		r.automating = serve.SourceOf(run) == channel.Automate
@@ -188,7 +193,7 @@ func (c *cli) forRun() *cli {
 	return &cli{in: strings.NewReader(""), out: io.Discard, errOut: io.Discard, getenv: c.getenv,
 		newProvider: c.newProvider, turnContext: c.turnContext, configDir: c.configDir, newEmbedder: c.newEmbedder,
 		newSandbox: c.newSandbox, cwd: c.cwd, home: c.home, server: c.server, remote: c.remote, shared: true, events: c.events,
-		triggers: c.triggers, bridge: c.bridge, board: c.board}
+		triggers: c.triggers, bridge: c.bridge, board: c.board, settings: c.settings}
 }
 
 // exposeA2A offers a profile (--profile, else default) to other agents, at /a2a on the

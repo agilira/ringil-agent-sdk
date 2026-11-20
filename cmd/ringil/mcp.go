@@ -1,4 +1,4 @@
-// mcp.go: MCP servers from the user's mcp.json
+// mcp.go: MCP servers, from the mcp_servers of ringil.yaml
 //
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
@@ -6,9 +6,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -28,72 +26,38 @@ import (
 )
 
 // mcpFile is the usual MCP configuration shape: {"mcpServers": {...}}.
-type mcpFile struct {
-	Servers map[string]mcpEntry `json:"mcpServers"`
-}
-
 // mcpEntry is one server. Values may hold ${NAME}, resolved from the
 // environment and the --env-file when the server starts (env) or on
 // every request (headers), never stored expanded.
 type mcpEntry struct {
-	Type    string            `json:"type,omitempty"` // "stdio" (default with command) or "http"
-	Command string            `json:"command,omitempty"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Tools   []string          `json:"tools,omitempty"`
+	Type    string            `argus:"type"` // "stdio" (default with command) or "http"
+	Command string            `argus:"command"`
+	Args    []string          `argus:"args"`
+	Env     map[string]string `argus:"env"`
+	URL     string            `argus:"url"`
+	Headers map[string]string `argus:"headers"`
+	Tools   []string          `argus:"tools"`
 	// Sandbox runs a local server isolated (Linux), with Network and
 	// read-only Mounts; off by default, as the user chose the command.
-	Sandbox bool     `json:"sandbox,omitempty"`
-	Network bool     `json:"network,omitempty"`
-	Mounts  []string `json:"mounts,omitempty"`
+	Sandbox bool     `argus:"sandbox"`
+	Network bool     `argus:"network"`
+	Mounts  []string `argus:"mounts"`
 	// Disabled keeps the entry without starting it.
-	Disabled bool `json:"disabled,omitempty"`
+	Disabled bool `argus:"disabled"`
 	// TrustAnnotations lets the server's read-only hints skip the
 	// confirmation; by default every MCP call is confirmed.
-	TrustAnnotations bool `json:"trustAnnotations,omitempty"`
+	TrustAnnotations bool `argus:"trust_annotations"`
 	// OAuth signs in to a remote server through the browser.
-	OAuth *oauthEntry `json:"oauth,omitempty"`
+	OAuth *oauthEntry `argus:"oauth"`
 }
 
 // oauthEntry: empty registers the client dynamically; a registered
 // client gives its ID, secret (${NAME}) and the callback port it was
 // registered with.
 type oauthEntry struct {
-	ClientID     string `json:"clientId,omitempty"`
-	ClientSecret string `json:"clientSecret,omitempty"`
-	Port         int    `json:"port,omitempty"`
-}
-
-func (c *cli) mcpPath(ctx *orpheus.Context) (string, error) {
-	if p := ctx.GetGlobalFlagString("mcp-config"); p != "" {
-		return p, nil
-	}
-	base, err := c.configDir()
-	if err != nil {
-		return "", nil
-	}
-	return filepath.Join(base, "ringil", "mcp.json"), nil
-}
-
-// loadMCP reads the configuration: a file of the user's, not writable by
-// others, since it decides what runs. A missing default file is no
-// configuration.
-func loadMCP(path string, explicit bool) (map[string]mcpEntry, error) {
-	data, err := readPrivate(path)
-	if os.IsNotExist(err) && !explicit {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, errors.Wrap(err, ErrUsage, "cannot read the MCP configuration "+path)
-	}
-	// Unknown keys are allowed: the same file often serves other agents.
-	var f mcpFile
-	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&f); err != nil {
-		return nil, errors.Wrap(err, ErrUsage, "the MCP configuration is not valid JSON of the expected shape")
-	}
-	return f.Servers, nil
+	ClientID     string `argus:"client_id"`
+	ClientSecret string `argus:"client_secret"`
+	Port         int    `argus:"port"`
 }
 
 // readPrivate reads a regular file of the user's, not writable by others,
@@ -135,13 +99,9 @@ func closeFile(f *os.File) {
 // connectMCP starts every configured server. A server that fails is
 // reported and left out; the others still work.
 func (c *cli) connectMCP(ctx *orpheus.Context) ([]agent.Tool, error) {
-	path, err := c.mcpPath(ctx)
-	if err != nil || path == "" {
-		return nil, err
-	}
-	entries, err := loadMCP(path, ctx.GetGlobalFlagString("mcp-config") != "")
-	if err != nil || len(entries) == 0 {
-		return nil, err
+	entries := c.conf().MCPServers
+	if len(entries) == 0 {
+		return nil, nil
 	}
 	res, err := c.resolver(ctx)
 	if err != nil {

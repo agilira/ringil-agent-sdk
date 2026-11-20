@@ -3,6 +3,7 @@ module github.com/agilira/ringil-agent-sdk/cmd/ringil
 go 1.27.0
 
 require (
+	github.com/agilira/argus v1.8.1
 	github.com/agilira/go-errors v1.1.3
 	github.com/agilira/orpheus v1.6.1
 	github.com/agilira/ringil-agent-sdk v0.0.0
@@ -16,10 +17,12 @@ require (
 	github.com/agilira/go-timecache v1.0.4 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/mattn/go-sqlite3 v1.14.53 // indirect
 	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect

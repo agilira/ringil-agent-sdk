@@ -135,7 +135,11 @@ func TestNoPhoneAskedInGroups(t *testing.T) {
 
 func TestStrangersAreAskedWithinTheHourlyBound(t *testing.T) {
 	b, app, _ := phoneBridge(t, "", "+393331234567")
-	b.cfg.MaxPerHour = 2
+	p := PeopleOf(b.cfg)
+	p.MaxPerHour = 2
+	if err := b.SetPeople(p); err != nil {
+		t.Fatal(err)
+	}
 	for range 4 {
 		say(b, outsider, outsider, "hi")
 	}
