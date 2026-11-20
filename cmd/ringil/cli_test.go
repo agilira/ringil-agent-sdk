@@ -784,7 +784,7 @@ func TestBackgroundQuestionWaitsForThePrompt(t *testing.T) {
 	c := newCLI(pr, &bytes.Buffer{}, &bytes.Buffer{})
 	chat := make(chan string, 1)
 	go func() {
-		line, _ := c.promptLine()
+		line, _, _ := c.promptLine()
 		chat <- line
 	}()
 	time.Sleep(50 * time.Millisecond)

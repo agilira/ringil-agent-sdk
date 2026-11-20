@@ -529,11 +529,11 @@ func (c *cli) checkTrigger(_ context.Context, t trigger.Trigger) error {
 	}
 	for _, name := range t.Allow {
 		if _, ok := specOf(c.finalTools, name); !ok {
-			return errors.New(ErrUsage, "no such tool: "+name)
+			return agent.ToolError(ErrUsage, "no such tool: "+name)
 		}
 	}
 	if t.Path != "" && (files.Excluded(t.Path, nil) || c.inOwnState(t.Path)) {
-		return errors.New(ErrUsage, "a trigger may not watch "+t.Path+": it holds credentials or the agent's own state")
+		return agent.ToolError(ErrUsage, "a trigger may not watch "+t.Path+": it holds credentials or the agent's own state")
 	}
 	return nil
 }
@@ -545,7 +545,7 @@ func (c *cli) checkLookTool(tool string) error {
 	}
 	spec, ok := specOf(c.finalTools, tool)
 	if !ok || spec.Annotations.Destructive || !spec.Annotations.ReadOnly {
-		return errors.New(ErrUsage, "a trigger looks only with a tool there is and that only reads; "+tool+" is not one")
+		return agent.ToolError(ErrUsage, "a trigger looks only with a tool there is and that only reads; "+tool+" is not one")
 	}
 	return nil
 }

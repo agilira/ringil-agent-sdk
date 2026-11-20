@@ -14,6 +14,7 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/later"
 	"github.com/agilira/ringil-agent-sdk/todo"
 )
 
@@ -26,6 +27,7 @@ func (c *cli) cmdRun(ctx *orpheus.Context) error {
 		return errors.New(ErrUsage, `nothing to send; usage: ringil run "<prompt>"`)
 	}
 	defer c.shutdown()
+	c.terminalBoard()
 	a, err := c.agent(ctx)
 	if err != nil {
 		return err
@@ -37,6 +39,9 @@ func (c *cli) cmdRun(ctx *orpheus.Context) error {
 	err = c.turn(ctx.Context(), a, conv, prompt)
 	if err == nil {
 		err = c.reports(ctx.Context(), a, conv, true)
+	}
+	if err == nil {
+		err = c.waitChecks(ctx.Context(), a, conv)
 	}
 	return closing(err, release)
 }
@@ -51,6 +56,7 @@ func closing(err error, release func() error) error {
 
 func (c *cli) cmdChat(ctx *orpheus.Context) error {
 	defer c.shutdown()
+	c.terminalBoard()
 	a, err := c.agent(ctx)
 	if err != nil {
 		return err
@@ -64,11 +70,22 @@ func (c *cli) cmdChat(ctx *orpheus.Context) error {
 
 // promptLine reads the user's next message while holding the terminal, so
 // that a background worker's question waits for the prompt instead of
-// taking the user's message as its answer.
-func (c *cli) promptLine() (string, bool) {
+// taking the user's message as its answer. A check come due meanwhile
+// is returned instead (due), and the prompt is shown again after it.
+func (c *cli) promptLine() (line string, due *later.Check, ok bool) {
 	c.askMu.Lock()
 	defer c.askMu.Unlock()
-	return c.readLine()
+	select { // a line typed comes first
+	case line, ok = <-c.lines():
+		return line, nil, ok
+	default:
+	}
+	select {
+	case line, ok = <-c.lines():
+		return line, nil, ok
+	case ch := <-c.due:
+		return "", &ch, true
+	}
 }
 
 // exchange is one message of the chat: background reports that came in
@@ -88,9 +105,13 @@ func (c *cli) exchange(ctx context.Context, a agent.Agent, conv agent.Conversati
 
 func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) error {
 	for c.prompt() {
-		raw, ok := c.promptLine()
+		raw, due, ok := c.promptLine()
 		if !ok {
 			break
+		}
+		if due != nil {
+			c.dueTurn(ctx, a, conv, *due)
+			continue
 		}
 		line := strings.TrimSpace(raw)
 		switch line {
@@ -98,16 +119,34 @@ func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) 
 		case "/exit", "/quit":
 			return nil
 		case "/reset":
-			c.note("history cleared for this chat; a saved session is left as it was and no longer updated")
-			conv = agent.NewConversation()
+			conv = c.reset()
 		default:
 			c.exchange(ctx, a, conv, line)
 		}
 	}
-	if c.lines != nil {
-		return c.lines.Err()
+	if c.scanner != nil {
+		return c.scanner.Err()
 	}
 	return nil
+}
+
+// dueTurn runs a check come due while the prompt waited.
+func (c *cli) dueTurn(ctx context.Context, a agent.Agent, conv agent.Conversation, due later.Check) {
+	c.outMu.Lock()
+	_, _ = fmt.Fprintln(c.out) // off the prompt
+	c.outMu.Unlock()
+	if err := c.checkTurn(ctx, a, conv, due); err != nil {
+		c.note("error: " + describe(err))
+	}
+}
+
+// reset is /reset: a new conversation, without the old one's checks.
+func (c *cli) reset() agent.Conversation {
+	c.note("history cleared for this chat; a saved session is left as it was and no longer updated")
+	if c.board != nil {
+		c.board.StopAll(terminalChecks)
+	}
+	return agent.NewConversation()
 }
 
 func (c *cli) prompt() bool {

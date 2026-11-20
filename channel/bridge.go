@@ -158,6 +158,8 @@ type Bridge struct {
 	always  map[string]bool        // calls allowed for the rest of a conversation, by conversation and key
 	// sessions are the chats' conversations, by chat ID.
 	sessions   map[string]session
+	backs      map[string]back   // where checks come back, by conversation (Private)
+	backOrder  []string          // backs' keys, oldest first
 	reconciled map[string]bool   // chats whose number was checked against the server
 	saving     sync.Mutex        // one write of the sessions file at a time
 	spoken     map[string]speech // the languages spoken, by code
@@ -208,7 +210,7 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	}
 	b := &Bridge{cfg: cfg, owners: owners, members: members, phones: phones, shared: shared, always: map[string]bool{}, langs: map[string]string{}, spoken: speaks, chats: map[string]*chat{}, asks: map[string]*ask{},
 		boxes: map[string]*outbox{}, voice: map[string]bool{}, checked: map[string]memberCheck{}, recent: map[string][]time.Time{},
-		sessions: sessions, reconciled: map[string]bool{}, now: time.Now}
+		sessions: sessions, reconciled: map[string]bool{}, backs: map[string]back{}, now: time.Now}
 	if pruned {
 		b.persistShared() // the numbers taken off the list leave the disk too
 	}
@@ -429,7 +431,12 @@ func (b *Bridge) startFrom(ctx context.Context, m Message, r role, source string
 	if renewed {
 		b.say(ctx, chatID, b.tr(chatID, mQuiet))
 	}
-	b.mu.Lock() // still free: only Run's goroutine starts runs
+	b.mu.Lock()
+	if b.chats[chatID] != nil { // a check came back meanwhile (ComeBack)
+		b.mu.Unlock()
+		b.say(ctx, chatID, b.tr(chatID, mBusy))
+		return
+	}
 	prep, cancel := context.WithCancel(ctx)
 	b.chats[chatID] = &chat{conv: conv, group: m.Group, role: r, from: m.From, cancel: cancel, source: source}
 	b.wg.Add(1)
@@ -519,7 +526,7 @@ func (b *Bridge) follow(ctx context.Context, chatID, run string, typing *typer, 
 	typing.stop() // before the reply, which ends what the app shows
 	b.mu.Lock()
 	delete(b.chats, chatID)
-	if err == nil {
+	if err == nil && !quiet(c.source, out.Text) {
 		b.queue(ctx, chatID, outgoing{out: out}) // under b.mu: queued before any later reply of the chat
 	}
 	b.mu.Unlock()

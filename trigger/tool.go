@@ -8,6 +8,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"strconv"
 	"strings"
 	"time"
@@ -87,36 +88,51 @@ func CreateTool(open func() (*Store, error), opts ToolOptions) agent.Tool {
 			"and goes on after this conversation. Only when the user asks for something to happen by itself from now on (every day, whenever...). "+
 			"Not for checking on something during the task at hand. Its runs have no one to ask: give in allow only the tools they need.",
 		func(ctx context.Context, in createIn) (string, error) {
-			t := in.trigger()
-			if opts.Defaults != nil {
-				opts.Defaults(ctx, &t)
-			}
-			if err := refused(t); err != nil {
-				return "", err
-			}
-			if t.Ended(time.Now()) {
-				return "", errors.New(ErrConfig, "its period is over already: until is in the past")
-			}
-			if opts.Check != nil {
-				if err := opts.Check(ctx, t); err != nil {
-					return "", err
-				}
-			}
-			store, err := open()
-			if err != nil {
-				return "", err
-			}
-			err = store.Add(t)
-			_ = store.Close()
-			if err != nil {
-				return "", err
-			}
-			if opts.Added != nil {
-				opts.Added(t)
-			}
-			return "Trigger " + t.Name + " made: it runs while the triggers run (ringil serve); `ringil trigger` shows how its runs went.", nil
+			out, err := create(ctx, open, opts, in.trigger())
+			return out, modelSees(err)
 		}, agent.Destructive())
 	return strict{inner}
+}
+
+// modelSees lets the model read why a trigger was refused (what it wrote
+// does not hold), not only the code: it can then put it right. Other
+// failures (the store's) stay a code.
+func modelSees(err error) error {
+	var e *errors.Error
+	if stderrors.As(err, &e) && e.UserMsg == "" && (e.Code == ErrConfig || e.Code == ErrExists) {
+		return agent.ToolError(e.Code, e.Message)
+	}
+	return err
+}
+
+func create(ctx context.Context, open func() (*Store, error), opts ToolOptions, t Trigger) (string, error) {
+	if opts.Defaults != nil {
+		opts.Defaults(ctx, &t)
+	}
+	if err := refused(t); err != nil {
+		return "", err
+	}
+	if t.Ended(time.Now()) {
+		return "", errors.New(ErrConfig, "its period is over already: until is in the past")
+	}
+	if opts.Check != nil {
+		if err := opts.Check(ctx, t); err != nil {
+			return "", err
+		}
+	}
+	store, err := open()
+	if err != nil {
+		return "", err
+	}
+	err = store.Add(t)
+	_ = store.Close()
+	if err != nil {
+		return "", err
+	}
+	if opts.Added != nil {
+		opts.Added(t)
+	}
+	return "Trigger " + t.Name + " made: it runs while the triggers run (ringil serve); `ringil trigger` shows how its runs went.", nil
 }
 
 // strict refuses a call with a field create_trigger does not take.

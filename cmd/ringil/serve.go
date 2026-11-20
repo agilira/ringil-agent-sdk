@@ -50,6 +50,7 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 		closeQuietly(l)
 		return errors.New(ErrUsage, "serve listens on loopback only (127.0.0.1 or ::1), not "+listen)
 	}
+	c.serveBoard()
 	srv, where, err := c.newServer(ctx)
 	if err != nil {
 		closeQuietly(l)
@@ -166,7 +167,7 @@ func (c *cli) forRun() *cli {
 	return &cli{in: strings.NewReader(""), out: io.Discard, errOut: io.Discard, getenv: c.getenv,
 		newProvider: c.newProvider, turnContext: c.turnContext, configDir: c.configDir, newEmbedder: c.newEmbedder,
 		newSandbox: c.newSandbox, cwd: c.cwd, home: c.home, server: c.server, remote: c.remote, shared: true, events: c.events,
-		triggers: c.triggers, bridge: c.bridge}
+		triggers: c.triggers, bridge: c.bridge, board: c.board}
 }
 
 // exposeA2A offers a profile (--profile, else default) to other agents, at /a2a on the
