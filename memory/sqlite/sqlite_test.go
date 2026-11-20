@@ -410,6 +410,7 @@ func TestTheDatabaseLingers(t *testing.T) {
 	linger = time.Hour
 	defer func() { linger = 0 }()
 	dir := t.TempDir()
+
 	a, err := New(dir, &conceptEmbedder{model: "concepts"})
 	if err != nil {
 		t.Fatal(err)
@@ -417,6 +418,12 @@ func TestTheDatabaseLingers(t *testing.T) {
 	put(t, a, "Riunione con Acme")
 	_, _ = a.Search(t.Context(), "incontro", 3)
 	_ = a.Close()
+	if a.db.DB != nil {
+		t.Fatal("the file stays open after the last Store: Windows could not remove it")
+	}
+	if _, err := a.Search(t.Context(), "x", 3); !errors.HasCode(err, agent.ErrMemoryIO) {
+		t.Fatalf("a closed Store: %v", err)
+	}
 	b, err := New(dir, &conceptEmbedder{model: "concepts"})
 	if err != nil {
 		t.Fatal(err)
@@ -645,9 +652,6 @@ func (d *dyingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32,
 // A memory directory removed and made again, in the same process: the
 // new database is the one written.
 func TestARecreatedDirectoryIsANewDatabase(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not remove a file that is open")
-	}
 	linger = time.Hour
 	defer func() { linger = 0 }()
 	dir := filepath.Join(t.TempDir(), "mem")
