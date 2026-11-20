@@ -76,10 +76,11 @@ type scored struct {
 	score float64
 }
 
-// rank returns up to limit records for query, best first; ties and an
-// empty query favour the most recent. Records sharing no word with the
-// query are left out.
-func rank(recs []agent.MemoryRecord, query string, limit int) []agent.MemoryRecord {
+// Rank returns up to limit of recs for query by BM25, best first; ties
+// and an empty query favour the most recent. Records sharing no word with
+// the query are left out. Other memories rank with it the records they
+// found by words, so that every store ranks words the same way.
+func Rank(recs []agent.MemoryRecord, query string, limit int) []agent.MemoryRecord {
 	if limit <= 0 {
 		return nil
 	}
@@ -100,6 +101,36 @@ func rank(recs []agent.MemoryRecord, query string, limit int) []agent.MemoryReco
 	out := make([]agent.MemoryRecord, 0, min(limit, len(hits)))
 	for _, h := range hits[:min(limit, len(hits))] {
 		out = append(out, h.rec)
+	}
+	return out
+}
+
+// Terms are the distinct words of text as Rank sees them: lower-cased
+// letters and digits.
+func Terms(text string) []string { return unique(tokens(text)) }
+
+// rrfK is the usual constant of reciprocal rank fusion.
+const rrfK = 60
+
+// Fuse merges two rankings of the same records by reciprocal rank: a
+// record high in either, or present in both, comes first.
+func Fuse(a, b []agent.MemoryRecord, limit int) []agent.MemoryRecord {
+	score := map[string]float64{}
+	recs := map[string]agent.MemoryRecord{}
+	var order []string
+	for _, list := range [][]agent.MemoryRecord{a, b} {
+		for rank, r := range list {
+			if _, seen := recs[r.ID]; !seen {
+				recs[r.ID] = r
+				order = append(order, r.ID)
+			}
+			score[r.ID] += 1 / float64(rrfK+rank+1)
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return score[order[i]] > score[order[j]] })
+	out := make([]agent.MemoryRecord, 0, min(limit, len(order)))
+	for _, id := range order[:min(limit, len(order))] {
+		out = append(out, recs[id])
 	}
 	return out
 }

@@ -28,7 +28,7 @@ func TestSearchIsLinear(t *testing.T) {
 		recs[i] = agent.MemoryRecord{ID: fmt.Sprint(i), Content: fmt.Sprintf("the note number %d about the project and the client %d", i, i%97)}
 	}
 	start := time.Now()
-	got := rank(recs, strings.Repeat("the project client note ", 75), 5)
+	got := Rank(recs, strings.Repeat("the project client note ", 75), 5)
 	if len(got) != 5 || time.Since(start) > 3*time.Second {
 		t.Fatalf("%d results in %v", len(got), time.Since(start))
 	}

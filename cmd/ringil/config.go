@@ -6,8 +6,10 @@
 package main
 
 import (
+	"cmp"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -43,9 +45,11 @@ type config struct {
 	Images bool `argus:"images"`
 	// EmbedInputType sends the input type to the embedding model
 	// (RINGIL_EMBED_INPUT_TYPE=1 too).
-	EmbedInputType bool        `argus:"embed_input_type"`
-	Transcribe     audioConfig `argus:"transcribe"`
-	Speech         audioConfig `argus:"speech"`
+	EmbedInputType bool           `argus:"embed_input_type"`
+	Memory         memoryStore    `argus:"memory_store"`
+	Embedder       embedderConfig `argus:"embedder"`
+	Transcribe     audioConfig    `argus:"transcribe"`
+	Speech         audioConfig    `argus:"speech"`
 	// AuditFile is where every revision of the configuration is recorded
 	// (default <config>/ringil/audit.jsonl; a .db file is SQLite, in a
 	// build with cgo); NoAudit records none.
@@ -61,6 +65,60 @@ type config struct {
 	MCPServers map[string]mcpEntry    `argus:"mcp_servers"`
 	Agents     map[string]remoteEntry `argus:"agents"`
 	Serve      serveConfig            `argus:"serve"`
+}
+
+// embedderConfig is the model that finds memories by meaning: by default
+// embed_model at the chat model's endpoint (OpenAI-compatible); with kind
+// ollama, an Ollama server's own API, for every profile.
+type embedderConfig struct {
+	Kind           string `argus:"kind"`
+	URL            string `argus:"url"`
+	Model          string `argus:"model"`
+	QueryPrefix    string `argus:"query_prefix"`
+	DocumentPrefix string `argus:"document_prefix"`
+	Dimensions     int    `argus:"dimensions"`
+}
+
+func (e embedderConfig) check() error {
+	switch {
+	case e.Kind != "" && e.Kind != "openai" && e.Kind != "ollama":
+		return errors.New(ErrUsage, "embedder.kind is openai (embed_model at the chat endpoint) or ollama")
+	case e.Kind == "ollama" && e.Model == "":
+		return errors.New(ErrUsage, "embedder: ollama needs its model")
+	case e.Dimensions < 0:
+		return errors.New(ErrUsage, "embedder.dimensions cannot be negative")
+	}
+	return nil
+}
+
+// memoryStore is where memories are kept: files in the config directory
+// (kind "" or files), or a Chroma server (kind chroma), each memory (the
+// user's, a chat's) in a collection of its own, <prefix>-user and
+// <prefix>-chat-<chat>. Chroma needs an embedding model (embed_model).
+// Headers go with every request, ${NAME} read from the secrets each time.
+type memoryStore struct {
+	Kind     string            `argus:"kind"`
+	URL      string            `argus:"url"`
+	Tenant   string            `argus:"tenant"`
+	Database string            `argus:"database"`
+	Prefix   string            `argus:"collection_prefix"`
+	Headers  map[string]string `argus:"headers"`
+}
+
+var collectionPrefix = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+func (m memoryStore) prefix() string { return cmp.Or(m.Prefix, "ringil") }
+
+func (m memoryStore) check() error {
+	switch {
+	case m.Kind != "" && m.Kind != "files" && m.Kind != "chroma":
+		return errors.New(ErrUsage, "memory_store.kind is files or chroma")
+	case m.Kind == "chroma" && m.URL == "":
+		return errors.New(ErrUsage, "memory_store: chroma needs its url")
+	case m.Prefix != "" && !collectionPrefix.MatchString(m.Prefix):
+		return errors.New(ErrUsage, "memory_store.collection_prefix is 1-64 letters, digits, . _ -, starting with a letter or digit")
+	}
+	return nil
 }
 
 // audioConfig is a model that hears voice messages (transcribe) or speaks
@@ -191,6 +249,16 @@ func (s serveConfig) fixed() serveConfig {
 // Validate is what a file must be to be applied at all: a reload that
 // fails it is refused and the last good file stays.
 func (f *config) Validate() error {
+	checks := []func() error{f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check}
+	for _, check := range checks {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *config) checkProfiles() error {
 	for _, name := range names(f.Profiles) {
 		if err := f.Profiles[name].check(name); err != nil {
 			return err
@@ -201,15 +269,16 @@ func (f *config) Validate() error {
 			return err
 		}
 	}
-	if err := f.checkPaths(); err != nil {
-		return err
-	}
+	return nil
+}
+
+func (f *config) checkMCP() error {
 	for _, name := range sortedKeys(f.MCPServers) {
 		if err := f.MCPServers[name].check(); err != nil {
 			return errors.New(ErrUsage, "mcp_servers."+name+": "+err.Error())
 		}
 	}
-	return f.Serve.check()
+	return nil
 }
 
 func (s serveConfig) check() error {

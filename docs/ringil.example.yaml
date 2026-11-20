@@ -32,6 +32,27 @@ workflow_tokens: 0
 images: false                  # the model reads images (RINGIL_IMAGES=1 too)
 embed_input_type: false        # send the input type to the embedding model
 
+# The model that finds memories by meaning: embed_model at the chat
+# model's endpoint by default, or an Ollama server's own API (local, no
+# key). Asymmetric models want a prefix on the questions, or on both.
+embedder:
+  kind: openai                 # or ollama
+  # url: http://127.0.0.1:11434
+  # model: qwen3-embedding:0.6b
+  # query_prefix: "Instruct: Given a question, find the notes that answer it\nQuery: "
+  # document_prefix: ""
+  # dimensions: 0
+
+# Where memories are kept: files in the config directory by default, or
+# a Chroma server, each memory in a collection of its own: <prefix>-user
+# for the user, <prefix>-chat-<chat> for the profiles with memory: chat.
+# Chroma finds memories by meaning: it needs embed_model.
+memory_store:
+  kind: files                  # or chroma
+  # url: http://127.0.0.1:8000
+  # collection_prefix: acme
+  # headers: {X-Chroma-Token: "${CHROMA_TOKEN}"}
+
 # Voice in the chats: a model that hears voice messages and one that
 # speaks the answers. RINGIL_TRANSCRIBE_* and RINGIL_SPEECH_* in the
 # environment win. At another endpoint than the chat model's each gets

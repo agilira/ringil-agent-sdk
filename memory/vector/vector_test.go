@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/agilira/go-errors"
 
@@ -109,7 +108,7 @@ func TestEmbedderDownFallsBackToWords(t *testing.T) {
 		t.Fatalf("fallback: %d results, err %v", len(got), err)
 	}
 	e.fail = false
-	m.(*store).resting = time.Time{} // the pause after a failure is over
+	m.(*store).gate.Wake() // the pause after a failure is over
 	if got, err := m.Search(bg, "invoice", 1); err != nil || !strings.Contains(got[0].Content, "Fattura") {
 		t.Fatalf("missing vector not rebuilt: %v %v", got, err)
 	}

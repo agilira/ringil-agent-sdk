@@ -21,10 +21,8 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"os"
-	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/agilira/go-errors"
 
@@ -32,9 +30,6 @@ import (
 	"github.com/agilira/ringil-agent-sdk/internal/atomicfile"
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
 )
-
-// maxContent bounds one record: a memory is a fact, not a document.
-const maxContent = 32 << 10
 
 const (
 	dataFile = "memory.json"
@@ -184,21 +179,7 @@ func (s *store) Put(ctx context.Context, rec agent.MemoryRecord) (agent.MemoryRe
 	return rec, err
 }
 
-var validID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
-func validate(rec agent.MemoryRecord) error {
-	switch {
-	case rec.Content == "":
-		return agent.ToolError(agent.ErrMemoryInput, "A memory needs content.")
-	case len(rec.Content) > maxContent:
-		return agent.ToolError(agent.ErrMemoryInput, "A memory is one fact: keep it under 32 KiB.")
-	case !utf8.ValidString(rec.Content) || strings.ContainsRune(rec.Content, 0):
-		return agent.ToolError(agent.ErrMemoryInput, "A memory must be text.")
-	case rec.ID != "" && !validID.MatchString(rec.ID):
-		return agent.ToolError(agent.ErrMemoryInput, "Memory IDs are 1-64 letters, digits, _ or -.")
-	}
-	return nil
-}
+func validate(rec agent.MemoryRecord) error { return agent.CheckMemoryRecord(rec) }
 
 // upsert replaces the record with the same ID, keeping its creation time,
 // or appends a new one.
@@ -257,5 +238,5 @@ func (s *store) Search(ctx context.Context, query string, limit int) ([]agent.Me
 	if err != nil {
 		return nil, err
 	}
-	return rank(doc.Records, query, limit), nil
+	return Rank(doc.Records, query, limit), nil
 }

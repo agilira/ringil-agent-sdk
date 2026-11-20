@@ -116,7 +116,7 @@ func TestUpdateKeepsCreation(t *testing.T) {
 func TestInvalidRecords(t *testing.T) {
 	m, _ := newStore(t)
 	for _, rec := range []agent.MemoryRecord{
-		{Content: "  "}, {Content: strings.Repeat("a", maxContent+1)}, {Content: "a\x00b"}, {Content: "\xff"},
+		{Content: "  "}, {Content: strings.Repeat("a", agent.MaxMemoryContent+1)}, {Content: "a\x00b"}, {Content: "\xff"},
 		{ID: "has space", Content: "x"}, {ID: "a/b", Content: "x"}, {ID: strings.Repeat("i", 65), Content: "x"},
 	} {
 		if _, err := m.Put(bg, rec); !errors.HasCode(err, agent.ErrMemoryInput) {
