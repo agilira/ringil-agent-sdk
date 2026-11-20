@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -134,6 +136,12 @@ type cli struct {
 	// role is the profile in use (--profile, or a profile served); nil
 	// keeps the flags and environment.
 	role *profile
+	// settings is ringil.yaml in force (shared by serve's runs);
+	// configEvery how soon an edit is seen (zero: 2s; tests shorten it).
+	settings    *settings
+	configEvery time.Duration
+	// log is serve's log; each run's lines name its configuration.
+	log *slog.Logger
 }
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
@@ -162,12 +170,10 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalIntFlag("workflow-calls", "", 0, "most successful model calls one workflow may make, across resumes; 0 is no limit").
 		AddGlobalIntFlag("workflow-tokens", "", 0, "most tokens one workflow may use, across resumes; 0 is no limit").
 		AddGlobalFlag("embed-model", "", "", "embedding model for memory by meaning (or RINGIL_EMBED_MODEL); same endpoint and key as the chat model").
-		AddGlobalFlag("agents-config", "", "", "remote A2A agents file ({\"agents\": ...}); default <config>/ringil/agents.json").
-		AddGlobalFlag("mcp-config", "", "", "MCP servers file ({\"mcpServers\": ...}); default <config>/ringil/mcp.json").
+		AddGlobalFlag("config", "c", "", "the configuration (default: <config>/ringil/ringil.yaml): settings, profiles, MCP servers, remote agents, serve; the flags win over it").
 		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins").
 		AddGlobalFlag("instructions", "", "", "a file of instructions added to the agent's prompt (tone, procedures, purpose): after the base prompt, which keeps its rules").
-		AddGlobalFlag("profile", "", "", "a role from the profiles file: its model, endpoint, key and prompt (serve: the one --a2a offers)").
-		AddGlobalFlag("profiles-config", "", "", "profiles file (default: <config>/ringil/profiles.json)").
+		AddGlobalFlag("profile", "", "", "a role from the profiles of ringil.yaml: its model, endpoint, key and prompt (serve: the one serve.a2a offers)").
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
 		AddGlobalBoolFlag("allow-http", "", false, "allow plain HTTP to a non-loopback host").
 		AddGlobalBoolFlag("no-tools", "", false, "do not offer the built-in tools").
@@ -179,48 +185,33 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalBoolFlag("summarize", "", false, "summarize left-out turns with the model instead of dropping them (costs a call)").
 		AddGlobalFlag("session", "S", "", "save the conversation under this name and resume it next time").
 		AddGlobalFlag("sessions-dir", "", "", "where sessions are stored (default: the user config directory)")
-	app.AddCommand(withWorkspace(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.cmdChat)))
-	app.AddCommand(withWorkspace(orpheus.NewCommand("serve", "Answer a local HTTP API (loopback only, bearer token) until Ctrl-C; each run gets its own agent").SetHandler(c.cmdServe).
-		AddFlag("listen", "", "127.0.0.1:8765", "loopback address and port to listen on").
-		AddIntFlag("max-runs", "", 4, "runs going at once").
-		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token").
-		AddBoolFlag("no-triggers", "", false, "do not run the triggers (ringil trigger)").
-		AddFlag("webhooks", "", "", "address to answer the webhook triggers on (POST /hooks/NAME, signed), e.g. 127.0.0.1:8766; put TLS in front of it to face the internet").
-		AddFlag("telegram-owners", "", "", "Telegram user IDs with every right (the bot's token: RINGIL_TELEGRAM_TOKEN), comma-separated").
-		AddFlag("telegram-members", "", "", "Telegram user IDs of members, comma-separated: they talk with --member-profile and never approve").
-		AddFlag("telegram-company-group", "", "", "a Telegram group whose people are members (the bot must be in it)").
-		AddFlag("language", "", "en", "the chat bot's own messages are in each user's language (en or it); this one when their app does not say it").
-		AddFlag("telegram-member-phones", "", "", "phone numbers of members with their country code, comma-separated: anyone else writing to the bot in private is asked to share theirs (on a public bot, at /start)").
-		AddFlag("member-profile", "", "", "the profile members talk with (give it only the tools they may use)").
-		AddFlag("public-profile", "", "", "the profile anyone else talks with: a public bot").
-		AddIntFlag("max-per-hour", "", 30, "messages a member or the public has answered per hour; negative, no bound").
-		AddFlag("new-after", "", "24h", "a chat silent this long starts a new conversation (24h, 90m...), or never; /new starts one at any time").
-		AddFlag("replies", "", "voice", "how chats' voice messages are answered: voice (needs RINGIL_SPEECH_MODEL) or text; each chat can change it with /voice and /text")))
-	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.cmdRun).
+	app.AddCommand(withWorkspace(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.withConfig(c.cmdChat))))
+	app.AddCommand(withWorkspace(orpheus.NewCommand("serve", "Answer a local HTTP API (loopback only, bearer token) until Ctrl-C; each run gets its own agent; set up in the serve section of ringil.yaml").SetHandler(c.withConfig(c.cmdServe))))
+	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.withConfig(c.cmdRun)).
 		SetUsage("run <prompt...>")))
-	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.cmdSessions).
-		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.cmdSessionRemove).
+	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.withConfig(c.cmdSessions)).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.withConfig(c.cmdSessionRemove)).
 			SetUsage("sessions rm <name...>")))
-	app.AddCommand(orpheus.NewCommand("memory", "List what the agent remembers").SetHandler(c.cmdMemory).
-		AddSubcommand(orpheus.NewCommand("search", "Search what the agent remembers").SetHandler(c.cmdMemory).SetUsage("memory search <words...>")).
-		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.cmdMemoryRemove).SetUsage("memory rm <id...>")))
-	app.AddCommand(orpheus.NewCommand("workflow", "List the workflows the agent ran").SetHandler(c.cmdWorkflows).
-		AddSubcommand(orpheus.NewCommand("resume", "Continue an interrupted workflow").SetHandler(c.cmdWorkflowResume).SetUsage("workflow resume <id>")).
-		AddSubcommand(orpheus.NewCommand("resolve", "Record the checked outcome of an uncertain step, from standard input").SetHandler(c.cmdWorkflowResolve).SetUsage("workflow resolve <id> <step>")).
-		AddSubcommand(orpheus.NewCommand("retry", "Let resume run an uncertain step again").SetHandler(c.cmdWorkflowRetry).SetUsage("workflow retry <id> <step>")).
-		AddSubcommand(orpheus.NewCommand("rm", "Delete workflows' journals").SetHandler(c.cmdWorkflowRemove).SetUsage("workflow rm <id...>")))
-	app.AddCommand(orpheus.NewCommand("artifact", "List this project's artifacts").SetHandler(c.cmdArtifacts).
-		AddSubcommand(orpheus.NewCommand("show", "Print an artifact (control characters removed; --raw for the exact bytes)").SetHandler(c.cmdArtifactShow).SetUsage("artifact show <name>").
+	app.AddCommand(orpheus.NewCommand("memory", "List what the agent remembers").SetHandler(c.withConfig(c.cmdMemory)).
+		AddSubcommand(orpheus.NewCommand("search", "Search what the agent remembers").SetHandler(c.withConfig(c.cmdMemory)).SetUsage("memory search <words...>")).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.withConfig(c.cmdMemoryRemove)).SetUsage("memory rm <id...>")))
+	app.AddCommand(orpheus.NewCommand("workflow", "List the workflows the agent ran").SetHandler(c.withConfig(c.cmdWorkflows)).
+		AddSubcommand(orpheus.NewCommand("resume", "Continue an interrupted workflow").SetHandler(c.withConfig(c.cmdWorkflowResume)).SetUsage("workflow resume <id>")).
+		AddSubcommand(orpheus.NewCommand("resolve", "Record the checked outcome of an uncertain step, from standard input").SetHandler(c.withConfig(c.cmdWorkflowResolve)).SetUsage("workflow resolve <id> <step>")).
+		AddSubcommand(orpheus.NewCommand("retry", "Let resume run an uncertain step again").SetHandler(c.withConfig(c.cmdWorkflowRetry)).SetUsage("workflow retry <id> <step>")).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete workflows' journals").SetHandler(c.withConfig(c.cmdWorkflowRemove)).SetUsage("workflow rm <id...>")))
+	app.AddCommand(orpheus.NewCommand("artifact", "List this project's artifacts").SetHandler(c.withConfig(c.cmdArtifacts)).
+		AddSubcommand(orpheus.NewCommand("show", "Print an artifact (control characters removed; --raw for the exact bytes)").SetHandler(c.withConfig(c.cmdArtifactShow)).SetUsage("artifact show <name>").
 			AddBoolFlag("raw", "", false, "write the exact bytes, for redirecting to a file")).
-		AddSubcommand(orpheus.NewCommand("rm", "Delete artifacts").SetHandler(c.cmdArtifactRemove).SetUsage("artifact rm <name...>")))
-	app.AddCommand(orpheus.NewCommand("state", "Back up, check and restore the agent's state").SetHandler(c.cmdStateHelp).
-		AddSubcommand(orpheus.NewCommand("backup", "Save the agent's state to a new archive").SetHandler(c.cmdStateBackup).SetUsage("state backup <file.tar.gz>")).
-		AddSubcommand(orpheus.NewCommand("verify", "Check an archive without extracting it").SetHandler(c.cmdStateVerify).SetUsage("state verify <file.tar.gz>")).
-		AddSubcommand(orpheus.NewCommand("restore", "Restore an archive into a new directory, in quarantine").SetHandler(c.cmdStateRestore).SetUsage("state restore <file.tar.gz> <dir>")))
-	app.AddCommand(withWorkspace(orpheus.NewCommand("automate", "Make something happen by itself from now on: a trigger, shown before it is made").SetHandler(c.cmdAutomate).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete artifacts").SetHandler(c.withConfig(c.cmdArtifactRemove)).SetUsage("artifact rm <name...>")))
+	app.AddCommand(orpheus.NewCommand("state", "Back up, check and restore the agent's state").SetHandler(c.withConfig(c.cmdStateHelp)).
+		AddSubcommand(orpheus.NewCommand("backup", "Save the agent's state to a new archive").SetHandler(c.withConfig(c.cmdStateBackup)).SetUsage("state backup <file.tar.gz>")).
+		AddSubcommand(orpheus.NewCommand("verify", "Check an archive without extracting it").SetHandler(c.withConfig(c.cmdStateVerify)).SetUsage("state verify <file.tar.gz>")).
+		AddSubcommand(orpheus.NewCommand("restore", "Restore an archive into a new directory, in quarantine").SetHandler(c.withConfig(c.cmdStateRestore)).SetUsage("state restore <file.tar.gz> <dir>")))
+	app.AddCommand(withWorkspace(orpheus.NewCommand("automate", "Make something happen by itself from now on: a trigger, shown before it is made").SetHandler(c.withConfig(c.cmdAutomate)).
 		SetUsage("automate <what, e.g. every weekday at 8 summarize my mail>")))
-	app.AddCommand(orpheus.NewCommand("trigger", "List the triggers `ringil serve` runs: on a time, a change, a message, a webhook").SetHandler(c.cmdTrigger).
-		AddSubcommand(orpheus.NewCommand("add", "Add or replace a trigger").SetHandler(c.cmdTriggerAdd).
+	app.AddCommand(orpheus.NewCommand("trigger", "List the triggers `ringil serve` runs: on a time, a change, a message, a webhook").SetHandler(c.withConfig(c.cmdTrigger)).
+		AddSubcommand(orpheus.NewCommand("add", "Add or replace a trigger").SetHandler(c.withConfig(c.cmdTriggerAdd)).
 			SetUsage("trigger add <name> [--kind time|tool|file|message|webhook] [--skill <skill>] <prompt...>").
 			AddFlag("kind", "", "", "what sets it off: time, tool (its answer changes), file (files change), message (in a chat), webhook; default from --tool, --path, --chat, else time").
 			AddFlag("when", "", "", "time: the timetable (cron \"0 8 * * 1-5\", @daily, @hourly, @weekly, @every 10m); tool and file: how often to look").
@@ -239,14 +230,14 @@ func (c *cli) app() *orpheus.App {
 			AddFlag("from", "", "", "start working on this date: 2026-12-01 or 2026-12-01 09:00 (default now)").
 			AddFlag("until", "", "", "stop working and be removed after this date: 2026-12-31 (the whole day) or 2026-12-31 18:00").
 			AddBoolFlag("continue", "", false, "carry on one conversation across its runs (default: a fresh one each time)")).
-		AddSubcommand(orpheus.NewCommand("rm", "Delete triggers").SetHandler(c.cmdTriggerRemove).SetUsage("trigger rm <name...>")).
-		AddSubcommand(orpheus.NewCommand("pause", "Stop triggers, keeping them").SetHandler(c.cmdTriggerPause).SetUsage("trigger pause <name...>")).
-		AddSubcommand(orpheus.NewCommand("resume", "Let paused triggers run again").SetHandler(c.cmdTriggerResume).SetUsage("trigger resume <name...>")))
-	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.cmdRules))
-	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.cmdSkills).
-		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.cmdSkillInstall).SetUsage("skill install <dir>")).
-		AddSubcommand(orpheus.NewCommand("rm", "Remove installed skills").SetHandler(c.cmdSkillRemove).SetUsage("skill rm <name...>")))
-	app.AddCommand(orpheus.NewCommand("sandbox", "Run a command isolated, as scripts and tools will be").SetHandler(c.cmdSandbox).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete triggers").SetHandler(c.withConfig(c.cmdTriggerRemove)).SetUsage("trigger rm <name...>")).
+		AddSubcommand(orpheus.NewCommand("pause", "Stop triggers, keeping them").SetHandler(c.withConfig(c.cmdTriggerPause)).SetUsage("trigger pause <name...>")).
+		AddSubcommand(orpheus.NewCommand("resume", "Let paused triggers run again").SetHandler(c.withConfig(c.cmdTriggerResume)).SetUsage("trigger resume <name...>")))
+	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.withConfig(c.cmdRules)))
+	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.withConfig(c.cmdSkills)).
+		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.withConfig(c.cmdSkillInstall)).SetUsage("skill install <dir>")).
+		AddSubcommand(orpheus.NewCommand("rm", "Remove installed skills").SetHandler(c.withConfig(c.cmdSkillRemove)).SetUsage("skill rm <name...>")))
+	app.AddCommand(orpheus.NewCommand("sandbox", "Run a command isolated, as scripts and tools will be").SetHandler(c.withConfig(c.cmdSandbox)).
 		SetUsage("sandbox [--mount DIR[:/dest][:rw]]... [--net] [--dir /path] -- command [args...]").
 		AddStringSliceFlag("mount", "", nil, "grant a host directory, at its own path unless :/dest is given; read-only unless :rw").
 		AddBoolFlag("net", "", false, "give the command an isolated network (no access to the host's services)").
@@ -259,11 +250,11 @@ func (c *cli) app() *orpheus.App {
 const ErrUsage errors.ErrorCode = "USAGE"
 
 func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
-	c.acceptEdits = ctx.GetGlobalFlagBool("accept-edits")
+	c.acceptEdits = c.flagBool(ctx, "accept-edits")
 	if c.roleName == "" {
 		c.roleName = a2aProfile(ctx) // --profile, else default: what triggers made here run with
 	}
-	c.noApprovals = ctx.GetGlobalFlagBool("no-approvals")
+	c.noApprovals = c.flagBool(ctx, "no-approvals")
 	if err := c.chooseProfile(ctx); err != nil {
 		return nil, err
 	}
@@ -302,8 +293,8 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		Instructions:  instructions,
 		Context:       c.runContext(nb, !c.restricted()),
 		MaxTurns:      c.maxTurns(ctx),
-		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
-		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
+		ContextWindow: c.flagInt(ctx, "context-window"),
+		Compaction:    agent.Compaction{Summarize: c.flagBool(ctx, "summarize")},
 		Observers:     c.events,
 	})
 }
@@ -327,7 +318,7 @@ func withWorkspace(cmd *orpheus.Command) *orpheus.Command {
 
 // tools grants the built-in tools and, with --workspace, the file tools.
 func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog) (agent.Registry, error) {
-	if ctx.GetGlobalFlagBool("no-tools") {
+	if c.flagBool(ctx, "no-tools") {
 		return nil, nil
 	}
 	reg, err := builtinTools()
@@ -346,7 +337,7 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 	if err != nil {
 		return nil, err
 	}
-	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected, Exclude: ownStateExcluded})
+	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected, Exclude: ownStateExcluded, ProtectedFiles: c.protectedFiles(ctx)})
 	if err != nil {
 		return nil, err
 	}
@@ -699,10 +690,10 @@ func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 }
 
 // ownStateExcluded are the file tools' exclusions plus the agent's own
-// state: its triggers, skills, profiles, tokens and chat records change
+// state: its triggers, skills, configuration, tokens and chat records change
 // only through their tools and commands, which ask.
 var ownStateExcluded = append(slices.Clone(files.DefaultExclude),
-	"ringil/triggers", "ringil/skills", "ringil/profiles.json", "ringil/serve-token",
+	"ringil/triggers", "ringil/skills", "ringil/ringil.yaml", "ringil/serve-token",
 	"ringil/telegram-phones.json", "ringil/telegram-sessions.json")
 
 // showCall shows, before asking, what a call would do in full when a
@@ -795,7 +786,7 @@ func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
 		BaseURL:   base,
 		Model:     model,
 		KeyFunc:   keyFunc(res, keyName),
-		AllowHTTP: ctx.GetGlobalFlagBool("allow-http"),
+		AllowHTTP: c.flagBool(ctx, "allow-http"),
 		Images:    c.images(ctx.Context(), res),
 	})
 }
@@ -832,13 +823,17 @@ func (c *cli) resolver(ctx *orpheus.Context) (secrets.Resolver, error) {
 	return secrets.Chain(env, file), nil
 }
 
-// setting returns a flag, or else the named value from the resolver.
+// setting returns a flag, or else the named value from the resolver, or
+// else ringil.yaml's.
 func (c *cli) setting(ctx *orpheus.Context, res secrets.Resolver, flag, name string) (string, error) {
 	if v := ctx.GetGlobalFlagString(flag); v != "" {
 		return v, nil
 	}
-	v, _, err := secrets.Lookup(ctx.Context(), res, name)
-	return v, err
+	v, found, err := secrets.Lookup(ctx.Context(), res, name)
+	if err != nil || found {
+		return v, err
+	}
+	return c.conf().stringOf(flag), nil
 }
 
 // lookupEnv adapts the CLI's getenv (replaced in tests) to a Resolver. An

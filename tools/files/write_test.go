@@ -291,3 +291,42 @@ func TestFoldedNamesMatch(t *testing.T) {
 		t.Fatal("folded names escaped the policy")
 	}
 }
+
+// ProtectedFiles are exact paths: brackets mean themselves, a file reached
+// through a linked directory is the same file, case does not tell them
+// apart where the file system does not.
+func TestProtectedFiles(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "proj[2]")
+	if err := os.MkdirAll(filepath.Join(dir, "a[b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"rules.md", "a[b/more.md", "free.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := []string{filepath.Join(dir, "rules.md"), filepath.Join(dir, "a[b", "more.md"), filepath.Join(dir, "new.md")}
+	grant := dir
+	if runtime.GOOS != "windows" {
+		grant = filepath.Join(root, "link")
+		if err := os.Symlink(dir, grant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := openRW(t, Config{Dirs: []string{grant}, ProtectedFiles: files})
+	for _, p := range []string{"rules.md", "a[b/more.md", "new.md"} {
+		failCall(t, r, "write_file", map[string]any{"path": p, "content": "y"}, ErrProtected)
+	}
+	mustCall(t, r, "read_file", map[string]any{"path": "free.md"})
+	mustCall(t, r, "write_file", map[string]any{"path": "free.md", "content": "y"})
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		failCall(t, r, "write_file", map[string]any{"path": "RULES.md", "content": "y"}, ErrProtected)
+	}
+}
+
+func TestProtectedFileKeys(t *testing.T) {
+	if fileKey("C:/Users/me/x.md") != fileKey("c:/users/ME/x.md") {
+		t.Error("a Windows drive or case told one file from itself")
+	}
+}

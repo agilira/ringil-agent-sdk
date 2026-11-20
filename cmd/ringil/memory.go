@@ -25,7 +25,7 @@ import (
 // embedding model (--embed-model or RINGIL_EMBED_MODEL) it also finds
 // memories by meaning; the records are the same either way.
 func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
-	if ctx.GetGlobalFlagBool("no-memory") {
+	if c.flagBool(ctx, "no-memory") {
 		return nil, nil
 	}
 	base, err := c.configDir()
@@ -83,9 +83,9 @@ func (c *cli) embedder(ctx *orpheus.Context) (agent.Embedder, error) {
 		BaseURL:   base,
 		Model:     model,
 		KeyFunc:   keyFunc(res, keyName),
-		AllowHTTP: ctx.GetGlobalFlagBool("allow-http"),
+		AllowHTTP: c.flagBool(ctx, "allow-http"),
 		// Asymmetric models (NVIDIA NIM) need input_type.
-		EmbedInputType: c.getenv("RINGIL_EMBED_INPUT_TYPE") == "1",
+		EmbedInputType: c.getenv("RINGIL_EMBED_INPUT_TYPE") == "1" || c.conf().EmbedInputType,
 	})
 }
 

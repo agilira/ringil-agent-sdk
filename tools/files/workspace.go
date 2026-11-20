@@ -67,6 +67,11 @@ type Config struct {
 	Ask func(ctx context.Context, dir string) (bool, error)
 	// Protected replaces DefaultProtected when not nil.
 	Protected []string
+	// ProtectedFiles are files protected as well, by their exact path, not
+	// as patterns: a path with [ or * in it means itself. They are
+	// matched where they really are (through symbolic links), as the
+	// file system compares names (case, a Windows drive).
+	ProtectedFiles []string
 	// ConfirmProtected is asked before every write to a protected path,
 	// whatever else was allowed; nil refuses them.
 	ConfirmProtected func(ctx context.Context, path string) (bool, error)
@@ -104,7 +109,7 @@ func New(cfg Config) (Workspace, error) {
 	if err != nil {
 		return nil, errors.New(ErrConfig, "bad protected pattern")
 	}
-	w := &workspace{policy: pol, ask: cfg.Ask, protected: prot, confirmProtected: cfg.ConfirmProtected}
+	w := &workspace{policy: pol, ask: cfg.Ask, protected: prot, files: exactFiles(cfg.ProtectedFiles), confirmProtected: cfg.ConfirmProtected}
 	for _, d := range cfg.Dirs {
 		real, err := resolveDir(d)
 		if err != nil {
@@ -116,6 +121,35 @@ func New(cfg Config) (Workspace, error) {
 		w.dirs = append(w.dirs, real)
 	}
 	return w, nil
+}
+
+// exactFiles indexes ProtectedFiles by where they are: their path and,
+// when it differs, their real one.
+func exactFiles(paths []string) map[string]bool {
+	out := map[string]bool{}
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		out[fileKey(abs)] = true
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			out[fileKey(real)] = true
+		} else if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+			out[fileKey(filepath.Join(dir, filepath.Base(abs)))] = true // not made yet
+		}
+	}
+	return out
+}
+
+func fileKey(abs string) string { return strings.Join(components(abs), "/") }
+
+// protects: real is protected, by a pattern or as one of ProtectedFiles.
+func (w *workspace) protects(real string) bool {
+	return w.protected.excluded(real) || w.files[fileKey(real)]
 }
 
 func resolveDir(d string) (string, error) {
@@ -138,6 +172,7 @@ type workspace struct {
 	policy           policy
 	ask              func(context.Context, string) (bool, error)
 	protected        policy
+	files            map[string]bool // ProtectedFiles, by their components
 	confirmProtected func(context.Context, string) (bool, error)
 	// mu guards dirs, which grows when the user grants a directory; it is
 	// held while asking, so one request is never asked twice.

@@ -164,7 +164,7 @@ func (c *cli) cmdTriggerAdd(ctx *orpheus.Context) error {
 	}
 	msg := "Trigger " + t.Name + ": " + setOff(t) + ", next " + nextRun(t, time.Now()) + ". Triggers run while `ringil serve` is running."
 	if t.Kind == trigger.Webhook {
-		msg += "\nIt answers POST " + trigger.WebhookPath + t.Name + " on `ringil serve --webhooks ADDR`, with the body signed as GitHub signs (" +
+		msg += "\nIt answers POST " + trigger.WebhookPath + t.Name + " on `ringil serve` with serve.webhooks set in ringil.yaml, with the body signed as GitHub signs (" +
 			trigger.SignatureHeader + ": sha256=HMAC). The secret (keep it private):\n" + t.Secret
 	}
 	return c.line(msg)
@@ -220,12 +220,8 @@ func (c *cli) checkTriggerProfile(ctx *orpheus.Context, profile string) error {
 	if profile == "" || profile == "default" {
 		return nil
 	}
-	roles, err := c.loadProfiles(ctx)
-	if err != nil {
-		return err
-	}
-	if _, ok := roles[profile]; !ok {
-		return errors.New(ErrUsage, "no profile "+profile+" in "+c.profilesPath(ctx))
+	if _, ok := c.conf().Profiles[profile]; !ok {
+		return errors.New(ErrUsage, "no profile "+profile+" in "+c.configName())
 	}
 	return nil
 }
@@ -285,7 +281,7 @@ func (c *cli) startTriggers(octx *orpheus.Context, ctx context.Context, srv *ser
 		closeQuietly(store)
 		return nil, err
 	}
-	stopHooks, err := c.startWebhooks(octx.GetFlagString("webhooks"), runner)
+	stopHooks, err := c.startWebhooks(c.conf().Serve.Webhooks, runner)
 	if err != nil {
 		closeQuietly(store)
 		return nil, err

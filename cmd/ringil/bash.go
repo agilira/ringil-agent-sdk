@@ -30,7 +30,7 @@ func (c *cli) bashTool(ctx *orpheus.Context, dirs []string) (agent.Tool, error) 
 		Dir:     dirs[0],
 		Sandbox: box,
 		Read:    append(bash.ReadDefaults(), dirs[1:]...),
-		Network: bash.Network{Allow: splitList(ctx.GetGlobalFlagString("allow-domains")), Ask: c.askDomain},
+		Network: bash.Network{Allow: splitList(c.flagString(ctx, "allow-domains")), Ask: c.askDomain},
 		Confirm: c.confirmCommand,
 	}
 	if base, err := c.configDir(); err == nil {

@@ -10,6 +10,7 @@ import (
 	stderrors "errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -49,8 +50,8 @@ type Config struct {
 	// button (the Channel must be a PhoneAsker); on a public bot, at
 	// /start. Who shares a listed one is a member from then on, by their
 	// sender ID, kept in the file SharedPhones (empty: in memory only);
-	// taking the number off the list (and restarting) takes them out,
-	// also when they changed number since.
+	// taking the number off the list takes them out, also when they
+	// changed number since.
 	MemberPhones []string
 	SharedPhones string
 	// PublicProfile, when set, answers anyone else: a public bot. Without
@@ -61,6 +62,9 @@ type Config struct {
 	// MaxPerHour bounds the messages a member or public sender has
 	// answered in an hour; default 30, negative no bound. Owners have none.
 	MaxPerHour int
+	// Owners, Members, MemberProfile, MemberPhones, PublicProfile,
+	// MaxPerHour and NoApprovals can change while the Bridge runs:
+	// Bridge.SetPeople.
 	// Transcriber turns voice messages into text; nil, the chat is told
 	// they cannot be heard.
 	Transcriber agent.Transcriber
@@ -150,10 +154,8 @@ type Event struct {
 
 // Bridge talks with one channel for a server.
 type Bridge struct {
-	cfg     Config
-	owners  map[string]bool
-	members map[string]bool
-	phones  map[string]bool // MemberPhones, normalized
+	cfg Config
+	who atomic.Pointer[people] // who it talks with (SetPeople)
 
 	mu      sync.Mutex
 	chats   map[string]*chat       // chats with a run going, by chat ID
@@ -196,8 +198,7 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	if err := checkConfig(cfg); err != nil {
 		return nil, err
 	}
-	owners, members := idSet(cfg.Owners), idSet(cfg.Members)
-	phones, err := checkMembers(cfg, members)
+	who, err := peopleOf(cfg, PeopleOf(cfg))
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +209,7 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	if err != nil {
 		return nil, err
 	}
-	shared, pruned, err := loadShared(cfg.SharedPhones, phones)
+	shared, pruned, err := loadShared(cfg.SharedPhones, who.phones)
 	if err != nil {
 		return nil, err
 	}
@@ -216,9 +217,10 @@ func NewBridge(cfg Config) (*Bridge, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &Bridge{cfg: cfg, owners: owners, members: members, phones: phones, shared: shared, always: map[string]bool{}, langs: map[string]string{}, spoken: speaks, chats: map[string]*chat{}, asks: map[string]*ask{},
+	b := &Bridge{cfg: cfg, shared: shared, always: map[string]bool{}, langs: map[string]string{}, spoken: speaks, chats: map[string]*chat{}, asks: map[string]*ask{},
 		boxes: map[string]*outbox{}, voice: map[string]bool{}, checked: map[string]memberCheck{}, recent: map[string][]time.Time{},
 		sessions: sessions, reconciled: map[string]bool{}, backs: map[string]back{}, now: time.Now}
+	b.who.Store(who)
 	if pruned {
 		b.persistShared() // the numbers taken off the list leave the disk too
 	}
@@ -245,22 +247,6 @@ func checkConfig(cfg Config) error {
 		return errors.New(ErrConfig, "the channel's name must be 1-20 lower-case letters or digits")
 	}
 	return nil
-}
-
-// checkMembers checks how members are let in, and returns MemberPhones
-// normalized.
-func checkMembers(cfg Config, members map[string]bool) (map[string]bool, error) {
-	phones, err := phoneSet(cfg.MemberPhones)
-	if err != nil {
-		return nil, err
-	}
-	if _, ok := cfg.Channel.(PhoneAsker); len(phones) > 0 && !ok {
-		return nil, errors.New(ErrConfig, "this channel cannot ask for phone numbers: no MemberPhones")
-	}
-	if (len(members) > 0 || len(phones) > 0 || cfg.IsMember != nil) && cfg.MemberProfile == "" {
-		return nil, errors.New(ErrConfig, "members need a MemberProfile: the tools they may use")
-	}
-	return phones, nil
 }
 
 // Run receives and answers until ctx ends, then waits for the replies

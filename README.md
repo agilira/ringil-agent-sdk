@@ -39,7 +39,28 @@ make chat                                   # chat con l'endpoint del .env (RING
 ```
 
 Flag principali: `--base`, `--model`, `--key-env`, `--instructions`, `--max-turns`,
-`--allow-http`, `--no-tools`, `--session`/`-S`, `--sessions-dir`.
+`--allow-http`, `--no-tools`, `--session`/`-S`, `--sessions-dir`, `--config`/`-c`.
+
+### ringil.yaml
+
+Tutta la configurazione sta in un file, `<config>/ringil/ringil.yaml` (o `--config`):
+impostazioni, profili, server MCP, agenti remoti e `serve`. Le chiavi sono i nomi dei
+flag con `_` al posto di `-`; un flag vince sul file per quel comando, e
+`RINGIL_MODEL`, `RINGIL_BASE_URL`, `RINGIL_EMBED_MODEL` nell'ambiente pure. I segreti
+non ci stanno mai: `key_env` e `${NOME}` dicono quale variabile li contiene. Il file
+dev'essere tuo e non scrivibile da altri; i percorsi relativi delle istruzioni e di
+`sessions_dir` partono dalla sua cartella. Esempio completo: `docs/ringil.example.yaml`.
+
+Una chiave sconosciuta è un errore, non un default silenzioso. Il file, i file di
+istruzioni che nomina e le skill installate si leggono insieme, come una revisione
+(Argus): mentre gira, ringil segue le modifiche di tutti; una che passa i controlli
+vale dalla prossima run (profili, istruzioni, impostazioni, chi parla con il bot), una
+che non li passa è segnalata e resta la revisione precedente. Ogni run di `serve` usa
+una sola revisione dall'inizio alla fine e il suo log ne riporta l'impronta
+(`config=...`); ogni revisione finisce in `audit.jsonl` (`audit_file`, `no_audit`) per
+nome e hash, mai il testo. Un percorso di istruzioni non può contenere `*`, `?` o `[`. Server MCP, agenti remoti e il resto di `serve` valgono al
+prossimo avvio, e il log lo dice. Gli strumenti sui file dell'agente non toccano
+`ringil.yaml` né i file di istruzioni senza chiedere.
 
 ## Agente
 
@@ -340,12 +361,13 @@ Login OAuth da desktop o terminale: `mcp.NewLogin` apre un listener su 127.0.0.1
 registra il client (dinamicamente o con un client ID dato), mostra il link e conserva i
 token con `mcp.FileTokens`, così la volta dopo non serve rifare il login.
 
-CLI: `<config>/ringil/mcp.json` (o `--mcp-config`) nel formato comune
-`{"mcpServers": {...}}`; nei valori `${NOME}` viene risolto da ambiente ed `--env-file`.
-Per un server locale `"sandbox": true` con `"network"` e `"mounts"` lo isola;
-`"oauth": {}` fa il login dal browser (token in `<config>/ringil/oauth/`);
-`"trustAnnotations": true` evita la conferma sui tool che il server dichiara di sola
-lettura; `"disabled": true` lo tiene spento. Alla conferma, `a` consente quel tool per
+CLI: `mcp_servers` in `ringil.yaml`, con le chiavi del formato comune (`command`,
+`args`, `env`, `url`, `headers`: la voce JSON di un server copiata da un fornitore va
+bene così, il JSON è YAML); nei valori `${NOME}` viene risolto da ambiente ed `--env-file`.
+Per un server locale `sandbox: true` con `network` e `mounts` lo isola;
+`oauth: {}` fa il login dal browser (token in `<config>/ringil/oauth/`);
+`trust_annotations: true` evita la conferma sui tool che il server dichiara di sola
+lettura; `disabled: true` lo tiene spento. Alla conferma, `a` consente quel tool per
 tutta la sessione.
 Esempio di server: `mcp/examples/notes`.
 
@@ -374,7 +396,7 @@ c, err := mcp.Connect(ctx, composio.Connect(func(ctx context.Context) (string, e
 
 Tutti i meta-tool di Composio sono offerti (ricerca, esecuzione, connessioni,
 workbench); `Server.Tools` li restringe. Nella CLI basta un server HTTP in
-`mcp.json` con l'header `"x-consumer-api-key": "${COMPOSIO_KEY}"`.
+`mcp_servers` con l'header `x-consumer-api-key: ${COMPOSIO_KEY}`.
 
 ## A2A (agenti remoti)
 
@@ -391,7 +413,7 @@ card che indica un endpoint altrove è rifiutata senza `AllowOtherOrigin`). Il t
 il task remoto fino alla fine, a una domanda o al timeout (poi lo annulla); il modello
 continua una conversazione con `context_id` e risponde a una domanda con `task_id`.
 Conta come distruttivo: l'hook `Approve` vede ogni chiamata.
-CLI: `<config>/ringil/agents.json` (o `--agents-config`) con `{"agents": {...}}`.
+CLI: `agents` in `ringil.yaml` (`url`, `headers`, `allow_other_origin`, `disabled`).
 Il lato server (esporre il nostro agente via A2A) arriva con `serve`.
 
 ## Decoratori

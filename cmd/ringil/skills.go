@@ -34,7 +34,7 @@ func (c *cli) skillsDir() (string, error) {
 
 // skillCatalog opens the installed skills; nil with --no-tools.
 func (c *cli) skillCatalog(ctx *orpheus.Context) (*skills.Catalog, error) {
-	if ctx.GetGlobalFlagBool("no-tools") {
+	if c.flagBool(ctx, "no-tools") {
 		return nil, nil
 	}
 	dir, err := c.skillsDir()

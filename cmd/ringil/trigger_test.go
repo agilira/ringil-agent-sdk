@@ -122,7 +122,7 @@ func TestATriggerRunMakesNoTriggerAndRunsNoAskedCommand(t *testing.T) {
 }
 
 func TestTheAgentsStateIsNotForTheFileTools(t *testing.T) {
-	for _, p := range []string{"/home/u/.config/ringil/triggers/triggers.json", "/home/u/.config/ringil/skills/a/SKILL.md", "/home/u/.config/ringil/profiles.json"} {
+	for _, p := range []string{"/home/u/.config/ringil/triggers/triggers.json", "/home/u/.config/ringil/skills/a/SKILL.md", "/home/u/.config/ringil/ringil.yaml"} {
 		if !files.Excluded(p, ownStateExcluded) {
 			t.Errorf("%s visible", p)
 		}

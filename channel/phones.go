@@ -104,7 +104,7 @@ func loadShared(path string, listed map[string]bool) (out map[string]string, pru
 // sharesPhone: m shares its sender's phone in their own chat, and the
 // host lets members in by phone.
 func (b *Bridge) sharesPhone(m Message) bool {
-	return m.Phone != "" && !m.Group && m.From != "" && len(b.phones) > 0
+	return m.Phone != "" && !m.Group && m.From != "" && len(b.people().phones) > 0
 }
 
 // phoneMember: from shared a phone the host lists.
@@ -112,7 +112,7 @@ func (b *Bridge) phoneMember(from string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	p, ok := b.shared[from]
-	return ok && b.phones[p]
+	return ok && b.people().phones[p]
 }
 
 // askPhone asks a sender in their own chat for their phone, when the host
@@ -120,7 +120,7 @@ func (b *Bridge) phoneMember(from string) bool {
 // there is no bound): a stranger writing on and on is not answered on
 // and on.
 func (b *Bridge) askPhone(ctx context.Context, m Message, text msg) {
-	if m.Group || len(b.phones) == 0 || !b.within(m.From, stranger) {
+	if m.Group || len(b.people().phones) == 0 || !b.within(m.From, stranger) {
 		return
 	}
 	b.mu.Lock()
@@ -136,7 +136,7 @@ func (b *Bridge) sharedPhone(ctx context.Context, m Message) {
 		return
 	}
 	phone, ok := normalPhone(m.Phone, false)
-	if !ok || !b.phones[phone] {
+	if !ok || !b.people().phones[phone] {
 		b.report(Event{Kind: Refused, Chat: m.Chat, From: m.From})
 		b.say(ctx, m.Chat, b.tr(m.Chat, mPhoneNo))
 		return

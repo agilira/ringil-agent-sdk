@@ -22,12 +22,13 @@ import (
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 )
 
+// writeProfiles writes ringil.yaml (JSON is YAML) in the config dir.
 func writeProfiles(t *testing.T, dir, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, "ringil"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ringil", "profiles.json"), []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ringil", "ringil.yaml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -211,7 +212,7 @@ func TestTokenRace(t *testing.T) {
 	}
 }
 
-// Audit 18/11 (5): data after the profiles object was accepted.
+// Audit 18/11 (5): data after the configuration was accepted.
 func TestProfilesTrailingData(t *testing.T) {
 	h := newHarness(t, "", fake.Reply("ok"))
 	writeProfiles(t, h.dir, `{"profiles":{"w":{"model":"x"}}} {"garbage":true}`)

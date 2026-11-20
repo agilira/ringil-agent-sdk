@@ -25,7 +25,7 @@ func (c *cli) store(ctx *orpheus.Context) (agent.Store, error) {
 }
 
 func (c *cli) sessionsDir(ctx *orpheus.Context) (string, error) {
-	if dir := ctx.GetGlobalFlagString("sessions-dir"); dir != "" {
+	if dir := c.flagString(ctx, "sessions-dir"); dir != "" {
 		return filepath.Abs(dir)
 	}
 	base, err := c.configDir()

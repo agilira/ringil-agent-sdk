@@ -26,7 +26,7 @@ import (
 // thrown away at exit without one) and the notes of the project in the
 // start directory, kept across sessions.
 func (c *cli) notebooks(ctx *orpheus.Context) (*notes.Notes, error) {
-	if ctx.GetGlobalFlagBool("no-tools") {
+	if c.flagBool(ctx, "no-tools") {
 		return nil, nil
 	}
 	base, err := c.configDir()
