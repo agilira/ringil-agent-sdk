@@ -644,5 +644,15 @@ func dsn(path string) string {
 		q.Add("_pragma", p)
 	}
 	q.Set("_txlock", "immediate")
-	return (&url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}).String()
+	return fileURI(filepath.ToSlash(path)) + "?" + q.Encode()
+}
+
+// fileURI is a path written with / as SQLite's URI wants it: three slashes
+// and the absolute path, "file:///home/u/m.db", and on Windows the drive
+// after the third, "file:///C:/Users/u/m.db".
+func fileURI(slashed string) string {
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed // C:/Users/...
+	}
+	return (&url.URL{Scheme: "file", Path: slashed, OmitHost: false}).String()
 }

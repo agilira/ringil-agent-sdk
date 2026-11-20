@@ -645,6 +645,9 @@ func (d *dyingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32,
 // A memory directory removed and made again, in the same process: the
 // new database is the one written.
 func TestARecreatedDirectoryIsANewDatabase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not remove a file that is open")
+	}
 	linger = time.Hour
 	defer func() { linger = 0 }()
 	dir := filepath.Join(t.TempDir(), "mem")
@@ -711,6 +714,19 @@ func TestEitherFormOfAnAccent(t *testing.T) {
 	for _, q := range []string{"perché", "perché", "caffè"} {
 		if got, _ := m.Search(t.Context(), q, 3); len(got) != 1 {
 			t.Errorf("%q: %q", q, contents(got))
+		}
+	}
+}
+
+// The CI on Windows: a drive letter is no URI authority.
+func TestFileURIs(t *testing.T) {
+	for in, want := range map[string]string{
+		"/home/u/m.db":                "file:///home/u/m.db",
+		"C:/Users/RUNNER~1/Temp/m.db": "file:///C:/Users/RUNNER~1/Temp/m.db",
+		"/tmp/a b/m#1?.db":            "file:///tmp/a%20b/m%231%3F.db",
+	} {
+		if got := fileURI(in); got != want {
+			t.Errorf("%s: %s, want %s", in, got, want)
 		}
 	}
 }
