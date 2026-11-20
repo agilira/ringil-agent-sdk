@@ -6,10 +6,18 @@
 package trigger
 
 import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -196,4 +204,144 @@ func checkPublicDirRefused(t *testing.T) {
 	if _, err := OpenStore(pubDir); err == nil {
 		t.Fatal("OpenStore accepted 0777 directory")
 	}
+}
+
+func FuzzWebhook(f *testing.F) {
+	body := `{"event":"push"}`
+	valid := sign(hookSecret, body)
+	f.Add("deploy", valid, []byte(body))
+	f.Add("deploy", "sha256="+strings.ToUpper(strings.TrimPrefix(valid, "sha256=")), []byte(body))
+	f.Add("deploy", strings.TrimPrefix(valid, "sha256="), []byte(body))
+	f.Add("deploy", "SHA256="+strings.TrimPrefix(valid, "sha256="), []byte(body))
+	f.Add("deploy", "sha256=zz", []byte(body))
+	f.Add("deploy", "sha256=00", []byte{})
+	f.Add("deploy", sign(strings.Repeat("x", 40), body), []byte(body))
+	f.Add("nope", valid, []byte(body))
+	f.Add("daily", valid, []byte(body))
+	f.Add("../deploy", valid, []byte("a\x00b"))
+
+	r := &Runner{
+		cfg: Config{Clock: realClock{}},
+		ctx: context.Background(),
+		triggers: map[string]planned{
+			"deploy": {trigger: Trigger{Name: "deploy", Kind: Webhook, Secret: hookSecret, Skill: "deploy", Paused: true}},
+			"daily":  {trigger: Trigger{Name: "daily", Kind: Time, When: "@daily", Prompt: "x"}},
+		},
+	}
+	handler := r.WebhookHandler()
+	h := &hooks{runner: r, seen: map[string]time.Time{}}
+
+	f.Fuzz(func(t *testing.T, name, sig string, rawBody []byte) {
+		if len(name) > 128 || len(sig) > 256 || len(rawBody) > 8192 {
+			return
+		}
+		checkWebhookSigned(t, h, name, sig, rawBody)
+		req := httptest.NewRequest(http.MethodPost, WebhookPath+url.PathEscape(name), bytes.NewReader(rawBody))
+		if sig != "" {
+			req.Header.Set(SignatureHeader, sig)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code == http.StatusAccepted {
+			t.Fatalf("paused/untrusted webhook %q accepted (202)", name)
+		}
+	})
+}
+
+func checkWebhookSigned(t *testing.T, h *hooks, name, sig string, body []byte) {
+	t.Helper()
+	mac, ok := h.signed(name, sig, body)
+	if !ok {
+		return
+	}
+	sum := hmac.New(sha256.New, []byte(hookSecret))
+	sum.Write(body)
+	if name != "deploy" || !strings.HasPrefix(sig, "sha256=") || !hmac.Equal(mac, sum.Sum(nil)) {
+		t.Fatalf("signed accepted invalid signature for %q (%q)", name, sig)
+	}
+}
+
+func postResp(h http.Handler, path, sig, body string) (int, string) {
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	if sig != "" {
+		r.Header.Set(SignatureHeader, sig)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w.Code, w.Body.String()
+}
+
+func TestSecurityWebhookReplayAndOracleResistance(t *testing.T) {
+	store, clock, rec := harness(t,
+		Trigger{Name: "deploy", Kind: Webhook, Secret: hookSecret, Skill: "deploy"},
+		Trigger{Name: "daily", Kind: Time, When: "@daily", Prompt: "x"},
+	)
+	r := launch(t, store, clock, rec)
+	h := r.WebhookHandler()
+	body := `{"event":"push"}`
+	valid := sign(hookSecret, body)
+	hexSig := strings.TrimPrefix(valid, "sha256=")
+
+	assertWebhookUnauthorized(t, h, body, valid, hexSig)
+	assertWebhookPaths(t, h, body, valid)
+	assertWebhookReplayAndSeenClean(t, r, h, rec, body, valid, hexSig)
+}
+
+func assertWebhookUnauthorized(t *testing.T, h http.Handler, body, valid, hexSig string) {
+	t.Helper()
+	bad := []struct{ path, sig string }{
+		{"/hooks/deploy", ""},
+		{"/hooks/deploy", "SHA256=" + hexSig},
+		{"/hooks/deploy", " " + valid},
+		{"/hooks/deploy", valid + " "},
+		{"/hooks/deploy", "sha256=" + hexSig[:len(hexSig)-1]},
+		{"/hooks/deploy", "sha256=" + hexSig[:len(hexSig)-2]},
+		{"/hooks/deploy", valid + "00"},
+		{"/hooks/deploy", "sha256=" + strings.Repeat("z", 64)},
+		{"/hooks/missing", valid},
+		{"/hooks/daily", valid},
+	}
+	for i, tc := range bad {
+		code, resp := postResp(h, tc.path, tc.sig, body)
+		if code != http.StatusUnauthorized || resp != "unauthorized\n" {
+			t.Errorf("case %d (%s): code=%d body=%q", i, tc.path, code, resp)
+		}
+	}
+}
+
+func assertWebhookPaths(t *testing.T, h http.Handler, body, valid string) {
+	t.Helper()
+	for _, p := range []string{"/hooks/", "/hooks/deploy/extra"} {
+		if code, _ := postResp(h, p, valid, body); code != http.StatusNotFound {
+			t.Errorf("path %q: code=%d, want 404", p, code)
+		}
+	}
+	if code, _ := postResp(h, "/hooks/../hooks/deploy", "", body); code == http.StatusAccepted {
+		t.Fatalf("unsigned cleaned path returned 202")
+	}
+}
+
+func assertWebhookReplayAndSeenClean(t *testing.T, r *Runner, h http.Handler, rec *recorder, body, valid, hexSig string) {
+	t.Helper()
+	isolated := &hooks{runner: r, seen: map[string]time.Time{}}
+	for i := range 50 {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/hooks/deploy", strings.NewReader(strconv.Itoa(i)))
+		req.Header.Set(SignatureHeader, "sha256="+strings.Repeat("0", 64))
+		isolated.serve(w, req)
+	}
+	if len(isolated.seen) != 0 {
+		t.Fatalf("unauthorized calls polluted seen map: %d", len(isolated.seen))
+	}
+	if code, _ := postResp(h, "/hooks/deploy", valid, body); code != http.StatusAccepted {
+		t.Fatalf("valid delivery: code=%d", code)
+	}
+	if code, _ := postResp(h, "/hooks/deploy", "sha256="+strings.ToUpper(hexSig), body); code != http.StatusConflict {
+		t.Fatalf("uppercase hex replay: code=%d", code)
+	}
+	other := `{"event":"tag"}`
+	if code, _ := postResp(h, "/hooks/deploy", sign(hookSecret, other), other); code != http.StatusAccepted {
+		t.Fatalf("distinct delivery: code=%d", code)
+	}
+	eventually(t, "two runs", func() bool { return rec.count() == 2 })
 }

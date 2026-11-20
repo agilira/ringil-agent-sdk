@@ -92,10 +92,10 @@ security: gosec govulcheck ## Run security checks
 FUZZTIME ?= 30s
 fuzz: ## Run every fuzz target (FUZZTIME, default 30s each)
 	@echo "$(YELLOW)Running fuzz tests...$(NC)"
-	@for pkg in $$(go list ./...); do \
+	@for m in $(MODULES); do (cd $$m && for pkg in $$(go list ./...); do \
 		dir=$$(go list -f '{{.Dir}}' $$pkg); \
 		for f in $$(grep -ho '^func Fuzz[A-Za-z0-9]*' $$dir/*_test.go 2>/dev/null | cut -d' ' -f2); do \
-			go test -run='^$$' -fuzz="^$$f"'$$' -fuzztime=$(FUZZTIME) $$pkg || exit 1; done; done
+			go test -run='^$$' -fuzz="^$$f"'$$' -fuzztime=$(FUZZTIME) $$pkg || exit 1; done; done) || exit 1; done
 	@echo "$(GREEN)Fuzz tests completed.$(NC)"
 
 live: ## Run live tests against the endpoint in .env (real calls, may cost)
