@@ -11,7 +11,7 @@ import "strings"
 // host to add to the system prompt of the profiles its chats talk with:
 // the Bridge sends what the agent writes as it is.
 const Style = "You are talking in a chat app, often on a phone. Write as a person texting: short, the answer or the result first, " +
-	"in the user's language. No headings or tables; bold and lists only when they really help. " +
+	"in the user's language. No headings or tables; bold and lists only when they really help; no emoji unless the user writes them. " +
 	"Do not repeat what the user asked, do not list what you could do next, and do not end with offers of help: " +
 	"ask a question only when you cannot go on without the answer. " +
 	"Files the user sends come with where they were saved; read them with your tools when the request needs it."

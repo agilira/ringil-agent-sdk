@@ -27,6 +27,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/delegate"
+	"github.com/agilira/ringil-agent-sdk/later"
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/notes"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
@@ -85,8 +86,8 @@ type cli struct {
 	// replace them.
 	cwd  func() (string, error)
 	home func() (string, error)
-	// lines reads the terminal; see readLine.
-	lines *bufio.Scanner
+	// scanner reads the terminal; see readLine.
+	scanner *bufio.Scanner
 	// server, under `ringil serve`, decides the calls the chat would ask
 	// about, through its API; there is no terminal.
 	server *serve.Server
@@ -121,6 +122,15 @@ type cli struct {
 	triggers   *atomic.Pointer[trigger.Runner]
 	// bridge is serve's Telegram bridge, for what automations deliver.
 	bridge *atomic.Pointer[channel.Bridge]
+	// board holds the checks set with check_later (shared under serve);
+	// due, in the terminal, the checks come due waiting for the prompt.
+	board       *later.Board
+	due         chan later.Check
+	laterLimits later.Limits // zero: the package's (tests shorten them)
+	// input carries the terminal's lines, read by one goroutine (see
+	// readLine).
+	input    chan string
+	readOnce sync.Once
 	// role is the profile in use (--profile, or a profile served); nil
 	// keeps the flags and environment.
 	role *profile
@@ -500,7 +510,7 @@ func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
 			extra = append(extra, c.createTrigger())
 		}
 	}
-	return extra
+	return append(extra, c.laterTools()...)
 }
 
 // defaultDirs are the start directory and the user's home: the agent moves
@@ -543,6 +553,11 @@ func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 	if c.server != nil {
 		return c.serveApprove(ctx, call, spec)
 	}
+	return c.askTerminal(ctx, call, spec)
+}
+
+// askTerminal asks in the terminal, unless the call needs no asking.
+func (c *cli) askTerminal(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
 	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
 	// "always" is remembered per asker: a worker's yes is not the
@@ -553,6 +568,10 @@ func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolS
 	}
 	if !c.mustAsk(ctx, call, spec) || c.allowed[key] {
 		return true, nil
+	}
+	if checking(ctx) { // the user may be typing: a line meant for the chat must not answer it
+		c.note("a check may not ask in the terminal: " + call.Name + " refused")
+		return false, nil
 	}
 	c.showCall(call)
 	answer, err := c.ask("\n  ? " + who + " wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
@@ -715,15 +734,28 @@ func yes(answer string) bool {
 
 // readLine reads one line from the terminal, shared by the chat prompt and
 // the access questions so neither steals the other's input.
+// The lines come from one goroutine, so that the chat's prompt can also
+// wait for a check come due (lines) while it waits for the user.
 func (c *cli) readLine() (string, bool) {
-	if c.lines == nil {
-		c.lines = bufio.NewScanner(c.in)
-		c.lines.Buffer(make([]byte, 0, 4096), maxLine)
-	}
-	if !c.lines.Scan() {
-		return "", false
-	}
-	return c.lines.Text(), true
+	line, ok := <-c.lines()
+	return line, ok
+}
+
+// lines starts reading the terminal, once; the channel closes at the end
+// of input.
+func (c *cli) lines() <-chan string {
+	c.readOnce.Do(func() {
+		c.input = make(chan string)
+		c.scanner = bufio.NewScanner(c.in)
+		c.scanner.Buffer(make([]byte, 0, 4096), maxLine)
+		go func() {
+			defer close(c.input)
+			for c.scanner.Scan() {
+				c.input <- c.scanner.Text()
+			}
+		}()
+	})
+	return c.input
 }
 
 func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
