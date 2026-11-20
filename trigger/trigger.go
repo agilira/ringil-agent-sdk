@@ -551,9 +551,14 @@ func (s *Runner) save() {
 	}
 }
 
+// ErrRunning: a trigger set off while its last run is still going; that
+// one is skipped (Fire says so, so that a webhook's sender may send again).
+const ErrRunning errors.ErrorCode = "TRIGGER_RUNNING"
+
 // Fire sets off a Message or Webhook trigger the host heard of, with
 // what happened (clipped to MaxDetail). Its run goes on after Fire
-// returns; one set off while the last is still going is skipped.
+// returns; one set off while the last is still going is skipped, and
+// Fire returns ErrRunning.
 func (s *Runner) Fire(name, detail string) (err error) {
 	started := false
 	s.mu.Lock()
@@ -580,10 +585,15 @@ func (s *Runner) Fire(name, detail string) (err error) {
 		return err
 	}
 	f := Fired{Kind: p.trigger.kind(), At: s.cfg.Clock.Now(), Detail: clipTo(detail, MaxDetail)}
+	if !s.hold(name) { // here, not in the run: the caller hears of it
+		s.skipped(name)
+		s.cfg.OnEvent(Event{Kind: Skipped, Trigger: name, At: f.At})
+		return errors.New(ErrRunning, "trigger "+name+" is still running its last run")
+	}
 	started = true
 	go func() {
 		defer s.wg.Done()
-		s.start(ctx, p.trigger, f)
+		s.run(ctx, p.trigger, f)
 	}()
 	return nil
 }

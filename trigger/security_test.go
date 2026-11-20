@@ -339,9 +339,37 @@ func assertWebhookReplayAndSeenClean(t *testing.T, r *Runner, h http.Handler, re
 	if code, _ := postResp(h, "/hooks/deploy", "sha256="+strings.ToUpper(hexSig), body); code != http.StatusConflict {
 		t.Fatalf("uppercase hex replay: code=%d", code)
 	}
+	eventually(t, "the first run ended", func() bool { return rec.count() == 1 && !r.busy("deploy") })
 	other := `{"event":"tag"}`
 	if code, _ := postResp(h, "/hooks/deploy", sign(hookSecret, other), other); code != http.StatusAccepted {
 		t.Fatalf("distinct delivery: code=%d", code)
+	}
+	eventually(t, "two runs", func() bool { return rec.count() == 2 })
+}
+
+// A delivery while the last run is still going is not taken: 503 with
+// Retry-After, nothing recorded, so that the sender's retry runs it.
+func TestSecurityWebhookWhileRunningIsNotLost(t *testing.T) {
+	store, clock, rec := harness(t, Trigger{Name: "deploy", Kind: Webhook, Secret: hookSecret, Skill: "deploy"})
+	rec.block = make(chan struct{})
+	r := launch(t, store, clock, rec)
+	h := r.WebhookHandler()
+	first, second := `{"n":1}`, `{"n":2}`
+	if code, _ := postResp(h, "/hooks/deploy", sign(hookSecret, first), first); code != http.StatusAccepted {
+		t.Fatalf("first: %d", code)
+	}
+	eventually(t, "the first run started", func() bool { return rec.count() == 1 })
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/hooks/deploy", strings.NewReader(second))
+	req.Header.Set(SignatureHeader, sign(hookSecret, second))
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("while running: %d %q", w.Code, w.Header().Get("Retry-After"))
+	}
+	close(rec.block)
+	eventually(t, "the first run ended", func() bool { return !r.busy("deploy") })
+	if code, _ := postResp(h, "/hooks/deploy", sign(hookSecret, second), second); code != http.StatusAccepted {
+		t.Fatalf("the retry was not taken: %d", code)
 	}
 	eventually(t, "two runs", func() bool { return rec.count() == 2 })
 }

@@ -44,8 +44,8 @@ const (
 // name that is not a webhook, is refused the same way (401, in the same
 // time): nothing is told of which triggers exist. One accepted is
 // answered 202 when its run starts, 409 when the trigger is paused or
-// outside its period, 503 when the triggers are not running (a retry may
-// run it). The same body, signed, sets a trigger off once a day (409
+// outside its period, 503 when the triggers are not running or its last
+// run is still going (a retry may run it). The same body, signed, sets a trigger off once a day (409
 // after): a request seen cannot be sent again by whoever saw it, so a
 // sender should put something of its own in each (an ID, a time). What
 // was delivered is kept in memory: a restart forgets it. Serve it on a listener of its own,
@@ -96,7 +96,8 @@ func (h *hooks) serve(w http.ResponseWriter, r *http.Request) {
 	answerFire(w, err)
 }
 
-// answerFire says how Fire went: 202 started, 503 not running, 409 not now.
+// answerFire says how Fire went: 202 started, 503 not running or still
+// running the last delivery (send again later), 409 not now.
 func answerFire(w http.ResponseWriter, err error) {
 	var e *errors.Error
 	switch {
@@ -104,6 +105,9 @@ func answerFire(w http.ResponseWriter, err error) {
 		w.WriteHeader(http.StatusAccepted)
 	case stderrors.As(err, &e) && e.Code == ErrStopped:
 		http.Error(w, "not running", http.StatusServiceUnavailable)
+	case stderrors.As(err, &e) && e.Code == ErrRunning:
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "still running the last delivery: send again later", http.StatusServiceUnavailable)
 	default:
 		http.Error(w, "not now", http.StatusConflict)
 	}
