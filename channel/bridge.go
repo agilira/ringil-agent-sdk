@@ -85,6 +85,14 @@ type Config struct {
 	// Automations, when set, lists the host's automations, shown by
 	// /automate alone; "" when there are none.
 	Automations func() string
+	// Listens, when set, says whether something listens to a chat's
+	// messages (the host's message triggers), by its key, ChatKey; Hear
+	// then hears each message there of an owner or a member (strangers
+	// and the public never), commands aside. A group's messages not
+	// addressed to the bot are heard only if the app delivers them (on
+	// Telegram: privacy mode off, or the bot an admin).
+	Listens func(chat string) bool
+	Hear    func(chat, text string)
 	// NoApprovals allows, without asking, the tool calls of the runs an
 	// owner starts; the others are still refused. In the chat, "Yes,
 	// always" allows the same again for the rest of the conversation: the
@@ -300,6 +308,7 @@ func pause(ctx context.Context, d time.Duration) {
 }
 
 func (b *Bridge) handle(ctx context.Context, m Message) {
+	b.overhear(m)
 	if m.Group && !m.Addressed && m.Pressed == "" {
 		return // group talk not for the bot
 	}

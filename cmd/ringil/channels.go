@@ -120,6 +120,7 @@ func (c *cli) bridgeConfig(ctx *orpheus.Context, res secrets.Resolver) (channel.
 		PublicProfile: ctx.GetFlagString("public-profile"), MaxPerHour: ctx.GetFlagInt("max-per-hour"),
 		Transcriber: ear, Synthesizer: mouth, VoiceReplies: replies == "voice", Inbox: c.inboxRoot,
 		Sessions: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-sessions.json"), IdleReset: idle, OnEvent: c.channelEvent, Automations: c.automationsText,
+		Listens: c.listens, Hear: c.hear,
 		Language: ctx.GetFlagString("language"), NoApprovals: ctx.GetGlobalFlagBool("no-approvals")}, nil
 }
 
@@ -242,4 +243,17 @@ func (c *cli) inboxOf(conversation string) string {
 		return ""
 	}
 	return dir
+}
+
+// listens: a message trigger listens to chat (its key, channel.ChatKey).
+func (c *cli) listens(chat string) bool {
+	r := c.triggers.Load()
+	return r != nil && r.Listens(chat)
+}
+
+// hear sets off the message triggers a message in chat matches.
+func (c *cli) hear(chat, text string) {
+	if r := c.triggers.Load(); r != nil {
+		r.Heard(chat, text)
+	}
 }

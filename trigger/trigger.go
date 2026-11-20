@@ -601,6 +601,19 @@ func (s *Runner) fireable(t Trigger) error {
 	return nil
 }
 
+// Listens reports whether a Message trigger listens to chat, so that a
+// host passes on (Heard) only the messages of chats listened to.
+func (s *Runner) Listens(chat string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.triggers {
+		if p.trigger.kind() == Message && !p.trigger.Paused && p.trigger.Chat == chat {
+			return true
+		}
+	}
+	return false
+}
+
 // Heard sets off the Message triggers of chat whose words are in text
 // (letter case aside), and returns their names.
 func (s *Runner) Heard(chat, text string) []string {
