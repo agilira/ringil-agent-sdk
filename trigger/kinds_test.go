@@ -98,10 +98,12 @@ func TestFileFiresOnCreatedChangedRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, clock, rec := harness(t, Trigger{Name: "drop", Kind: File, Path: dir, When: "@every 1m", Skill: "file-in"})
-	launch(t, store, clock, rec)
+	s := launch(t, store, clock, rec)
 	step := func() { clock.advance(time.Minute); clock.settle(t) }
 	step() // takes note
-	eventually(t, "no look", func() bool { st, _ := store.Status(); return st["drop"].Seen != "" })
+	// Seen and the look over: a step while it still looks is skipped, by
+	// design (CI 20/11: a slow runner did).
+	eventually(t, "no look", func() bool { st, _ := store.Status(); return st["drop"].Seen != "" && !s.busy("drop") })
 	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o600); err != nil {
 		t.Fatal(err)
 	}
