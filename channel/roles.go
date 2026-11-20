@@ -53,6 +53,23 @@ func (b *Bridge) roleOf(ctx context.Context, from string) role {
 	return stranger
 }
 
+// known: from is an owner or a member as far as is known now, without
+// asking IsMember (what listening does: it must not hold up the chats
+// for every stranger in a group). A member by IsMember counts once a
+// message of theirs was answered.
+func (b *Bridge) known(from string) bool {
+	if from == "" {
+		return false
+	}
+	if b.owners[from] || b.members[from] || b.phoneMember(from) {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c, ok := b.checked[from]
+	return ok && c.member && b.now().Sub(c.at) < b.memberCheck()
+}
+
 // isMember asks IsMember, keeping its answers for MemberCheck.
 func (b *Bridge) isMember(ctx context.Context, from string) bool {
 	if b.cfg.IsMember == nil {

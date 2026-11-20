@@ -185,6 +185,7 @@ func (c *cli) app() *orpheus.App {
 		AddIntFlag("max-runs", "", 4, "runs going at once").
 		AddBoolFlag("a2a", "", false, "also answer as an A2A agent at /a2a, with the same token").
 		AddBoolFlag("no-triggers", "", false, "do not run the triggers (ringil trigger)").
+		AddFlag("webhooks", "", "", "address to answer the webhook triggers on (POST /hooks/NAME, signed), e.g. 127.0.0.1:8766; put TLS in front of it to face the internet").
 		AddFlag("telegram-owners", "", "", "Telegram user IDs with every right (the bot's token: RINGIL_TELEGRAM_TOKEN), comma-separated").
 		AddFlag("telegram-members", "", "", "Telegram user IDs of members, comma-separated: they talk with --member-profile and never approve").
 		AddFlag("telegram-company-group", "", "", "a Telegram group whose people are members (the bot must be in it)").
@@ -228,7 +229,7 @@ func (c *cli) app() *orpheus.App {
 			AddFlag("tool", "", "", "tool: the tool to ask (one that changes nothing)").
 			AddFlag("args", "", "", "tool: its arguments, as JSON").
 			AddFlag("path", "", "", "file: the file or directory to look at").
-			AddFlag("chat", "", "", "message: the chat to listen to").
+			AddFlag("chat", "", "", "message: the chat to listen to, as telegram-CHATID (a group's ID is negative); only owners' and members' messages are heard").
 			AddFlag("match", "", "", "message: words the message must have (default: any message)").
 			AddFlag("skill", "", "", "the skill its runs follow").
 			AddFlag("allow", "", "", "tools its runs may use without asking, comma-separated; any other that would ask is refused").

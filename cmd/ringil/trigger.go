@@ -9,7 +9,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	stderrors "errors"
 	"io"
+	"net"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -161,7 +164,8 @@ func (c *cli) cmdTriggerAdd(ctx *orpheus.Context) error {
 	}
 	msg := "Trigger " + t.Name + ": " + setOff(t) + ", next " + nextRun(t, time.Now()) + ". Triggers run while `ringil serve` is running."
 	if t.Kind == trigger.Webhook {
-		msg += "\nIts requests are signed with this secret (keep it private):\n" + t.Secret
+		msg += "\nIt answers POST " + trigger.WebhookPath + t.Name + " on `ringil serve --webhooks ADDR`, with the body signed as GitHub signs (" +
+			trigger.SignatureHeader + ": sha256=HMAC). The secret (keep it private):\n" + t.Secret
 	}
 	return c.line(msg)
 }
@@ -281,6 +285,11 @@ func (c *cli) startTriggers(octx *orpheus.Context, ctx context.Context, srv *ser
 		closeQuietly(store)
 		return nil, err
 	}
+	stopHooks, err := c.startWebhooks(octx.GetFlagString("webhooks"), runner)
+	if err != nil {
+		closeQuietly(store)
+		return nil, err
+	}
 	c.triggers.Store(runner)
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -291,11 +300,36 @@ func (c *cli) startTriggers(octx *orpheus.Context, ctx context.Context, srv *ser
 		}
 	}()
 	return func() {
+		stopHooks()
 		cancel()
 		<-done
 		c.triggers.Store(nil)
 		closeQuietly(store)
 	}, nil
+}
+
+// startWebhooks answers the webhook triggers on addr, a listener of its
+// own: the API's stays loopback only and behind its token. Nothing when
+// addr is empty.
+func (c *cli) startWebhooks(addr string, runner *trigger.Runner) (func(), error) {
+	if addr == "" {
+		return func() {}, nil
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, errors.Wrap(err, ErrUsage, "cannot listen for webhooks on "+addr)
+	}
+	srv := &http.Server{Handler: runner.WebhookHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := srv.Serve(l); err != nil && !stderrors.Is(err, http.ErrServerClosed) {
+			c.note("webhooks: " + clean(err.Error()))
+		}
+	}()
+	c.note("webhooks on http://" + l.Addr().String() + trigger.WebhookPath + "NAME")
+	return func() { _ = srv.Close(); <-done }, nil
 }
 
 // triggerSource labels the runs of a trigger.

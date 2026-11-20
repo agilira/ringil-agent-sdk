@@ -78,6 +78,9 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 // --no-triggers) and the chat apps. The function returned stops
 // them.
 func (c *cli) startBackground(ctx *orpheus.Context, run context.Context, srv *serve.Server) (func(), error) {
+	if ctx.GetFlagBool("no-triggers") && ctx.GetFlagString("webhooks") != "" {
+		return nil, errors.New(ErrUsage, "--webhooks sets off triggers: it does not go with --no-triggers")
+	}
 	stopChannels, err := c.startChannels(ctx, run, srv)
 	if err != nil {
 		return nil, err

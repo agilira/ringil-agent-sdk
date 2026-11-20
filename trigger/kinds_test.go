@@ -294,3 +294,13 @@ func TestAnEndedTriggerIsRemoved(t *testing.T) {
 		t.Fatal("ran before its period")
 	}
 }
+
+func TestListens(t *testing.T) {
+	store, clock, rec := harness(t,
+		Trigger{Name: "urgent", Kind: Message, Chat: "telegram-50", Prompt: "tell me"},
+		Trigger{Name: "quiet", Kind: Message, Chat: "telegram-52", Prompt: "tell me", Paused: true})
+	s := launch(t, store, clock, rec)
+	if !s.Listens("telegram-50") || s.Listens("telegram-51") || s.Listens("telegram-52") {
+		t.Fatal("Listens")
+	}
+}
