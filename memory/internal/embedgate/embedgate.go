@@ -86,3 +86,11 @@ func (g *Gate) Wake() {
 	defer g.mu.Unlock()
 	g.resting = time.Time{}
 }
+
+// Rest starts a pause now, as a failure would: a caller that saw the
+// embedder fail on its own.
+func (g *Gate) Rest() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.resting = g.now().Add(Pause)
+}

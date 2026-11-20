@@ -18,16 +18,16 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/memory/chroma"
-	"github.com/agilira/ringil-agent-sdk/memory/local"
-	"github.com/agilira/ringil-agent-sdk/memory/vector"
+	"github.com/agilira/ringil-agent-sdk/memory/sqlite"
 	"github.com/agilira/ringil-agent-sdk/provider/ollama"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 )
 
 // memory opens the user's memory, or returns nil with --no-memory. It is on
-// by default: a complete agent remembers what the user told it. With an
-// embedding model (--embed-model or RINGIL_EMBED_MODEL) it also finds
-// memories by meaning; the records are the same either way.
+// by default: a complete agent remembers what the user told it. It lives
+// in a SQLite database in the config directory, or on a Chroma server
+// (memory_store); with an embedding model it also finds memories by
+// meaning. The database is closed when the run ends.
 func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 	if c.flagBool(ctx, "no-memory") {
 		return nil, nil
@@ -47,10 +47,12 @@ func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 	if store := c.conf().Memory; store.Kind == "chroma" {
 		return c.chromaMemory(ctx, store, emb)
 	}
-	if emb == nil {
-		return local.New(dir)
+	m, err := sqlite.New(dir, emb)
+	if err != nil {
+		return nil, err
 	}
-	return vector.New(dir, emb)
+	c.closers = append(c.closers, m.Close)
+	return m, nil
 }
 
 // chatCollection is a chat's collection: <prefix>-chat-<chat>, or, for a

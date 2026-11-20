@@ -13,7 +13,7 @@
 // cannot be compared. Search fuses meaning (cosine, from a minimum
 // similarity up, so that an unrelated question recalls nothing) and words
 // (BM25 over the records whose text holds a word of the question), as
-// memory/vector does; with the embedder down it works by words and says
+// memory/sqlite does; with the embedder down it works by words and says
 // so with agent.ErrMemoryPartial.
 //
 // Only https, or http to the loopback (Config.AllowHTTP for a trusted
@@ -60,7 +60,8 @@ type Config struct {
 	// Embedder makes the vectors; its Model is kept with them.
 	Embedder agent.Embedder
 	// MinSimilarity is the cosine a record found only by meaning must
-	// reach (default memory/vector's); it depends on the model.
+	// reach (default 0.30, measured with text-embedding-3-small: related
+	// pairs scored 0.31-0.40, small talk 0.24-0.27); it depends on the model.
 	MinSimilarity float64
 	// Headers are added to every request, such as the server's token
 	// (Chroma reads "X-Chroma-Token" or "Authorization: Bearer").
@@ -81,7 +82,7 @@ const (
 	maxWordTerms = 8
 )
 
-// DefaultMinSimilarity is memory/vector's.
+// DefaultMinSimilarity is memory/sqlite's.
 const DefaultMinSimilarity = 0.30
 
 const modelKey = "ringil_model" // in the collection's metadata
@@ -249,7 +250,7 @@ func (s *store) Put(ctx context.Context, rec agent.MemoryRecord) (agent.MemoryRe
 	if err := ctx.Err(); err != nil {
 		return rec, err
 	}
-	rec.Content = strings.TrimSpace(rec.Content)
+	rec.Content = agent.MemoryText(rec.Content)
 	if err := agent.CheckMemoryRecord(rec); err != nil {
 		return rec, err
 	}
@@ -311,7 +312,7 @@ func (s *store) Search(ctx context.Context, query string, limit int) ([]agent.Me
 	if err := ctx.Err(); err != nil || limit <= 0 {
 		return nil, err
 	}
-	query = strings.TrimSpace(query)
+	query = agent.MemoryText(query)
 	if query == "" {
 		return s.recent(ctx, limit)
 	}

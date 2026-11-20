@@ -45,6 +45,9 @@ jobs:
     - name: A2A
       working-directory: a2a
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
+    - name: Memory (SQLite)
+      working-directory: memory/sqlite
+      run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
     - name: CLI
       working-directory: cmd/ringil
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...

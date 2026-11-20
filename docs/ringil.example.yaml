@@ -43,12 +43,13 @@ embedder:
   # document_prefix: ""
   # dimensions: 0
 
-# Where memories are kept: files in the config directory by default, or
-# a Chroma server, each memory in a collection of its own: <prefix>-user
-# for the user, <prefix>-chat-<chat> for the profiles with memory: chat.
-# Chroma finds memories by meaning: it needs embed_model.
+# Where memories are kept: a SQLite database in the config directory by
+# default (by words, and by meaning with an embedder), or a Chroma server,
+# each memory in a collection of its own: <prefix>-user for the user,
+# <prefix>-chat-<chat> for the profiles with memory: chat. Chroma finds
+# memories by meaning: it needs an embedder.
 memory_store:
-  kind: files                  # or chroma
+  kind: sqlite                 # or chroma
   # url: http://127.0.0.1:8000
   # collection_prefix: acme
   # headers: {X-Chroma-Token: "${CHROMA_TOKEN}"}

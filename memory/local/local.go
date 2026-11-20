@@ -168,7 +168,7 @@ func (s *store) Put(ctx context.Context, rec agent.MemoryRecord) (agent.MemoryRe
 	if err := ctx.Err(); err != nil {
 		return rec, err
 	}
-	rec.Content = strings.TrimSpace(rec.Content)
+	rec.Content = agent.MemoryText(rec.Content)
 	if err := validate(rec); err != nil {
 		return rec, err
 	}
@@ -238,5 +238,5 @@ func (s *store) Search(ctx context.Context, query string, limit int) ([]agent.Me
 	if err != nil {
 		return nil, err
 	}
-	return Rank(doc.Records, query, limit), nil
+	return Rank(doc.Records, agent.MemoryText(query), limit), nil
 }

@@ -91,8 +91,8 @@ func (e embedderConfig) check() error {
 	return nil
 }
 
-// memoryStore is where memories are kept: files in the config directory
-// (kind "" or files), or a Chroma server (kind chroma), each memory (the
+// memoryStore is where memories are kept: a SQLite database in the config
+// directory (kind "" or sqlite), or a Chroma server (kind chroma), each memory (the
 // user's, a chat's) in a collection of its own, <prefix>-user and
 // <prefix>-chat-<chat>. Chroma needs an embedding model (embed_model).
 // Headers go with every request, ${NAME} read from the secrets each time.
@@ -111,8 +111,8 @@ func (m memoryStore) prefix() string { return cmp.Or(m.Prefix, "ringil") }
 
 func (m memoryStore) check() error {
 	switch {
-	case m.Kind != "" && m.Kind != "files" && m.Kind != "chroma":
-		return errors.New(ErrUsage, "memory_store.kind is files or chroma")
+	case m.Kind != "" && m.Kind != "sqlite" && m.Kind != "chroma":
+		return errors.New(ErrUsage, "memory_store.kind is sqlite or chroma")
 	case m.Kind == "chroma" && m.URL == "":
 		return errors.New(ErrUsage, "memory_store: chroma needs its url")
 	case m.Prefix != "" && !collectionPrefix.MatchString(m.Prefix):
@@ -429,7 +429,7 @@ func (c *cli) withConfig(run func(*orpheus.Context) error) func(*orpheus.Context
 		if err := c.loadConfig(ctx); err != nil {
 			return err
 		}
-		defer c.settings.close() // whatever the command: the audit is flushed
+		defer c.shutdown() // whatever the command: what it opened is closed, the audit flushed
 		return run(ctx)
 	}
 }

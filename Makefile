@@ -7,7 +7,7 @@
 # Variables
 TOOLS_DIR := $(HOME)/go/bin
 # The library and the CLI are separate modules; every check runs on both.
-MODULES := . ./mcp ./a2a ./cmd/ringil
+MODULES := . ./mcp ./a2a ./memory/sqlite ./cmd/ringil
 EACH = for m in $(MODULES); do (cd $$m && $(1)) || exit 1; done
 
 # Colors for output
@@ -100,18 +100,18 @@ fuzz: ## Run every fuzz target (FUZZTIME, default 30s each)
 
 live: ## Run live tests against the endpoint in .env (real calls, may cost)
 	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
-	@set -a && . ./.env && set +a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./...
+	@set -a && . ./.env && set +a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../memory/sqlite && go test -tags live -run '^TestLive' -count=1 -v ./...
 
 NIM_MODEL ?= nvidia/nemotron-3.5-bolt-e4b
 NIM_EMBED ?= nvidia/nemotron-3-embed-1b
 live-nim: ## Run live tests on NVIDIA NIM's free models (NVIDIA_NIM_API_KEY in .env)
-	@set -a && . ./.env && set +a && export RINGIL_BASE_URL=https://integrate.api.nvidia.com/v1 RINGIL_MODEL=$(NIM_MODEL) RINGIL_API_KEY="$$NVIDIA_NIM_API_KEY" RINGIL_EMBED_MODEL=$(NIM_EMBED) RINGIL_EMBED_INPUT_TYPE=1 && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./...
+	@set -a && . ./.env && set +a && export RINGIL_BASE_URL=https://integrate.api.nvidia.com/v1 RINGIL_MODEL=$(NIM_MODEL) RINGIL_API_KEY="$$NVIDIA_NIM_API_KEY" RINGIL_EMBED_MODEL=$(NIM_EMBED) RINGIL_EMBED_INPUT_TYPE=1 && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../memory/sqlite && go test -tags live -run '^TestLive' -count=1 -v ./...
 
 OLLAMA_URL ?= http://127.0.0.1:11434/v1
 OLLAMA_MODEL ?= qwen2.5:3b
 OLLAMA_EMBED ?= mxbai-embed-large
 live-local: ## Run live tests on a local Ollama (no cost, no rate limits); keys from .env for Composio
-	@set -a && . ./.env && set +a && export RINGIL_BASE_URL=$(OLLAMA_URL) RINGIL_MODEL=$(OLLAMA_MODEL) RINGIL_API_KEY= RINGIL_EMBED_MODEL=$(OLLAMA_EMBED) && go test -tags live -run '^TestLive' -count=1 -v -timeout 40m ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./...
+	@set -a && . ./.env && set +a && export RINGIL_BASE_URL=$(OLLAMA_URL) RINGIL_MODEL=$(OLLAMA_MODEL) RINGIL_API_KEY= RINGIL_EMBED_MODEL=$(OLLAMA_EMBED) && go test -tags live -run '^TestLive' -count=1 -v -timeout 40m ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../memory/sqlite && go test -tags live -run '^TestLive' -count=1 -v ./...
 
 chat: ## Chat with the agent using the endpoint in .env
 	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
