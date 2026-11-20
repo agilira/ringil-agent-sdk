@@ -316,3 +316,10 @@ func TestClipKeepsCharacters(t *testing.T) {
 		t.Fatalf("%d bytes, valid %v", len(got), utf8.ValidString(got))
 	}
 }
+
+// busy: the trigger is looking or running.
+func (s *Runner) busy(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running[name]
+}
