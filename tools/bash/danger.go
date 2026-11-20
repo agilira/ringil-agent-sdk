@@ -186,7 +186,7 @@ func unwrap(args []string) []string {
 			if has(args[:1], valued...) && !strings.Contains(args[0], "=") {
 				args = args[1:]
 			}
-			args = args[1:]
+			args = args[min(1, len(args)):]
 		}
 	}
 	return args
@@ -222,7 +222,7 @@ func scriptDanger(base string, args []string, depth int) []string {
 		if base == "watch" && has(args[:1], "-n", "--interval", "-d", "--differences") && !strings.Contains(args[0], "=") {
 			args = args[1:]
 		}
-		args = args[1:]
+		args = args[min(1, len(args)):]
 	}
 	if len(args) == 0 {
 		return nil
@@ -308,7 +308,7 @@ func gitDanger(args []string, depth int) []string {
 		if gitGlobalWithValue[args[0]] {
 			args = args[1:]
 		}
-		args = args[1:]
+		args = args[min(1, len(args)):]
 	}
 	if len(args) == 0 {
 		return nil
