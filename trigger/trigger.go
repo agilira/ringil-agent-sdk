@@ -86,6 +86,8 @@ const (
 	// LookFailed: a Tool or File trigger could not look; it looks again
 	// at its next time.
 	LookFailed EventKind = "look_failed"
+	// Ended: the trigger's period is over; the runner removed it.
+	Ended EventKind = "ended"
 	// Invalid: the trigger cannot be read (its timetable, its zone, its
 	// fields); it does not run until fixed.
 	Invalid EventKind = "invalid"
@@ -274,6 +276,7 @@ func (s *Runner) load(first bool) {
 		return
 	}
 	now := s.cfg.Clock.Now()
+	triggers = s.endPeriods(triggers, now)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	kept := map[string]planned{}
@@ -293,6 +296,28 @@ func (s *Runner) load(first bool) {
 	}
 	s.triggers = kept
 	s.prune(kept)
+}
+
+// endPeriods removes the triggers whose period is over (not while a run
+// of theirs goes) and returns the others.
+func (s *Runner) endPeriods(triggers []Trigger, at time.Time) []Trigger {
+	kept := triggers[:0:0]
+	for _, t := range triggers {
+		s.mu.Lock()
+		busy := s.running[t.Name]
+		s.mu.Unlock()
+		if !t.Ended(at) || busy {
+			kept = append(kept, t)
+			continue
+		}
+		if err := s.cfg.Store.RemoveIf(t.Name, func(now Trigger) bool { return now.Ended(at) }); err != nil {
+			s.cfg.OnEvent(Event{Kind: Invalid, Trigger: t.Name, Err: err})
+			kept = append(kept, t)
+			continue
+		}
+		s.cfg.OnEvent(Event{Kind: Ended, Trigger: t.Name, At: at})
+	}
+	return kept
 }
 
 // own starts a fresh status for a trigger whose Target is not its
@@ -372,7 +397,7 @@ func (s *Runner) due(now time.Time) []dueRun {
 		at := p.next
 		p.next = p.when.Next(now)
 		s.triggers[name] = p
-		if !p.trigger.Paused {
+		if !p.trigger.Paused && p.trigger.Working(at) {
 			out = append(out, dueRun{trigger: p.trigger, at: at})
 		}
 	}
@@ -545,15 +570,14 @@ func (s *Runner) Fire(name, detail string) (err error) {
 			}
 		}()
 	}
-	switch {
-	case ctx == nil:
+	if ctx == nil {
 		return errors.New(ErrStopped, "the triggers are not running")
-	case !ok:
+	}
+	if !ok {
 		return errors.New(ErrNotFound, "no trigger "+name)
-	case p.trigger.kind() != Message && p.trigger.kind() != Webhook:
-		return errors.New(ErrConfig, "trigger "+name+" is set off by its "+string(p.trigger.kind())+", not by the host")
-	case p.trigger.Paused:
-		return errors.New(ErrConfig, "trigger "+name+" is paused")
+	}
+	if err := s.fireable(p.trigger); err != nil {
+		return err
 	}
 	f := Fired{Kind: p.trigger.kind(), At: s.cfg.Clock.Now(), Detail: clipTo(detail, MaxDetail)}
 	started = true
@@ -561,6 +585,19 @@ func (s *Runner) Fire(name, detail string) (err error) {
 		defer s.wg.Done()
 		s.start(ctx, p.trigger, f)
 	}()
+	return nil
+}
+
+// fireable: t is set off by the host, and may be now.
+func (s *Runner) fireable(t Trigger) error {
+	switch {
+	case t.kind() != Message && t.kind() != Webhook:
+		return errors.New(ErrConfig, "trigger "+t.Name+" is set off by its "+string(t.kind())+", not by the host")
+	case t.Paused:
+		return errors.New(ErrConfig, "trigger "+t.Name+" is paused")
+	case !t.Working(s.cfg.Clock.Now()):
+		return errors.New(ErrConfig, "trigger "+t.Name+" is outside its period")
+	}
 	return nil
 }
 

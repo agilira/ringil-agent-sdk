@@ -45,6 +45,7 @@ func (c *cli) startChannels(ctx *orpheus.Context, run context.Context, srv *serv
 	if err != nil {
 		return nil, err
 	}
+	c.bridge.Store(b)
 	stop := background(run, b.Run)
 	if len(cfg.Owners) == 0 {
 		c.note("telegram connected; no owner yet: write to the bot, then restart with --telegram-owners <your ID>")
@@ -118,7 +119,7 @@ func (c *cli) bridgeConfig(ctx *orpheus.Context, res secrets.Resolver) (channel.
 		MemberPhones: splitList(ctx.GetFlagString("telegram-member-phones")), SharedPhones: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-phones.json"),
 		PublicProfile: ctx.GetFlagString("public-profile"), MaxPerHour: ctx.GetFlagInt("max-per-hour"),
 		Transcriber: ear, Synthesizer: mouth, VoiceReplies: replies == "voice", Inbox: c.inboxRoot,
-		Sessions: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-sessions.json"), IdleReset: idle, OnEvent: c.channelEvent,
+		Sessions: filepath.Join(filepath.Dir(c.inboxRoot), "telegram-sessions.json"), IdleReset: idle, OnEvent: c.channelEvent, Automations: c.automationsText,
 		Language: ctx.GetFlagString("language"), NoApprovals: ctx.GetGlobalFlagBool("no-approvals")}, nil
 }
 

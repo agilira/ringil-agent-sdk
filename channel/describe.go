@@ -72,6 +72,9 @@ var knownTools = map[string]asking{
 		}
 		return question{text: sp.t(m, inline(f.text("name")), quote(f.text("description"))), code: f.text("instructions")}
 	}},
+	"delete_trigger": {[]string{"name"}, func(sp speech, f *callFields) question {
+		return question{text: sp.t(mAskDeleteTrigger, inline(f.text("name")))}
+	}},
 	"network_domain": {[]string{"domain"}, func(sp speech, f *callFields) question {
 		return question{text: sp.t(mAskDomain, inline(f.text("domain")))}
 	}},

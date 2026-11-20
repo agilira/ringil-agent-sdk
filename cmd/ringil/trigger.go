@@ -90,26 +90,9 @@ func describeTrigger(t trigger.Trigger, st trigger.Status, now time.Time) string
 	return text
 }
 
-// setOff says what sets a trigger off.
+// setOff says what sets a trigger off, and when it works.
 func setOff(t trigger.Trigger) string {
-	switch t.Kind {
-	case trigger.Tool:
-		return "tool " + t.Tool + " changes (" + or(t.When, "@every 5m") + ")"
-	case trigger.File:
-		return "files change in " + t.Path + " (" + or(t.When, "@every 1m") + ")"
-	case trigger.Message:
-		return "message in " + t.Chat + matching(t.Match)
-	case trigger.Webhook:
-		return "webhook"
-	}
-	return t.When
-}
-
-func matching(words string) string {
-	if words == "" {
-		return ""
-	}
-	return " with \"" + words + "\""
+	return trigger.Describe(t)
 }
 
 // does says what a trigger's run does.
@@ -190,13 +173,17 @@ func triggerFromFlags(ctx *orpheus.Context, name, prompt string) (trigger.Trigge
 		Tool: ctx.GetFlagString("tool"), Path: ctx.GetFlagString("path"),
 		Chat: ctx.GetFlagString("chat"), Match: ctx.GetFlagString("match"),
 		Skill: ctx.GetFlagString("skill"), Prompt: prompt, Profile: ctx.GetFlagString("profile"),
-		Continue: ctx.GetFlagBool("continue"), Timeout: ctx.GetFlagString("timeout"), Allow: splitList(ctx.GetFlagString("allow")), Deliver: ctx.GetFlagString("deliver"),
+		Continue: ctx.GetFlagBool("continue"), Timeout: ctx.GetFlagString("timeout"),
+		From: ctx.GetFlagString("from"), Until: ctx.GetFlagString("until"), Allow: splitList(ctx.GetFlagString("allow")), Deliver: ctx.GetFlagString("deliver"),
 	}
 	if a := ctx.GetFlagString("args"); a != "" {
 		t.Args = json.RawMessage(a)
 	}
 	if t.Kind == trigger.Webhook {
 		t.Secret = rand.Text() + rand.Text()
+	}
+	if t.Ended(time.Now()) {
+		return t, errors.New(ErrUsage, "its period is over already (--until)")
 	}
 	if t.Kind == trigger.File && t.Path != "" {
 		abs, err := filepath.Abs(t.Path)
@@ -289,7 +276,7 @@ func (c *cli) startTriggers(octx *orpheus.Context, ctx context.Context, srv *ser
 	if err != nil {
 		return nil, err
 	}
-	runner, err := trigger.New(trigger.Config{Store: store, Run: triggerRun(srv), Call: c.triggerCall(octx), OnEvent: c.triggerEvent})
+	runner, err := trigger.New(trigger.Config{Store: store, Run: c.triggerRun(srv), Call: c.triggerCall(octx), OnEvent: c.triggerEvent})
 	if err != nil {
 		closeQuietly(store)
 		return nil, err
@@ -314,8 +301,64 @@ func (c *cli) startTriggers(octx *orpheus.Context, ctx context.Context, srv *ser
 // triggerSource labels the runs of a trigger.
 const triggerSource = "trigger:"
 
-// triggerRun starts a trigger's run on the server and waits for it.
-func triggerRun(srv *serve.Server) trigger.Run {
+// triggerRun starts a trigger's run on the server, waits for it, and
+// sends what it answered (or how it failed) where the trigger delivers.
+func (c *cli) triggerRun(srv *serve.Server) trigger.Run {
+	run := startTrigger(srv)
+	return func(ctx context.Context, t trigger.Trigger, f trigger.Fired) (trigger.Outcome, error) {
+		out, err := run(ctx, t, f)
+		switch {
+		case ctx.Err() == context.Canceled:
+			// serve is stopping: nothing went wrong to tell
+		case ctx.Err() == context.DeadlineExceeded:
+			c.deliver(t, out, errors.New(ErrUsage, "stopped: it took longer than its timeout"))
+		default:
+			c.deliver(t, out, err)
+		}
+		return out, err
+	}
+}
+
+// deliver sends a trigger's outcome to the chat it delivers to, when it
+// has one and the bridge runs.
+func (c *cli) deliver(t trigger.Trigger, out trigger.Outcome, err error) {
+	chat, ok := strings.CutPrefix(t.Deliver, "telegram-")
+	if !ok || c.bridge == nil {
+		return
+	}
+	b := c.bridge.Load()
+	if b == nil {
+		return
+	}
+	failure := ""
+	if err != nil {
+		failure = oneLine(err.Error(), 300)
+	}
+	if derr := b.Automated(chat, t.Name, out.Text, failure); derr != nil {
+		c.note("trigger " + clean(t.Name) + ": cannot deliver: " + clean(oneLine(derr.Error(), 300)))
+	}
+}
+
+// automationsText lists the triggers for /automate alone, a line each.
+func (c *cli) automationsText() string {
+	store, err := c.triggerStore()
+	if err != nil {
+		return ""
+	}
+	defer closeQuietly(store)
+	list, err := store.Triggers()
+	if err != nil {
+		return ""
+	}
+	var lines []string
+	for _, t := range list {
+		lines = append(lines, "• "+t.Name+": "+trigger.Describe(t))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// startTrigger starts a trigger's run on the server and waits for it.
+func startTrigger(srv *serve.Server) trigger.Run {
 	return func(ctx context.Context, t trigger.Trigger, f trigger.Fired) (trigger.Outcome, error) {
 		profile := or(t.Profile, "default")
 		conversation := ""
@@ -457,6 +500,8 @@ func (c *cli) triggerEvent(e trigger.Event) {
 		c.note("trigger " + name + " failed (run " + e.Run + "): " + clean(oneLine(e.Err.Error(), 300)))
 	case trigger.Skipped:
 		c.note("trigger " + name + " skipped: its last run is still going")
+	case trigger.Ended:
+		c.note("trigger " + name + " ended: its period is over, it was removed")
 	case trigger.LookFailed:
 		c.note("trigger " + name + " could not look: " + clean(oneLine(e.Err.Error(), 300)))
 	case trigger.Invalid:

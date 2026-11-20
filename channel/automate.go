@@ -43,7 +43,13 @@ func (b *Bridge) automate(ctx context.Context, m Message, r role, text string) b
 	case r != owner || m.Group:
 		b.say(ctx, m.Chat, b.tr(m.Chat, mAutomateOwner))
 	case what == "":
-		b.say(ctx, m.Chat, b.tr(m.Chat, mAutomateHelp))
+		text := b.tr(m.Chat, mAutomateHelp)
+		if b.cfg.Automations != nil {
+			if list := b.cfg.Automations(); list != "" {
+				text += "\n\n" + b.tr(m.Chat, mAutomations) + "\n" + list
+			}
+		}
+		b.say(ctx, m.Chat, text)
 	default:
 		m.Text = "Make this automation: " + what
 		b.startFrom(ctx, m, r, Automate)

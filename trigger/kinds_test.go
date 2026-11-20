@@ -247,3 +247,50 @@ func TestANewTargetStartsAfresh(t *testing.T) {
 		t.Fatal("the old trigger's status kept")
 	}
 }
+
+func TestPeriod(t *testing.T) {
+	tr := Trigger{Name: "dec", When: "@daily", Prompt: "x", TimeZone: "Europe/Rome", From: "2026-12-01", Until: "2026-12-31"}
+	if _, err := tr.Check(); err != nil {
+		t.Fatal(err)
+	}
+	rome, _ := time.LoadLocation("Europe/Rome")
+	for at, want := range map[time.Time]bool{
+		time.Date(2026, 11, 30, 23, 59, 0, 0, rome): false,
+		time.Date(2026, 12, 1, 0, 0, 0, 0, rome):    true,
+		time.Date(2026, 12, 31, 23, 59, 0, 0, rome): true, // the whole last day
+		time.Date(2027, 1, 1, 0, 0, 0, 0, rome):     false,
+	} {
+		if tr.Working(at) != want {
+			t.Errorf("%v: %v", at, !want)
+		}
+	}
+	if !tr.Ended(time.Date(2027, 1, 1, 0, 0, 0, 0, rome)) || tr.Ended(time.Date(2026, 12, 31, 12, 0, 0, 0, rome)) {
+		t.Fatal("ended")
+	}
+	for _, bad := range []Trigger{
+		{Name: "a", When: "@daily", Prompt: "x", From: "1 december"},
+		{Name: "a", When: "@daily", Prompt: "x", From: "2026-12-31", Until: "2026-12-01"},
+	} {
+		if _, err := bad.Check(); err == nil {
+			t.Errorf("%+v accepted", bad)
+		}
+	}
+}
+
+func TestAnEndedTriggerIsRemoved(t *testing.T) {
+	store, clock, rec := harness(t,
+		Trigger{Name: "past", When: "@every 10m", Prompt: "x", Until: "2026-11-01"},
+		Trigger{Name: "later", When: "@every 10m", Prompt: "x", From: "2027-01-01"},
+		trigger("now", "@every 10m"))
+	launch(t, store, clock, rec)
+	list, _ := store.Triggers()
+	if len(list) != 2 || rec.kinds("past", Ended) != 1 {
+		t.Fatalf("%+v", list)
+	}
+	clock.advance(10 * time.Minute)
+	clock.settle(t)
+	eventually(t, "the working one", func() bool { return rec.kinds("now", Finished) == 1 })
+	if rec.kinds("later", Started) != 0 {
+		t.Fatal("ran before its period")
+	}
+}

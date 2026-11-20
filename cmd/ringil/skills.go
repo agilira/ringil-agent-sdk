@@ -356,8 +356,8 @@ func (c *cli) showTrigger(call agent.ToolCall) {
 // replacesSkill: a create_skill call that would replace a skill, which a
 // trigger's run may not do, allowed or not: no one sees what goes.
 func replacesSkill(call agent.ToolCall) bool {
-	if call.Name == "create_trigger" {
-		return true // nor make triggers: it would widen itself, unseen
+	if call.Name == "create_trigger" || call.Name == "delete_trigger" {
+		return true // nor make or delete triggers: no one sees it
 	}
 	if call.Name != "create_skill" {
 		return false
