@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -65,9 +66,9 @@ func (p profile) from(dir string) profile {
 }
 
 // rooted: path does not hang from a directory given (on Windows also
-// \dir\x and C:x, which IsAbs calls relative).
+// \dir\x, /dir/x and C:x, which IsAbs calls relative).
 func rooted(path string) bool {
-	return filepath.IsAbs(path) || filepath.VolumeName(path) != "" || strings.HasPrefix(path, string(filepath.Separator))
+	return filepath.IsAbs(path) || filepath.VolumeName(path) != "" || (path != "" && os.IsPathSeparator(path[0]))
 }
 
 func (p profile) check(name string) error {
