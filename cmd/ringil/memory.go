@@ -6,6 +6,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -15,8 +17,10 @@ import (
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/channel"
+	"github.com/agilira/ringil-agent-sdk/memory/chroma"
 	"github.com/agilira/ringil-agent-sdk/memory/local"
 	"github.com/agilira/ringil-agent-sdk/memory/vector"
+	"github.com/agilira/ringil-agent-sdk/provider/ollama"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 )
 
@@ -37,13 +41,45 @@ func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 		return nil, nil
 	}
 	emb, err := c.embedder(ctx)
-	if err != nil || emb == nil {
-		if err != nil {
-			return nil, err
-		}
+	if err != nil {
+		return nil, err
+	}
+	if store := c.conf().Memory; store.Kind == "chroma" {
+		return c.chromaMemory(ctx, store, emb)
+	}
+	if emb == nil {
 		return local.New(dir)
 	}
 	return vector.New(dir, emb)
+}
+
+// chatCollection is a chat's collection: <prefix>-chat-<chat>, or, for a
+// chat whose name Chroma would refuse (ending in - or _, holding ..), the
+// same with a hash of it.
+func chatCollection(prefix, chat string) string {
+	if name := prefix + "-chat-" + chat; chroma.ValidCollection(name) {
+		return name
+	}
+	sum := sha256.Sum256([]byte(chat))
+	return prefix + "-chat-" + hex.EncodeToString(sum[:8])
+}
+
+// chromaMemory is the memory memoryDir chose (the user's, or a chat's) in
+// a Chroma collection of its own.
+func (c *cli) chromaMemory(ctx *orpheus.Context, store memoryStore, emb agent.Embedder) (agent.Memory, error) {
+	if emb == nil {
+		return nil, errors.New(ErrUsage, "memory_store chroma finds memories by meaning: set embed_model")
+	}
+	res, err := c.resolver(ctx)
+	if err != nil {
+		return nil, err
+	}
+	name := store.prefix() + "-user"
+	if c.role != nil && c.role.Memory == "chat" { // memoryDir made sure of the chat
+		name = chatCollection(store.prefix(), channel.ChatOf(c.runConversation))
+	}
+	return chroma.New(ctx.Context(), chroma.Config{URL: store.URL, Tenant: store.Tenant, Database: store.Database,
+		Collection: name, Embedder: emb, Headers: headerFunc(store.Headers, res), AllowHTTP: c.flagBool(ctx, "allow-http")})
 }
 
 // memoryDir is where the role remembers: the user's memory, or a chat's
@@ -59,10 +95,14 @@ func (c *cli) memoryDir(user string) (string, bool) {
 	return filepath.Join(user, "chats", chat), true
 }
 
-// embedder is the embedding model on the same endpoint and key as the
-// chat model (the role's, under a role with its own base), or nil when
-// none is set.
+// embedder is the embedder of ringil.yaml when it names one (ollama),
+// else the embedding model on the same endpoint and key as the chat model
+// (the role's, under a role with its own base), or nil when none is set.
 func (c *cli) embedder(ctx *orpheus.Context) (agent.Embedder, error) {
+	if e := c.conf().Embedder; e.Kind == "ollama" {
+		return ollama.NewEmbedder(ollama.Config{URL: e.URL, Model: e.Model, QueryPrefix: e.QueryPrefix,
+			DocumentPrefix: e.DocumentPrefix, Dimensions: e.Dimensions, AllowHTTP: c.flagBool(ctx, "allow-http")})
+	}
 	res, err := c.resolver(ctx)
 	if err != nil {
 		return nil, err

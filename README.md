@@ -181,18 +181,36 @@ Con un `agent.Embedder` la memoria trova anche per significato: `memory/vector` 
 stesso archivio di `memory/local` e ci affianca i vettori; la ricerca fonde parole
 (BM25) e significato (coseno) per rango reciproco. Se gli embedding non rispondono, la
 memoria continua per parole e lo segnala. `openai.NewEmbedder` parla con qualunque
-endpoint `/embeddings` compatibile; un vector store esterno è un'altra implementazione
-di `agent.Memory`.
+endpoint `/embeddings` compatibile.
 
 ```go
 emb, err := openai.NewEmbedder(openai.Config{BaseURL: base, Model: "openai/text-embedding-3-small", KeyFunc: key})
 mem, err := vector.New(dir, emb)
 ```
 
+`provider/ollama` è un `Embedder` sull'API propria di Ollama (`/api/embed`): embedding
+in locale, senza chiave; `QueryPrefix` e `DocumentPrefix` per i modelli asimmetrici
+(nomic-embed-text, qwen3-embedding), `Dimensions` per quelli che si accorciano. In
+`ringil.yaml`: `embedder` con `kind: ollama`.
+
+`memory/chroma` tiene la memoria in un server Chroma (API v2, Chroma 1.x): una
+collezione per persona (o per chat), vettori fatti dal nostro `Embedder` e mai dal server,
+il modello scritto nella collezione (una collezione di un altro modello è rifiutata).
+La ricerca fonde significato e parole come `memory/vector`; con gli embedding giù va
+per parole e lo segnala. Solo https, o http verso il loopback; le credenziali
+(`Headers`) vanno a ogni richiesta e mai a un'altra origine.
+
+```go
+mem, err := chroma.New(ctx, chroma.Config{URL: "http://127.0.0.1:8000", Collection: "acme-antonio", Embedder: emb})
+```
+
 A ogni domanda i ricordi pertinenti entrano nel contesto di quel turno, delimitati e
 marcati come dati, mai nella conversazione salvata. Nella CLI la memoria è attiva di
 default (`--no-memory` per toglierla), per significato con `--embed-model` o
-`RINGIL_EMBED_MODEL`; `ringil memory`, `memory search`, `memory rm`.
+`RINGIL_EMBED_MODEL`; `ringil memory`, `memory search`, `memory rm`. In `ringil.yaml`,
+`memory_store` (kind `chroma`, `url`, `collection_prefix`, `headers` con `${NOME}`)
+la sposta su Chroma: `<prefisso>-user` per l'utente, `<prefisso>-chat-<chat>` per i
+profili con memoria per chat.
 
 ## Delega ai sub-agenti
 

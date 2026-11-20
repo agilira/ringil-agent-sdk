@@ -7,6 +7,10 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,8 +20,11 @@ import (
 
 	"github.com/agilira/argus"
 	"github.com/agilira/orpheus/pkg/orpheus"
+	agent "github.com/agilira/ringil-agent-sdk"
 
+	"github.com/agilira/ringil-agent-sdk/memory/chroma"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
+	"github.com/agilira/ringil-agent-sdk/provider/openai"
 )
 
 const fullConfig = `
@@ -580,4 +587,104 @@ func TestTheInstructionsFlag(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestMemoryStoreChecked(t *testing.T) {
+	for _, m := range []memoryStore{{Kind: "redis"}, {Kind: "chroma"}, {Kind: "chroma", URL: "http://x", Prefix: "-bad"}} {
+		if err := (&config{Memory: m}).Validate(); err == nil {
+			t.Errorf("accepted %+v", m)
+		}
+	}
+	if err := (&config{Memory: memoryStore{Kind: "chroma", URL: "http://127.0.0.1:8000", Prefix: "acme.it"}}).Validate(); err != nil {
+		t.Errorf("a good store: %v", err)
+	}
+}
+
+// Each memory in a collection of its own: the user's, and a chat's.
+func TestChromaCollections(t *testing.T) {
+	var names []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name     string         `json:"name"`
+			Metadata map[string]any `json:"metadata"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		names = append(names, body.Name)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "00000000-0000-4000-8000-000000000001", "metadata": body.Metadata,
+			"configuration_json": map[string]any{"hnsw": map[string]any{"space": "cosine"}}})
+	}))
+	defer srv.Close()
+	h := newHarness(t, "")
+	h.c.newEmbedder = func(cfg openai.Config) (agent.Embedder, error) { return fakeEmbedder{cfg.Model}, nil }
+	writeConfig(t, h.dir, "embed_model: emb\nmemory_store:\n  kind: chroma\n  url: "+srv.URL+"\n  collection_prefix: acme\n")
+	loaded(t, h.c, nil, func(ctx *orpheus.Context) error {
+		if _, err := h.c.memory(ctx); err != nil {
+			t.Fatal(err)
+		}
+		r := h.c.forRun()
+		r.settings = h.c.settings
+		r.role, r.runConversation = &profile{Memory: "chat"}, "telegram-42_3"
+		if _, err := r.memory(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return nil
+	})
+	if strings.Join(names, " ") != "acme-user acme-chat-telegram-42" {
+		t.Fatalf("collections %v", names)
+	}
+}
+
+func TestChromaNeedsAnEmbedder(t *testing.T) {
+	h := newHarness(t, "")
+	writeConfig(t, h.dir, "memory_store:\n  kind: chroma\n  url: http://127.0.0.1:1\n")
+	loaded(t, h.c, nil, func(ctx *orpheus.Context) error {
+		if _, err := h.c.memory(ctx); err == nil || !strings.Contains(err.Error(), "embed_model") {
+			t.Errorf("chroma without an embedder: %v", err)
+		}
+		return nil
+	})
+}
+
+type fakeEmbedder struct{ model string }
+
+func (e fakeEmbedder) Model() string { return e.model }
+
+func (e fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = []float32{1, 0}
+	}
+	return out, nil
+}
+
+func TestOllamaEmbedder(t *testing.T) {
+	for _, e := range []embedderConfig{{Kind: "cohere"}, {Kind: "ollama"}, {Kind: "ollama", Model: "m", Dimensions: -1}} {
+		if err := (&config{Embedder: e}).Validate(); err == nil {
+			t.Errorf("accepted %+v", e)
+		}
+	}
+	h := newHarness(t, "")
+	writeConfig(t, h.dir, "embedder:\n  kind: ollama\n  model: qwen3-embedding:0.6b\n  document_prefix: \"doc: \"\n")
+	loaded(t, h.c, nil, func(ctx *orpheus.Context) error {
+		e, err := h.c.embedder(ctx)
+		if err != nil || e == nil || e.Model() != "qwen3-embedding:0.6b#doc: " {
+			t.Fatalf("%v %v", e, err)
+		}
+		return nil
+	})
+}
+
+// Audit 20/11: a chat whose name Chroma would refuse still has a collection.
+func TestChatCollectionNames(t *testing.T) {
+	if got := chatCollection("acme", "telegram-42"); got != "acme-chat-telegram-42" {
+		t.Errorf("%q", got)
+	}
+	for _, chat := range []string{"support-", "team_x_", "a..b"} {
+		if got := chatCollection("acme", chat); !chroma.ValidCollection(got) || !strings.HasPrefix(got, "acme-chat-") {
+			t.Errorf("%s: %q", chat, got)
+		}
+	}
+	if chatCollection("acme", "support-") == chatCollection("acme", "support_") {
+		t.Error("two chats share a collection")
+	}
 }

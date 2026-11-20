@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -38,6 +39,28 @@ type Memory interface {
 	Put(ctx context.Context, rec MemoryRecord) (MemoryRecord, error)
 	// Delete removes a record.
 	Delete(ctx context.Context, id string) error
+}
+
+// MaxMemoryContent bounds one record: a memory is a fact, not a document.
+const MaxMemoryContent = 32 << 10
+
+var validMemoryID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// CheckMemoryRecord is what every Memory accepts in Put: text of at most
+// MaxMemoryContent, trimmed by the caller, and an ID of 1-64 letters,
+// digits, _ or - when one is given. Its errors are for the model to read.
+func CheckMemoryRecord(rec MemoryRecord) error {
+	switch {
+	case rec.Content == "":
+		return ToolError(ErrMemoryInput, "A memory needs content.")
+	case len(rec.Content) > MaxMemoryContent:
+		return ToolError(ErrMemoryInput, "A memory is one fact: keep it under 32 KiB.")
+	case !utf8.ValidString(rec.Content) || strings.ContainsRune(rec.Content, 0):
+		return ToolError(ErrMemoryInput, "A memory must be text.")
+	case rec.ID != "" && !validMemoryID.MatchString(rec.ID):
+		return ToolError(ErrMemoryInput, "Memory IDs are 1-64 letters, digits, _ or -.")
+	}
+	return nil
 }
 
 // Memory error codes.

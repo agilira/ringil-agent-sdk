@@ -10,11 +10,12 @@ import (
 	"testing"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/memory/internal/embedgate"
 )
 
 // Finding 1: one record too long for the model disabled meaning search.
 func TestLongRecordIsClipped(t *testing.T) {
-	e := &conceptEmbedder{model: "m", maxLen: maxEmbedChars}
+	e := &conceptEmbedder{model: "m", maxLen: embedgate.MaxChars}
 	m, _ := newMemory(t, e)
 	put(t, m, "Fattura 42 da pagare "+strings.Repeat("dettagli ", 3000))
 	put(t, m, "Riunione con Acme martedì")
@@ -69,7 +70,7 @@ func TestStaleVectorAfterUpsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.fail = false
-	m.(*store).resting = m.(*store).resting.AddDate(-1, 0, 0)
+	m.(*store).gate.Wake()
 	if got, err := m.Search(bg, "cat", 1); err != nil || len(got) != 0 {
 		t.Fatalf("stale vector used: %v %v", got, err)
 	}
@@ -101,7 +102,7 @@ func TestOrphanVectorsArePruned(t *testing.T) {
 	e.fail = true
 	put(t, m, "Il gatto Lira")
 	e.fail = false
-	s.resting = s.resting.AddDate(-1, 0, 0)
+	s.gate.Wake()
 	if _, err := m.Search(bg, "meeting", 1); err != nil {
 		t.Fatal(err)
 	}

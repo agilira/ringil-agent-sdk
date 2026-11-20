@@ -35,6 +35,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/internal/atomicfile"
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
+	"github.com/agilira/ringil-agent-sdk/memory/internal/embedgate"
 	"github.com/agilira/ringil-agent-sdk/memory/local"
 )
 
@@ -42,16 +43,12 @@ const (
 	vectorFile = "vectors.json"
 	vectorLock = "vectors.lock"
 	maxVectors = 2 << 30
-	rrfK       = 60 // the usual constant of reciprocal rank fusion
 	allRecords = 1 << 30
 	batchSize  = 32
-	// maxEmbedChars keeps a text within what embedding models accept
-	// (about 8k tokens); the start of a long memory carries its meaning.
-	maxEmbedChars = 8000
 	// DefaultMinSimilarity was measured with text-embedding-3-small:
 	// related pairs scored 0.31-0.40, small talk 0.24-0.27.
 	DefaultMinSimilarity = 0.30
-	pause                = time.Minute
+	pause                = embedgate.Pause
 )
 
 // Option configures the memory.
@@ -67,9 +64,9 @@ type store struct {
 	emb    agent.Embedder
 	minSim float64
 
+	gate     *embedgate.Gate
 	mu       sync.Mutex
-	cache    *cached   // decoded vectors of the file last read
-	resting  time.Time // no embedding calls before this, after a failure
+	cache    *cached // decoded vectors of the file last read
 	failures map[string]time.Time
 }
 
@@ -89,7 +86,7 @@ func New(dir string, emb agent.Embedder, opts ...Option) (agent.Memory, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &store{dir: dir, words: words, emb: emb, minSim: DefaultMinSimilarity, failures: map[string]time.Time{}}
+	s := &store{dir: dir, words: words, emb: emb, gate: embedgate.New(emb), minSim: DefaultMinSimilarity, failures: map[string]time.Time{}}
 	for _, o := range opts {
 		o(s)
 	}
@@ -152,7 +149,7 @@ func (s *store) Search(ctx context.Context, query string, limit int) ([]agent.Me
 	if err != nil {
 		return trim(byWords, limit), errors.Wrap(err, agent.ErrMemoryPartial, "found by words only: "+err.Error())
 	}
-	return fuse(byWords, byMeaning, limit), nil
+	return local.Fuse(byWords, byMeaning, limit), nil
 }
 
 // byMeaning ranks the records by cosine similarity to the query, keeping
@@ -194,44 +191,9 @@ func rankByMeaning(all []agent.MemoryRecord, have map[string][]float32, q []floa
 	return out
 }
 
-// embed calls the embedder unless it failed recently; a failure starts a
-// pause, so a broken or misnamed model costs one call a minute, not one
-// per turn. A query goes through EmbedQuery when the model is asymmetric.
+// embed calls the embedder through the gate.
 func (s *store) embed(ctx context.Context, texts []string, query bool) ([][]float32, bool) {
-	s.mu.Lock()
-	resting := time.Now().Before(s.resting)
-	s.mu.Unlock()
-	if resting {
-		return nil, false
-	}
-	clipped := make([]string, len(texts))
-	for i, t := range texts {
-		clipped[i] = clip(t, maxEmbedChars)
-	}
-	embed := s.emb.Embed
-	if qe, ok := s.emb.(agent.QueryEmbedder); ok && query {
-		embed = qe.EmbedQuery
-	}
-	vecs, err := embed(ctx, clipped)
-	if err != nil {
-		if ctx.Err() == nil {
-			s.mu.Lock()
-			s.resting = time.Now().Add(pause)
-			s.mu.Unlock()
-		}
-		return nil, false
-	}
-	return vecs, true
-}
-
-func clip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && s[n]&0xC0 == 0x80 {
-		n--
-	}
-	return s[:n]
+	return s.gate.Embed(ctx, texts, query)
 }
 
 // complete returns a usable vector for every record it can, embedding the
@@ -345,27 +307,6 @@ func idSet(all []agent.MemoryRecord) map[string]bool {
 
 // fuse combines two rankings by reciprocal rank: each record scores
 // 1/(k+rank) in each list it appears in.
-func fuse(a, b []agent.MemoryRecord, limit int) []agent.MemoryRecord {
-	score := map[string]float64{}
-	recs := map[string]agent.MemoryRecord{}
-	var order []string
-	for _, list := range [][]agent.MemoryRecord{a, b} {
-		for rank, r := range list {
-			if _, seen := recs[r.ID]; !seen {
-				recs[r.ID] = r
-				order = append(order, r.ID)
-			}
-			score[r.ID] += 1 / float64(rrfK+rank+1)
-		}
-	}
-	sort.SliceStable(order, func(i, j int) bool { return score[order[i]] > score[order[j]] })
-	out := make([]agent.MemoryRecord, 0, min(limit, len(order)))
-	for _, id := range order[:min(limit, len(order))] {
-		out = append(out, recs[id])
-	}
-	return out
-}
-
 func trim(recs []agent.MemoryRecord, n int) []agent.MemoryRecord {
 	return recs[:min(n, len(recs))]
 }
