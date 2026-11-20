@@ -22,7 +22,9 @@ func TestSecurityDarwinQuoteAndProfileEscaping(t *testing.T) {
 		real:  tricky,
 		dir:   true,
 	}}, "/tmp/t", "")
-	if strings.Contains(prof, "\n(allow default)") || strings.Contains(prof, ") (allow default)") {
+	// The path stays one string: quoted whole, its quote escaped, never
+	// closed early (dir") would end the string and open a rule).
+	if !strings.Contains(prof, "(subpath "+quote(tricky)+")") || strings.Contains(prof, `dir")`) {
 		t.Fatalf("injected Seatbelt rule appeared unescaped in profile:\n%s", prof)
 	}
 }

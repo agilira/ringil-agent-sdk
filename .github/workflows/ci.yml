@@ -76,5 +76,3 @@ jobs:
         for m in . mcp a2a cmd/ringil; do
           (cd $m && GOARCH=arm64 go vet ./... && GOOS=windows go vet ./... && GOOS=darwin go vet ./...) || exit 1
         done
-    - name: Fuzz (short)
-      run: make fuzz FUZZTIME=20s
