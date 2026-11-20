@@ -91,10 +91,10 @@ func (b *Bridge) drain(ctx context.Context, chatID string, box *outbox) {
 }
 
 func (b *Bridge) failed(chatID string, o outgoing, err error) {
-	b.report(Event{Kind: SendFailed, Chat: chatID, Err: err})
 	if o.failed != nil {
-		o.failed()
+		o.failed() // first: whoever hears of the failure finds it settled
 	}
+	b.report(Event{Kind: SendFailed, Chat: chatID, Err: err})
 }
 
 // deliver sends out: as voice when it has some and the channel can,
