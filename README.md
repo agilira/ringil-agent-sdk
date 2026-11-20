@@ -177,15 +177,19 @@ a, err := agent.New(agent.Config{Provider: p, Tools: tools, Memory: mem})
 tools, err = tools.With(memory.Tools(mem)...)      // remember, recall, forget per il modello
 ```
 
-Con un `agent.Embedder` la memoria trova anche per significato: `memory/vector` usa lo
-stesso archivio di `memory/local` e ci affianca i vettori; la ricerca fonde parole
-(BM25) e significato (coseno) per rango reciproco. Se gli embedding non rispondono, la
-memoria continua per parole e lo segnala. `openai.NewEmbedder` parla con qualunque
-endpoint `/embeddings` compatibile.
+`memory/local` è un file JSON, senza dipendenze: va bene per qualche migliaio di
+ricordi (a ogni salvataggio riscrive tutto). Oltre, e per trovare anche per significato,
+`memory/sqlite` (modulo a parte, SQLite in Go puro, senza cgo): un database per memoria,
+parole cercate con l'indice FTS5 di SQLite (BM25), vettori di un `agent.Embedder` nella
+stessa base; la ricerca fonde parole e significato per rango reciproco, e con gli
+embedding giù continua per parole e lo segnala. Più processi sullo stesso database
+vanno bene. Misurato a 50.000 ricordi: salvare 0,4 ms, cercare 4 ms per parole e 29 ms
+con il significato (contro 40 ms e 56 ms del file già a 10.000).
 
 ```go
 emb, err := openai.NewEmbedder(openai.Config{BaseURL: base, Model: "openai/text-embedding-3-small", KeyFunc: key})
-mem, err := vector.New(dir, emb)
+mem, err := sqlite.New(dir, emb) // emb nil: solo parole
+defer mem.Close()
 ```
 
 `provider/ollama` è un `Embedder` sull'API propria di Ollama (`/api/embed`): embedding
@@ -196,7 +200,7 @@ in locale, senza chiave; `QueryPrefix` e `DocumentPrefix` per i modelli asimmetr
 `memory/chroma` tiene la memoria in un server Chroma (API v2, Chroma 1.x): una
 collezione per persona (o per chat), vettori fatti dal nostro `Embedder` e mai dal server,
 il modello scritto nella collezione (una collezione di un altro modello è rifiutata).
-La ricerca fonde significato e parole come `memory/vector`; con gli embedding giù va
+La ricerca fonde significato e parole come `memory/sqlite`; con gli embedding giù va
 per parole e lo segnala. Solo https, o http verso il loopback; le credenziali
 (`Headers`) vanno a ogni richiesta e mai a un'altra origine.
 

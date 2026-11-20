@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/agilira/go-errors"
 )
 
@@ -40,6 +42,13 @@ type Memory interface {
 	// Delete removes a record.
 	Delete(ctx context.Context, id string) error
 }
+
+// MemoryText is how every Memory keeps a record's text and reads a
+// question: trimmed, and in Unicode's composed form (NFC), so that "é"
+// written as one character or as "e" and an accent is one letter, and a
+// word typed one way finds the word stored the other (macOS, PDFs, Korean
+// keyboards write the second).
+func MemoryText(s string) string { return norm.NFC.String(strings.TrimSpace(s)) }
 
 // MaxMemoryContent bounds one record: a memory is a fact, not a document.
 const MaxMemoryContent = 32 << 10

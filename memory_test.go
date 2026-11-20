@@ -134,3 +134,11 @@ func TestRecallIsBounded(t *testing.T) {
 		t.Fatalf("recall block of %d bytes", n)
 	}
 }
+
+func TestMemoryTextIsComposed(t *testing.T) {
+	for in, want := range map[string]string{"  perché ": "perché", "perché": "perché", "가": "가", "": ""} {
+		if got := agent.MemoryText(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+}

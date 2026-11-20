@@ -194,3 +194,19 @@ func TestTokens(t *testing.T) {
 		t.Fatalf("tokens %s", got)
 	}
 }
+
+// An accent written as one character finds it written as two, and back.
+func TestEitherFormOfAnAccent(t *testing.T) {
+	m, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Put(t.Context(), agent.MemoryRecord{Content: "non so perché"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"perché", "perché"} {
+		if got, _ := m.Search(t.Context(), q, 3); len(got) != 1 {
+			t.Errorf("%q: %v", q, got)
+		}
+	}
+}

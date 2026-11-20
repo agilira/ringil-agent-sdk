@@ -340,3 +340,17 @@ func TestRecentPastAPage(t *testing.T) {
 		t.Fatalf("%q %v", contents(got), err)
 	}
 }
+
+// An accent written as one character finds it written as two, and back.
+func TestEitherFormOfAnAccent(t *testing.T) {
+	url, _ := target(t)
+	emb := &conceptEmbedder{model: "concepts"}
+	m := open(t, url, collectionName(t, url, "nfc"), emb)
+	put(t, m, "non so perché")
+	emb.fail.Store(true) // by words
+	for _, q := range []string{"perché", "perché"} {
+		if got, _ := m.Search(t.Context(), q, 3); len(got) != 1 {
+			t.Errorf("%q: %q", q, contents(got))
+		}
+	}
+}
