@@ -103,6 +103,7 @@ type rig struct {
 	model  fake.Script
 	ran    atomic.Bool
 	events chan Event
+	bridge *Bridge
 }
 
 // newRig starts a bridge on a server whose agent follows steps; its
@@ -146,6 +147,7 @@ func rigWith(t *testing.T, bc Config, store bool, steps ...fake.Step) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.bridge = b
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); _ = b.Run(ctx) }()

@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	agent "github.com/agilira/ringil-agent-sdk"
 )
@@ -76,5 +78,85 @@ func onlyTools(names ...string) func(context.Context, Trigger) error {
 			}
 		}
 		return nil
+	}
+}
+
+func TestListAndDelete(t *testing.T) {
+	dir := t.TempDir()
+	open := func() (*Store, error) { return OpenStore(dir) }
+	list, del := ListTool(open), DeleteTool(open, nil)
+	if !list.Spec().Annotations.ReadOnly || !del.Spec().Annotations.Destructive || !strings.Contains(listOne(t, dir), "No automations") {
+		t.Fatal("annotations")
+	}
+	store, _ := OpenStore(dir)
+	if err := store.Put(Trigger{Name: "dec", When: "@daily", Prompt: "send the coupon", From: "2026-12-01", Until: "2026-12-31", Allow: []string{"send_mail"}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Close()
+	got, _ := run(list, `{}`)
+	for _, want := range []string{"dec: on @daily, from 2026-12-01, until 2026-12-31", "does: send the coupon", "may use unasked: send_mail"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %q", want, got)
+		}
+	}
+}
+
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := OpenStore(dir)
+	if err := store.Put(Trigger{Name: "dec", When: "@daily", Prompt: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Close()
+	del := DeleteTool(func() (*Store, error) { return OpenStore(dir) }, nil)
+	if _, err := run(del, `{"name":"dec"}`); err != nil {
+		t.Fatal(err)
+	}
+	if got := listOne(t, dir); got != "No automations." {
+		t.Fatalf("%q", got)
+	}
+	if _, err := run(del, `{"name":"dec"}`); err == nil {
+		t.Fatal("deleted twice")
+	}
+}
+
+func run(tool agent.Tool, in string) (string, error) {
+	reg, _ := agent.NewRegistry(tool)
+	res, err := reg.Execute(context.Background(), agent.ToolCall{ID: "1", Name: tool.Spec().Name, Input: json.RawMessage(in)})
+	return res.Content, err
+}
+
+func listOne(t *testing.T, dir string) string {
+	t.Helper()
+	got, err := run(ListTool(func() (*Store, error) { return OpenStore(dir) }), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestAPastPeriodIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	tool := CreateTool(func() (*Store, error) { return OpenStore(dir) }, ToolOptions{})
+	if _, err := callCreate(t, tool, `{"name":"old","kind":"time","when":"@daily","prompt":"x","until":"2020-01-01"}`); err == nil {
+		t.Fatal("made a trigger whose period is over")
+	}
+}
+
+func TestRemoveIfJudgesTheStoredVersion(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.Put(Trigger{Name: "dec", When: "@daily", Prompt: "x", Until: "2027-12-31"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2027, 1, 1, 0, 0, 0, 0, time.Local)
+	if err := store.RemoveIf("dec", func(t Trigger) bool { return t.Ended(now) }); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := store.Triggers(); len(list) != 1 {
+		t.Fatal("removed a trigger extended meanwhile")
 	}
 }

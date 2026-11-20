@@ -82,6 +82,9 @@ type Config struct {
 	// silence this long (the chat is told): default DefaultIdleReset (24
 	// hours), negative never. /new starts one at any time.
 	IdleReset time.Duration
+	// Automations, when set, lists the host's automations, shown by
+	// /automate alone; "" when there are none.
+	Automations func() string
 	// NoApprovals allows, without asking, the tool calls of the runs an
 	// owner starts; the others are still refused. In the chat, "Yes,
 	// always" allows the same again for the rest of the conversation: the
@@ -158,6 +161,7 @@ type Bridge struct {
 	reconciled map[string]bool   // chats whose number was checked against the server
 	saving     sync.Mutex        // one write of the sessions file at a time
 	spoken     map[string]speech // the languages spoken, by code
+	running    context.Context   // Run's, while it runs (Notify); under mu
 	langMu     sync.Mutex
 	langs      map[string]string // the language of each chat's last sender, by chat ID; under langMu
 	now        func() time.Time
@@ -254,6 +258,14 @@ func checkMembers(cfg Config, members map[string]bool) (map[string]bool, error) 
 // are sent apart from receiving: a slow chat never holds up the others.
 func (b *Bridge) Run(ctx context.Context) error {
 	defer b.wg.Wait()
+	b.mu.Lock()
+	b.running = ctx
+	b.mu.Unlock()
+	defer func() { // before the wait: no Notify adds to it after
+		b.mu.Lock()
+		b.running = nil
+		b.mu.Unlock()
+	}()
 	var wait time.Duration
 	for {
 		m, err := b.cfg.Channel.Receive(ctx)
@@ -540,4 +552,29 @@ func (b *Bridge) report(e Event) {
 	if b.cfg.OnEvent != nil {
 		b.cfg.OnEvent(e)
 	}
+}
+
+// ErrStopped: the Bridge is not running (Notify).
+const ErrStopped errors.ErrorCode = "CHANNEL_STOPPED"
+
+// Notify sends out to a chat on the host's behalf (what an automation
+// found), in order with the chat's replies, while Run runs.
+func (b *Bridge) Notify(chatID string, out Out) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.running == nil {
+		return errors.New(ErrStopped, "the bridge is not running")
+	}
+	b.queue(b.running, chatID, outgoing{out: out})
+	return nil
+}
+
+// Automated sends a chat what a run of the automation name answered, or,
+// when failure is not empty, that it failed and why, under a line in the
+// chat's language naming it.
+func (b *Bridge) Automated(chatID, name, answer, failure string) error {
+	if failure != "" {
+		return b.Notify(chatID, Out{Text: b.tr(chatID, mAutomationFailed, name, failure)})
+	}
+	return b.Notify(chatID, Out{Text: b.tr(chatID, mAutomationSays, name) + "\n\n" + answer, Markdown: true})
 }

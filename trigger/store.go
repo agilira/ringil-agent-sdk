@@ -126,6 +126,22 @@ func (s *Store) Put(trigger Trigger) error {
 	})
 }
 
+// RemoveIf deletes a trigger if, as the store holds it now, ok says so:
+// a change made meanwhile is judged, not the version read before.
+func (s *Store) RemoveIf(name string, ok func(Trigger) bool) error {
+	return s.editTriggers(func(triggers []Trigger) ([]Trigger, error) {
+		for i := range triggers {
+			if triggers[i].Name == name {
+				if !ok(triggers[i]) {
+					return triggers, nil
+				}
+				return append(triggers[:i], triggers[i+1:]...), nil
+			}
+		}
+		return triggers, nil
+	})
+}
+
 // Remove deletes a trigger.
 func (s *Store) Remove(name string) error {
 	return s.editTriggers(func(triggers []Trigger) ([]Trigger, error) {

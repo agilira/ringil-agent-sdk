@@ -85,6 +85,12 @@ type Trigger struct {
 	// Deliver is where the host sends what a run answers (the host's
 	// name for a chat); empty keeps it in the status.
 	Deliver string `json:"deliver,omitempty"`
+	// From and Until bound the period it works in: "2026-12-01", or
+	// "2026-12-01 09:00", in TimeZone. Before From it does not set off;
+	// after Until it has ended, and the runner removes it. A date alone
+	// as Until counts its whole day. Empty: from now, for ever.
+	From  string `json:"from,omitempty"`
+	Until string `json:"until,omitempty"`
 	// Timeout bounds a run ("30m"): past it, the run is stopped. Default
 	// 10 minutes, at most 2 hours: a trigger's run has no one in front of
 	// it to stop it.
@@ -157,6 +163,9 @@ func (t Trigger) checkRun() error {
 	if _, err := t.limit(); err != nil {
 		return err
 	}
+	if _, _, err := t.period(); err != nil {
+		return err
+	}
 	return t.checkAllow()
 }
 
@@ -170,6 +179,58 @@ func (t Trigger) checkAllow() error {
 		}
 	}
 	return nil
+}
+
+// period is when the trigger works: zero From is from always, zero Until
+// for ever.
+func (t Trigger) period() (from, until time.Time, err error) {
+	loc, err := zone(t.TimeZone)
+	if err != nil {
+		return from, until, errors.New(ErrConfig, "unknown time zone "+t.TimeZone)
+	}
+	if from, _, err = moment(t.From, loc); err != nil {
+		return from, until, err
+	}
+	var day bool
+	if until, day, err = moment(t.Until, loc); err != nil {
+		return from, until, err
+	}
+	if day {
+		until = until.AddDate(0, 0, 1) // the whole day
+	}
+	if !from.IsZero() && !until.IsZero() && !until.After(from) {
+		return from, until, errors.New(ErrConfig, "until comes before from")
+	}
+	return from, until, nil
+}
+
+// moment reads "2026-12-01", "2026-12-01 09:00" or RFC 3339 in loc; day
+// says it was a date alone.
+func moment(s string, loc *time.Location) (time.Time, bool, error) {
+	if s == "" {
+		return time.Time{}, false, nil
+	}
+	if t, err := time.ParseInLocation("2006-01-02", s, loc); err == nil {
+		return t, true, nil
+	}
+	for _, layout := range []string{"2006-01-02 15:04", "2006-01-02T15:04", time.RFC3339} {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
+			return t, false, nil
+		}
+	}
+	return time.Time{}, false, errors.New(ErrConfig, "from and until are dates, 2026-12-01 or 2026-12-01 09:00: not "+s)
+}
+
+// Working says whether the trigger works at now: within its period.
+func (t Trigger) Working(now time.Time) bool {
+	from, until, err := t.period()
+	return err == nil && (from.IsZero() || !now.Before(from)) && (until.IsZero() || now.Before(until))
+}
+
+// Ended says whether the trigger's period is over at now.
+func (t Trigger) Ended(now time.Time) bool {
+	_, until, err := t.period()
+	return err == nil && !until.IsZero() && !now.Before(until)
 }
 
 // Bounds of a run's time.

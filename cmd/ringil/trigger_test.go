@@ -163,3 +163,14 @@ func TestOnlyAutomateRunsMakeTriggers(t *testing.T) {
 		t.Fatal("an automate run may not")
 	}
 }
+
+func TestATriggerRunSeesNoOtherAutomation(t *testing.T) {
+	c := newCLI(strings.NewReader(""), io.Discard, io.Discard)
+	dir := t.TempDir()
+	c.configDir, c.inTrigger = func() (string, error) { return dir, nil }, true
+	for _, tool := range c.extraTools(nil, nil) {
+		if n := tool.Spec().Name; n == "list_triggers" || n == "delete_trigger" {
+			t.Fatalf("%s offered in a trigger's run", n)
+		}
+	}
+}

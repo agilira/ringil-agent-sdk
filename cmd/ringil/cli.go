@@ -119,6 +119,8 @@ type cli struct {
 	roleName   string
 	finalTools agent.Registry
 	triggers   *atomic.Pointer[trigger.Runner]
+	// bridge is serve's Telegram bridge, for what automations deliver.
+	bridge *atomic.Pointer[channel.Bridge]
 	// role is the profile in use (--profile, or a profile served); nil
 	// keeps the flags and environment.
 	role *profile
@@ -133,6 +135,7 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		},
 		configDir:  os.UserConfigDir,
 		triggers:   &atomic.Pointer[trigger.Runner]{},
+		bridge:     &atomic.Pointer[channel.Bridge]{},
 		newSandbox: sandbox.New,
 		cwd:        os.Getwd,
 		home:       os.UserHomeDir,
@@ -222,6 +225,8 @@ func (c *cli) app() *orpheus.App {
 			AddFlag("deliver", "", "", "where to send what its runs answer (a chat)").
 			AddFlag("profile", "", "", "the role that runs it (default: the flags and environment of serve)").
 			AddFlag("timeout", "", "", "stop a run that takes longer (default 10m, at most 2h)").
+			AddFlag("from", "", "", "start working on this date: 2026-12-01 or 2026-12-01 09:00 (default now)").
+			AddFlag("until", "", "", "stop working and be removed after this date: 2026-12-31 (the whole day) or 2026-12-31 18:00").
 			AddBoolFlag("continue", "", false, "carry on one conversation across its runs (default: a fresh one each time)")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete triggers").SetHandler(c.cmdTriggerRemove).SetUsage("trigger rm <name...>")).
 		AddSubcommand(orpheus.NewCommand("pause", "Stop triggers, keeping them").SetHandler(c.cmdTriggerPause).SetUsage("trigger pause <name...>")).
@@ -488,6 +493,9 @@ func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
 	}
 	if dir, err := c.skillsDir(); err == nil && !c.restricted() {
 		extra = append(extra, skills.CreateTool(dir, nil)) // destructive: asked, showing what it writes
+		if !c.inTrigger {                                  // a trigger's runs see no other automation
+			extra = append(extra, trigger.ListTool(c.triggerStore), trigger.DeleteTool(c.triggerStore, func(string) { c.reloadTriggers() }))
+		}
 		if c.automating {
 			extra = append(extra, c.createTrigger())
 		}

@@ -9,6 +9,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
@@ -81,5 +82,33 @@ func TestOnlyAnOwnerAutomatesInTheirChat(t *testing.T) {
 	say(b, me, me, "/automate")
 	if got := app.nextIn(t, me).Text; !strings.Contains(got, "Say what to automate") {
 		t.Fatalf("%q", got)
+	}
+}
+
+func TestAutomated(t *testing.T) {
+	r := rigWith(t, Config{Automations: func() string { return "• dec: on @daily" }}, true)
+	for r.bridge.Automated(room, "dec", "**3 replies**, 3 coupons sent", "") != nil {
+		time.Sleep(time.Millisecond) // until Run runs
+	}
+	out := r.app.next(t)
+	if out.Text != "Automation dec:\n\n**3 replies**, 3 coupons sent" || !out.Markdown {
+		t.Fatalf("%+v", out)
+	}
+	if err := r.bridge.Automated(room, "dec", "", "stopped after 10m0s"); err != nil {
+		t.Fatal(err)
+	}
+	if out := r.app.next(t); out.Text != "Automation dec failed: stopped after 10m0s" || out.Markdown {
+		t.Fatalf("%+v", out)
+	}
+	r.app.say("/automate")
+	if got := r.app.next(t).Text; !strings.Contains(got, "Your automations:\n• dec: on @daily") {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestNotifyWhenStopped(t *testing.T) {
+	b, _, _, _ := teamBridge(t, Config{})
+	if err := b.Notify(me, Out{Text: "x"}); err == nil {
+		t.Fatal("notified while not running")
 	}
 }
