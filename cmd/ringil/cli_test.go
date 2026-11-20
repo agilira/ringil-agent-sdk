@@ -619,6 +619,9 @@ func TestSkillInstallListUseRemove(t *testing.T) {
 	if !strings.Contains(reqs[0].System, `{"name":"invoice"`) {
 		t.Fatalf("skill not listed: %q", reqs[0].System)
 	}
+	if !strings.HasPrefix(reqs[0].System, agent.DefaultSystem) { // 20/11: the skills' list took the base's place
+		t.Fatalf("the base prompt is gone: %q", reqs[0].System)
+	}
 	if got := reqs[1].Messages[len(reqs[1].Messages)-1].Result.Content; !strings.Contains(got, "Add the lines") {
 		t.Fatalf("load_skill %q", got)
 	}

@@ -130,12 +130,30 @@ func (c *cli) servedProfiles(ctx *orpheus.Context) ([]serve.Profile, error) {
 			return nil, errors.New(ErrUsage, "no profile "+p+" in "+c.profilesPath(ctx))
 		}
 	}
+	if err := checkInstructions(ctx, roles); err != nil {
+		return nil, err
+	}
 	out := []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx, "default", nil)}}
 	for _, name := range names(roles) {
 		role := roles[name]
 		out = append(out, serve.Profile{Name: name, Description: role.Description, New: c.runInstance(ctx, name, &role)})
 	}
 	return out, nil
+}
+
+// checkInstructions reads the instructions once at the start: a file
+// that cannot be read is told now, not as a failed run in a chat.
+func checkInstructions(ctx *orpheus.Context, roles map[string]profile) error {
+	paths := []string{ctx.GetGlobalFlagString("instructions")}
+	for _, name := range names(roles) {
+		paths = append(paths, roles[name].Instructions)
+	}
+	for _, path := range paths {
+		if _, err := readInstructions(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func a2aProfile(ctx *orpheus.Context) string {

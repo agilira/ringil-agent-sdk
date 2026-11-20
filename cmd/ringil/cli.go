@@ -165,7 +165,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalFlag("agents-config", "", "", "remote A2A agents file ({\"agents\": ...}); default <config>/ringil/agents.json").
 		AddGlobalFlag("mcp-config", "", "", "MCP servers file ({\"mcpServers\": ...}); default <config>/ringil/mcp.json").
 		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins").
-		AddGlobalFlag("system", "s", "", "system prompt (default: the SDK's)").
+		AddGlobalFlag("instructions", "", "", "a file of instructions added to the agent's prompt (tone, procedures, purpose): after the base prompt, which keeps its rules").
 		AddGlobalFlag("profile", "", "", "a role from the profiles file: its model, endpoint, key and prompt (serve: the one --a2a offers)").
 		AddGlobalFlag("profiles-config", "", "", "profiles file (default: <config>/ringil/profiles.json)").
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
@@ -289,9 +289,9 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		return nil, err
 	}
 	c.finalTools = tools
-	system := c.automateSystem(c.chatSystem(c.system(ctx)))
-	if cat != nil {
-		system += cat.Instructions()
+	system, instructions, err := c.prompts(ctx, cat)
+	if err != nil {
+		return nil, err
 	}
 	return agent.New(agent.Config{
 		Provider:      model,
@@ -299,12 +299,24 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		Memory:        mem,
 		Approve:       c.approve,
 		System:        system,
+		Instructions:  instructions,
 		Context:       c.runContext(nb, !c.restricted()),
 		MaxTurns:      c.maxTurns(ctx),
 		ContextWindow: ctx.GetGlobalFlagInt("context-window"),
 		Compaction:    agent.Compaction{Summarize: ctx.GetGlobalFlagBool("summarize")},
 		Observers:     c.events,
 	})
+}
+
+// prompts are the run's system prompt (the base, with what a chat, an
+// /automate run and the skills add) and the operator's instructions.
+func (c *cli) prompts(ctx *orpheus.Context, cat *skills.Catalog) (system, instructions string, err error) {
+	system = c.automateSystem(c.chatSystem(agent.DefaultSystem))
+	if cat != nil {
+		system += cat.Instructions()
+	}
+	instructions, err = c.instructions(ctx)
+	return system, instructions, err
 }
 
 // withWorkspace adds the flag granting directories to the file tools.

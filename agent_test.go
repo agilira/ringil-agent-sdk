@@ -69,6 +69,7 @@ func TestNewValidates(t *testing.T) {
 		{},
 		{Provider: fake.New(), MaxTurns: -1},
 		{Provider: fake.New(), MaxTokens: -1},
+		{Provider: fake.New(), Instructions: strings.Repeat("x", agent.MaxInstructions+1)},
 	}
 	for i, cfg := range cases {
 		if _, err := agent.New(cfg); !errors.HasCode(err, agent.ErrAgentConfig) {
@@ -90,6 +91,21 @@ func TestPlainAnswer(t *testing.T) {
 	req := p.Requests()[0]
 	if req.System != agent.DefaultSystem || len(req.Tools) != 0 || req.Messages[0].Text() != "hi" {
 		t.Fatalf("request %+v", req)
+	}
+}
+
+func TestInstructionsFollowTheBase(t *testing.T) {
+	for _, tc := range []struct{ system, want string }{
+		{"", agent.DefaultSystem + "\n\nAnswer as Acme's support."},
+		{"custom", "custom\n\nAnswer as Acme's support."},
+	} {
+		p := fake.New(fake.Reply("ok"))
+		if _, err := newAgent(t, agent.Config{Provider: p, System: tc.system, Instructions: "  Answer as Acme's support.\n"}).Run(context.Background(), nil, agent.UserText("hi")); err != nil {
+			t.Fatal(err)
+		}
+		if got := p.Requests()[0].System; got != tc.want {
+			t.Fatalf("%q", got)
+		}
 	}
 }
 
