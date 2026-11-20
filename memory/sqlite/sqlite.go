@@ -17,6 +17,7 @@
 package sqlite
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -30,6 +31,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -128,6 +130,7 @@ type Store struct {
 	minSim float64
 	now    func() time.Time
 	once   sync.Once
+	closed atomic.Bool
 }
 
 // New opens the memory in dir (dir/memory.db), creating both privately.
@@ -198,8 +201,19 @@ func prepareFile(dir string) error {
 // Close releases the database; the last Store of a directory closes it.
 func (s *Store) Close() error {
 	var err error
-	s.once.Do(func() { err = s.db.release() })
+	s.once.Do(func() {
+		s.closed.Store(true)
+		err = s.db.release()
+	})
 	return err
+}
+
+// open: the Store is not closed.
+func (s *Store) open() error {
+	if s.closed.Load() {
+		return errors.New(agent.ErrMemoryIO, "the memory is closed")
+	}
+	return nil
 }
 
 func hashOf(content string) string {
@@ -213,7 +227,7 @@ func newID() string { return strings.ToLower(rand.Text()[:10]) }
 // one, the record is replaced and keeps its creation time. The vector is
 // made now when it can be, else at the next search by meaning.
 func (s *Store) Put(ctx context.Context, rec agent.MemoryRecord) (agent.MemoryRecord, error) {
-	if err := ctx.Err(); err != nil {
+	if err := cmp.Or(ctx.Err(), s.open()); err != nil {
 		return rec, err
 	}
 	rec.Content = agent.MemoryText(rec.Content)
@@ -294,6 +308,9 @@ func (s *Store) hasVector(ctx context.Context, id, hash string) bool {
 
 // Delete removes a record and its vector.
 func (s *Store) Delete(ctx context.Context, id string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM records WHERE id = ?`, id)
 	if err != nil {
 		return ioError(err, "cannot write the memory")
@@ -307,7 +324,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 // Search ranks by words and, with an embedder, by meaning, and fuses the
 // two. An empty query returns the most recent records.
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]agent.MemoryRecord, error) {
-	if err := ctx.Err(); err != nil || limit <= 0 {
+	if err := cmp.Or(ctx.Err(), s.open()); err != nil || limit <= 0 {
 		return nil, err
 	}
 	query = agent.MemoryText(query)

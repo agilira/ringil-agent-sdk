@@ -20,14 +20,16 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 )
 
-// shared is one open database: serve makes a Store for every run, and
-// they share the connections and the decoded vectors.
+// shared is one database: serve makes a Store for every run, and they
+// share the connections and the decoded vectors. The connections close
+// with the last Store (no file stays open: Windows could not remove it);
+// the vectors stay for linger, for the next run to find them.
 type shared struct {
-	*sql.DB
-	path string
-	file os.FileInfo // the file opened, told from one put in its place
-	refs int         // under registry
-	idle *time.Timer // closes it, after the last Store (linger); under registry
+	*sql.DB // nil while no Store holds it
+	path    string
+	file    os.FileInfo // the file opened, told from one put in its place
+	refs    int         // under registry
+	idle    *time.Timer // forgets the vectors, after the last Store (linger); under registry
 
 	mu       sync.Mutex
 	cache    map[string]vector // vectors of cacheFor at generation cacheGen
@@ -52,15 +54,41 @@ func open(path string) (*shared, error) {
 	defer registry.Unlock()
 	if db, ok := registered[path]; ok {
 		if now, err := os.Stat(path); err == nil && os.SameFile(now, db.file) {
-			db.refs++
-			if db.idle != nil {
-				db.idle.Stop()
-				db.idle = nil
-			}
-			return db, nil
+			return db, db.take()
 		}
-		db.forget() // the file was removed or replaced: a new one, a new handle
+		db.forget() // the file was removed or replaced: a new one, nothing kept
 	}
+	file, err := os.Stat(path)
+	if err != nil {
+		return nil, ioError(err, "cannot open the memory database")
+	}
+	db := &shared{path: path, file: file, failures: map[string]time.Time{}}
+	if err := db.take(); err != nil {
+		return nil, err
+	}
+	registered[path] = db
+	return db, nil
+}
+
+// take adds a Store, opening the connections for the first. registry held.
+func (db *shared) take() error {
+	if db.DB == nil {
+		conn, err := connect(db.path)
+		if err != nil {
+			return err
+		}
+		db.DB = conn
+	}
+	db.refs++
+	if db.idle != nil {
+		db.idle.Stop()
+		db.idle = nil
+	}
+	return nil
+}
+
+// connect opens path and makes or checks its schema.
+func connect(path string) (*sql.DB, error) {
 	conn, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, ioError(err, "cannot open the memory database")
@@ -69,14 +97,7 @@ func open(path string) (*shared, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	file, err := os.Stat(path)
-	if err != nil {
-		_ = conn.Close()
-		return nil, ioError(err, "cannot open the memory database")
-	}
-	db := &shared{DB: conn, path: path, file: file, refs: 1, failures: map[string]time.Time{}}
-	registered[path] = db
-	return db, nil
+	return conn, nil
 }
 
 // prepareSchema makes or checks the schema and tidies the notes, again
@@ -122,24 +143,26 @@ func migrate(conn *sql.DB) error {
 	return nil
 }
 
-// linger keeps a database open after its last Store closes: serve makes
-// a Store for every run, and the next run finds the decoded vectors still
-// there. A variable for tests.
+// linger is how long the decoded vectors of a database stay after its
+// last Store closes, for serve's next run. A variable for tests.
 var linger = 2 * time.Minute
 
-// forget takes db out of the registry; it closes now when no Store holds
-// it, else with its last. registry held.
+// forget takes db out of the registry, closing it when no Store holds it
+// (else with its last). registry held.
 func (db *shared) forget() {
 	delete(registered, db.path)
 	if db.idle != nil {
 		db.idle.Stop()
 		db.idle = nil
 	}
-	if db.refs == 0 {
+	if db.refs == 0 && db.DB != nil {
 		_ = db.Close()
+		db.DB = nil
 	}
 }
 
+// release drops a Store; with the last, the connections close and the
+// vectors wait linger for the next.
 func (db *shared) release() error {
 	registry.Lock()
 	defer registry.Unlock()
@@ -147,21 +170,23 @@ func (db *shared) release() error {
 	if db.refs > 0 {
 		return nil
 	}
-	if linger <= 0 || registered[db.path] != db { // forgotten: nobody finds it again
-		if registered[db.path] == db {
-			delete(registered, db.path)
-		}
-		return db.Close()
+	err := db.Close()
+	db.DB = nil
+	if registered[db.path] != db {
+		return err // forgotten meanwhile
+	}
+	if linger <= 0 {
+		delete(registered, db.path)
+		return err
 	}
 	db.idle = time.AfterFunc(linger, func() {
 		registry.Lock()
 		defer registry.Unlock()
 		if db.refs == 0 && registered[db.path] == db {
 			delete(registered, db.path)
-			_ = db.Close()
 		}
 	})
-	return nil
+	return err
 }
 
 // vectors are model's vectors of the records whose content they were made
