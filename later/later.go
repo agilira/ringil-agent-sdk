@@ -180,7 +180,7 @@ func (b *Board) fire(id int) {
 	}
 	c := e.check
 	c.Done++
-	c.Last = c.Done >= c.Max || !time.Now().Add(c.Every).Before(c.Until)
+	c.Last = c.Done >= c.Max || !c.another(time.Now())
 	b.mu.Unlock()
 	b.settle(e, c, b.due(c))
 }
@@ -202,6 +202,13 @@ func (b *Board) settle(e *entry, c Check, taken bool) {
 		e.check.Done = c.Done
 		e.timer = time.AfterFunc(c.Every, func() { b.fire(id) })
 	}
+}
+
+// another: one more check fits before Until, from now. Half a wait of
+// slack: timers run a little late, and a check due right at Until (the
+// last of "every 2m for 6m") must not be lost to that.
+func (c Check) another(now time.Time) bool {
+	return now.Add(c.Every).Before(c.Until.Add(c.Every / 2))
 }
 
 // Stop ends check id of conversation conv.

@@ -296,3 +296,20 @@ func TestTheModelReadsWhyACheckIsRefused(t *testing.T) {
 		t.Fatalf("%q", out)
 	}
 }
+
+// Live 20/11: "every 2m for 6m" ran twice, the third due right at the
+// end and its timer a few ms late. Every check that fits runs.
+func TestEveryCheckThatFitsRuns(t *testing.T) {
+	r := newRecorder()
+	b := testBoard(t, r)
+	c, err := b.Add("c", "x", 20*time.Millisecond, 60*time.Millisecond, 0)
+	if err != nil || c.Max != 3 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	for n := 1; n <= 3; n++ {
+		if got := r.next(t); got.Done != n || got.Last != (n == 3) {
+			t.Fatalf("check %d: %+v", n, got)
+		}
+	}
+	r.none(t, 60*time.Millisecond)
+}
