@@ -38,7 +38,7 @@ make chat                                   # chat con l'endpoint del .env (RING
 ./cmd/ringil/ringil sandbox --mount ~/dati -- python3 script.py               # esecuzione isolata
 ```
 
-Flag principali: `--base`, `--model`, `--key-env`, `--system`, `--max-turns`,
+Flag principali: `--base`, `--model`, `--key-env`, `--instructions`, `--max-turns`,
 `--allow-http`, `--no-tools`, `--session`/`-S`, `--sessions-dir`.
 
 ## Agente
@@ -297,7 +297,7 @@ l'installazione viene rifiutata.
 ```go
 info, err := skills.Install(ctx, "examples/skills/review", dir)
 cat, err := skills.Open(dir)
-cfg.System += cat.Instructions()                     // solo nomi e descrizioni
+cfg.System = agent.DefaultSystem + cat.Instructions() // la base resta; delle skill solo nomi e descrizioni
 tools, err = tools.With(skills.Tools(cat, skills.Options{Sandbox: sb})...)
 ```
 

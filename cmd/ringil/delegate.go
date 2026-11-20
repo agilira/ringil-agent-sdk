@@ -20,9 +20,9 @@ import (
 	"github.com/agilira/ringil-agent-sdk/todo"
 )
 
-const exploreSystem = "You are a research sub-agent. Search and read to answer the task you are given, then report what you found: concrete facts, file paths and line numbers, and what you could not establish. Do not guess. Your report is all the asking agent will see."
+const exploreRole = "You are a research sub-agent. Search and read to answer the task you are given, then report what you found: concrete facts, file paths and line numbers, and what you could not establish. Do not guess. Your report is all the asking agent will see."
 
-const generalSystem = "You are a sub-agent working on one task for another agent. Do the task with your tools, then report concisely what you did, what you found and anything left open. Your report is all the asking agent will see."
+const generalRole = "You are a sub-agent working on one task for another agent. Do the task with your tools, then report concisely what you did, what you found and anything left open. Your report is all the asking agent will see."
 
 // delegateTool gives the agent two kinds of worker: explore, read-only,
 // for searches that would fill its context, and general, with the same
@@ -37,14 +37,19 @@ func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools a
 	if err != nil {
 		return nil, err
 	}
+	instructions, err := c.instructions(ctx) // the company's rules hold for delegated work too
+	if err != nil {
+		return nil, err
+	}
 	crew, err := delegate.NewCrew(delegate.Team{
-		Provider:  p,
-		Approve:   c.approve,
-		MaxTurns:  c.maxTurns(ctx),
-		Observers: append([]agent.Observer{c.showWorker}, c.events...),
+		Instructions: instructions,
+		Provider:     p,
+		Approve:      c.approve,
+		MaxTurns:     c.maxTurns(ctx),
+		Observers:    append([]agent.Observer{c.showWorker}, c.events...),
 		Workers: []delegate.Worker{
-			{Name: "explore", Description: "searches and reads files, read-only; for questions like where is X, how does Y work", System: exploreSystem, Tools: explore, Prepare: c.prepareWorker},
-			{Name: "general", Description: "does a self-contained task with the same tools as you, except delegating and your own notes, task list and memory", System: generalSystem, Tools: general, Prepare: c.prepareWorker},
+			{Name: "explore", Description: "searches and reads files, read-only; for questions like where is X, how does Y work", Role: exploreRole, Tools: explore, Prepare: c.prepareWorker},
+			{Name: "general", Description: "does a self-contained task with the same tools as you, except delegating and your own notes, task list and memory", Role: generalRole, Tools: general, Prepare: c.prepareWorker},
 		},
 	})
 	if err != nil {

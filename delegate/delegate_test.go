@@ -70,7 +70,7 @@ func TestWorkerReportsBack(t *testing.T) {
 	}
 	worker := fake.New(fake.Call("lookup", `{}`), fake.Reply("Found: 42."))
 	var events atomic.Int32
-	team := Team{Workers: []Worker{{Name: "research", Description: "Finds facts", System: "You research.", Tools: tools, Provider: worker}},
+	team := Team{Instructions: "We are Acme.", Workers: []Worker{{Name: "research", Description: "Finds facts", Role: "You research.", Tools: tools, Provider: worker}},
 		Observers: []agent.Observer{func(ev agent.Event) {
 			if ev.Worker == "research" && ev.Task == 1 {
 				events.Add(1)
@@ -90,7 +90,7 @@ func TestWorkerReportsBack(t *testing.T) {
 // The worker saw only its task and its own instructions.
 func checkCleanContext(t *testing.T, wreq *agent.Request) {
 	t.Helper()
-	if wreq.System != "You research." || len(wreq.Messages) != 1 || wreq.Messages[0].Text() != "Find the answer" {
+	if wreq.System != agent.DefaultSystem+"\n\nYou research.\n\nWe are Acme." || len(wreq.Messages) != 1 || wreq.Messages[0].Text() != "Find the answer" {
 		t.Fatalf("worker request %+v", wreq)
 	}
 }

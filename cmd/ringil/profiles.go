@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -37,8 +39,11 @@ type profile struct {
 	// meaning. A role with its own base and none keeps memory by words:
 	// memories never go to another endpoint.
 	EmbedModel string `json:"embed_model,omitempty"`
-	System     string `json:"system,omitempty"`
-	MaxTurns   int    `json:"max_turns,omitempty"`
+	// Instructions is a file of the role's own instructions, added to
+	// the prompt after the base and after --instructions; a relative
+	// path is from the profiles file's directory.
+	Instructions string `json:"instructions,omitempty"`
+	MaxTurns     int    `json:"max_turns,omitempty"`
 	// Images says the role's model reads images; for a role with its own
 	// model only (else RINGIL_IMAGES decides).
 	Images bool `json:"images,omitempty"`
@@ -87,14 +92,38 @@ func (c *cli) loadProfiles(ctx *orpheus.Context) (map[string]profile, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil || dec.More() {
-		return nil, errors.New(ErrUsage, path+" is not one valid profiles object")
+		return nil, errors.New(ErrUsage, path+" is not one valid profiles object"+profilesHint(err))
 	}
 	for name, p := range f.Profiles {
 		if err := p.check(name); err != nil {
 			return nil, err
 		}
+		f.Profiles[name] = p.from(filepath.Dir(path))
 	}
 	return f.Profiles, nil
+}
+
+// from makes the role's instructions file absolute, from dir (the
+// profiles file's).
+func (p profile) from(dir string) profile {
+	if p.Instructions != "" && !rooted(p.Instructions) {
+		p.Instructions = filepath.Join(dir, p.Instructions)
+	}
+	return p
+}
+
+// profilesHint says what changed when a profiles file is refused for it.
+func profilesHint(err error) string {
+	if err != nil && strings.Contains(err.Error(), `"system"`) {
+		return ` ("system" is now "instructions": the path of a file added to the base prompt)`
+	}
+	return ""
+}
+
+// rooted: path does not hang from a directory given (on Windows also
+// \dir\x and C:x, which IsAbs calls relative).
+func rooted(path string) bool {
+	return filepath.IsAbs(path) || filepath.VolumeName(path) != "" || strings.HasPrefix(path, string(filepath.Separator))
 }
 
 func (p profile) check(name string) error {
@@ -111,8 +140,8 @@ func (p profile) check(name string) error {
 
 func (p profile) checkLimits(name string) error {
 	switch {
-	case p.MaxTurns < 0 || len(p.System) > 64<<10:
-		return errors.New(ErrUsage, "profile "+name+": max_turns cannot be negative, the system prompt is at most 64 KiB")
+	case p.MaxTurns < 0:
+		return errors.New(ErrUsage, "profile "+name+": max_turns cannot be negative")
 	case p.Memory != "" && p.Memory != "chat" && p.Memory != "off":
 		return errors.New(ErrUsage, "profile "+name+": memory is \"chat\" or \"off\", or left out for the user's own")
 	}
@@ -230,11 +259,48 @@ func (c *cli) embedModel(ctx *orpheus.Context, res secrets.Resolver) (string, er
 	return c.setting(ctx, res, "embed-model", "RINGIL_EMBED_MODEL")
 }
 
-func (c *cli) system(ctx *orpheus.Context) string {
-	if c.role != nil && c.role.System != "" {
-		return c.role.System
+// instructions are what the operator adds to the agent's prompt: the
+// file of --instructions (for every role), then the role's own. They
+// follow the base prompt and do not replace it. Read at every agent
+// made, so that serve's runs take an edit at once.
+func (c *cli) instructions(ctx *orpheus.Context) (string, error) {
+	var parts []string
+	for _, path := range []string{ctx.GetGlobalFlagString("instructions"), c.roleInstructions()} {
+		text, err := readInstructions(path)
+		if err != nil {
+			return "", err
+		}
+		if text != "" {
+			parts = append(parts, text)
+		}
 	}
-	return ctx.GetGlobalFlagString("system")
+	text := strings.Join(parts, "\n\n")
+	if len(text) > agent.MaxInstructions {
+		return "", errors.New(ErrUsage, "the instructions together are at most 64 KiB")
+	}
+	return text, nil
+}
+
+// readInstructions reads a file of instructions; "" for no path.
+func readInstructions(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	data, err := readPrivate(path)
+	if err != nil {
+		return "", errors.Wrap(err, ErrUsage, "cannot read the instructions in "+path)
+	}
+	if len(data) > agent.MaxInstructions || !utf8.Valid(data) {
+		return "", errors.New(ErrUsage, path+": instructions are UTF-8 text of at most 64 KiB")
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func (c *cli) roleInstructions() string {
+	if c.role == nil {
+		return ""
+	}
+	return c.role.Instructions
 }
 
 // chatSystem is system with what an agent should know to talk in a chat
@@ -242,9 +308,6 @@ func (c *cli) system(ctx *orpheus.Context) string {
 func (c *cli) chatSystem(system string) string {
 	if !c.chatRun() {
 		return system
-	}
-	if system == "" {
-		system = agent.DefaultSystem
 	}
 	return system + "\n\n" + channel.Style
 }

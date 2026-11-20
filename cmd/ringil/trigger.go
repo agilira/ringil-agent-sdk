@@ -629,9 +629,6 @@ func (c *cli) automateSystem(system string) string {
 	if !c.automating {
 		return system
 	}
-	if system == "" {
-		system = agent.DefaultSystem
-	}
 	return system + "\n\n" + automateNote
 }
 

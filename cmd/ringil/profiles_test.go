@@ -34,7 +34,10 @@ func writeProfiles(t *testing.T, dir, body string) {
 
 func TestProfileOverridesModelAndPrompt(t *testing.T) {
 	h := newHarness(t, "", fake.Reply("ok"))
-	writeProfiles(t, h.dir, `{"profiles":{"writer":{"description":"writes","model":"big-model","base":"http://localhost:2/v1","key_env":"WRITER_KEY","system":"You write prose."}}}`)
+	writeProfiles(t, h.dir, `{"profiles":{"writer":{"description":"writes","model":"big-model","base":"http://localhost:2/v1","key_env":"WRITER_KEY","instructions":"writer.md"}}}`)
+	if err := os.WriteFile(filepath.Join(h.dir, "ringil", "writer.md"), []byte("You write prose.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	h.c.getenv = func(k string) string {
 		return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "WRITER_KEY": "wk"}[k]
 	}
@@ -44,8 +47,46 @@ func TestProfileOverridesModelAndPrompt(t *testing.T) {
 	if h.config.Model != "big-model" || h.config.BaseURL != "http://localhost:2/v1" || h.key(t) != "wk" {
 		t.Fatalf("config %+v", h.config)
 	}
-	if sys := h.script.Requests()[0].System; !strings.HasPrefix(sys, "You write prose.") {
+	if sys := h.script.Requests()[0].System; !strings.HasPrefix(sys, agent.DefaultSystem) || !strings.HasSuffix(sys, "\n\nYou write prose.") {
 		t.Fatalf("system %q", sys)
+	}
+}
+
+// The operator's instructions follow the base prompt: --instructions for
+// every role, then the role's own. The base stays, also with skills.
+func TestInstructionsFollowTheBase(t *testing.T) {
+	h := newHarness(t, "", fake.Reply("ok"))
+	dir := filepath.Join(h.dir, "ringil")
+	writeProfiles(t, h.dir, `{"profiles":{"support":{"instructions":"`+filepath.ToSlash(filepath.Join(dir, "support.md"))+`"}}}`)
+	for name, text := range map[string]string{"company.md": "We are Acme.", "support.md": "Answer customers kindly."} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := h.run("--instructions", filepath.Join(dir, "company.md"), "--profile", "support", "--no-tools", "run", "hi"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	sys := h.script.Requests()[0].System
+	if !strings.HasPrefix(sys, agent.DefaultSystem) || !strings.HasSuffix(sys, "We are Acme.\n\nAnswer customers kindly.") {
+		t.Fatalf("system %q", sys)
+	}
+}
+
+func TestInstructionsRefused(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.md")
+	if err := os.WriteFile(big, []byte(strings.Repeat("x", agent.MaxInstructions+1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(bad, []byte{0xff, 0xfe}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{big, bad, filepath.Join(dir, "missing.md")} {
+		h := newHarness(t, "", fake.Reply("ok"))
+		if code := h.run("--instructions", path, "--no-tools", "run", "hi"); code == 0 {
+			t.Errorf("%s accepted", filepath.Base(path))
+		}
 	}
 }
 
@@ -181,7 +222,7 @@ func TestProfilesTrailingData(t *testing.T) {
 
 func TestChatSystem(t *testing.T) {
 	c := &cli{runConversation: "telegram-42"}
-	if got := c.chatSystem(""); !strings.HasPrefix(got, agent.DefaultSystem) || !strings.HasSuffix(got, channel.Style) {
+	if got := c.chatSystem(agent.DefaultSystem); !strings.HasPrefix(got, agent.DefaultSystem) || !strings.HasSuffix(got, channel.Style) {
 		t.Fatalf("%q", got)
 	}
 	c.runConversation = "chat-1"

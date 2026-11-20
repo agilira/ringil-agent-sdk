@@ -37,8 +37,10 @@ type Worker struct {
 	Name string
 	// Description tells the model when to use it.
 	Description string
-	// System is the worker's own instructions.
-	System string
+	// Role is what the worker is for, added to the base prompt
+	// (agent.DefaultSystem), which it does not replace: a worker reads
+	// what the parent would not, and keeps the base's rules for it.
+	Role string
 	// Tools the worker may use; nil means none.
 	Tools agent.Registry
 	// Provider overrides the team's model for this worker.
@@ -71,6 +73,10 @@ type Team struct {
 	MaxTurns int
 	// MaxReport is how much of a report the parent sees; default 32 KiB.
 	MaxReport int
+	// Instructions are the operator's (agent.Config.Instructions), given
+	// to every worker as to the parent: a company's rules hold for the
+	// work it delegates too.
+	Instructions string
 	// Observers receive every event of every worker, with Event.Worker,
 	// Event.Task and Event.Parent (the run that delegated) set: give the
 	// parent's observers, and delegated work is logged and shown like the
@@ -269,7 +275,7 @@ func (c *Crew) agentFor(w Worker, setup Setup, task int) (agent.Agent, error) {
 		p = c.Provider
 	}
 	return agent.New(agent.Config{
-		Provider: p, Tools: tools, System: w.System, Context: setup.Context,
+		Provider: p, Tools: tools, System: agent.DefaultSystem + "\n\n" + w.Role, Instructions: c.Instructions, Context: setup.Context,
 		Approve: c.Approve, MaxTurns: firstPositive(w.MaxTurns, c.MaxTurns, 30),
 		Observers: tagged(c.Observers, w.Name, task),
 	})
