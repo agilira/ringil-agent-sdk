@@ -272,6 +272,12 @@ func (w *workspace) request(ctx context.Context, p string) error {
 	if w.ask == nil || err != nil || w.policy.excluded(dir) {
 		return w.outsideLocked()
 	}
+	if w.tooBroad(dir) {
+		// A path that does not exist climbs to the root: one yes would
+		// grant the whole disk (found live 21/11: a notes path, /project/...,
+		// asked for /). Such a grant is never offered.
+		return agent.ToolError(ErrOutside, "No such file or directory: "+quoteName(p)+". If it is a path of another tool (such as the notes), use that tool.")
+	}
 	ok, err := w.ask(ctx, dir)
 	if err != nil {
 		return errors.Wrap(err, ErrIO, "asking for access failed")
@@ -281,6 +287,31 @@ func (w *workspace) request(ctx context.Context, p string) error {
 	}
 	w.dirs = append(w.dirs, dir)
 	return nil
+}
+
+// tooBroad: granting dir would grant the home or a granted directory
+// with all around it: the root, the home, a directory above them.
+func (w *workspace) tooBroad(dir string) bool {
+	if filepath.Dir(dir) == dir {
+		return true
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if real, err := filepath.EvalSymlinks(home); err == nil && contains(dir, real) {
+			return true
+		}
+	}
+	for _, d := range w.dirs {
+		if contains(dir, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// contains: inner is outer or inside it.
+func contains(outer, inner string) bool {
+	rel, err := filepath.Rel(outer, inner)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // nearestDir is p if it is a directory, else its closest existing parent,

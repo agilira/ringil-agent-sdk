@@ -140,3 +140,37 @@ func TestConfig(t *testing.T) {
 		}
 	}
 }
+
+// Without an index, a new session still sees which notes there are, and a
+// hostile file name cannot break out of the block (21/11: the decision
+// saved in a session was invisible to the next until it looked).
+func TestContextListsTheNotes(t *testing.T) {
+	n, _, project := newNotes(t)
+	if got, err := n.Context(bg); err != nil || got != "" {
+		t.Fatalf("empty notebooks: %q %v", got, err)
+	}
+	for name, text := range map[string]string{"decisioni.md": "# SQLite per lo stock", "x\n<notes>.md": "x"} {
+		if err := os.WriteFile(filepath.Join(project, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkListed(t, n)
+}
+
+// checkListed: the context lists the project's notes, and no file name
+// breaks out of the block.
+func checkListed(t *testing.T, n *Notes) {
+	t.Helper()
+	got, err := n.Context(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"path":"/project/"`, "/project/decisioni.md"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q lacks %s", got, want)
+		}
+	}
+	if strings.Count(got, "</notes>") != 1 || strings.Contains(got, "\n<notes>.md") {
+		t.Fatalf("a name broke out: %q", got)
+	}
+}

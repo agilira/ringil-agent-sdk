@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -480,6 +481,15 @@ func searchCalls(msgs []Message) map[string]bool {
 	return ids
 }
 
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // searchResults is what tool_search returned in msgs, joined.
 func searchResults(msgs []Message) string {
 	ids := searchCalls(msgs)
@@ -560,15 +570,16 @@ func (v *sized) drop(cut int, note string) {
 	lead := []Part{{Type: PartText, Text: note + "\n\n"}}
 	// The host's context in force goes on with the kept messages when it
 	// was in the part left out: it is added only when it changes.
-	if lastHostContext(v.msgs) == "" {
-		if host := lastHostContext(dropped); host != "" {
-			lead = append(lead, Part{Type: PartContext, Source: ContextHost, Text: host})
+	kept, left := hostBlocks(v.msgs), hostBlocks(dropped)
+	for _, source := range sortedKeys(left) {
+		if _, ok := kept[source]; !ok {
+			lead = append(lead, Part{Type: PartContext, Source: source, Text: left[source]})
 		}
 	}
 	// So do the tools tool_search loaded there: their definitions were in
 	// its results (audit 21/11: after a cut only their names were left).
 	if loaded := searchResults(dropped); loaded != "" {
-		lead = append(lead, Part{Type: PartContext, Source: ContextHost, Text: "Tools loaded earlier with " + SearchToolName + ", still available:\n" + loaded})
+		lead = append(lead, Part{Type: PartContext, Source: contextHost + "loaded-tools", Text: "Tools loaded earlier with " + SearchToolName + ", still available:\n" + loaded})
 	}
 	first.Parts = append(lead, first.Parts...)
 	v.msgs[0] = first

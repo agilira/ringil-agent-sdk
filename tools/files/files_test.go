@@ -434,3 +434,21 @@ func TestAnchoredIgnoresCase(t *testing.T) {
 		t.Fatalf("%v, want %v", got, want)
 	}
 }
+
+// A path that does not exist never offers the root, the home or a
+// directory above the granted ones: one yes would grant the whole disk
+// (found live 21/11: a notes path, /project/INDEX.md, asked for /).
+func TestBroadGrantsAreNeverOffered(t *testing.T) {
+	parent := tree(t, map[string]string{"proj/a.txt": "a"})
+	a := &asker{allow: true}
+	r := open(t, Config{Dirs: []string{filepath.Join(parent, "proj")}, Ask: a.ask})
+	home, _ := os.UserHomeDir()
+	for _, p := range []string{"/project/INDEX.md", filepath.Join(parent, "nowhere", "x.txt"), filepath.Join(home, "no-such-dir-ringil", "x")} {
+		if msg := failCall(t, r, "read_file", map[string]any{"path": p}, ErrOutside); !strings.Contains(msg, "No such file") {
+			t.Errorf("%s: %q", p, msg)
+		}
+	}
+	if len(a.asked) != 0 {
+		t.Fatalf("offered %v", a.asked)
+	}
+}

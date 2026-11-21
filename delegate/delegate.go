@@ -58,7 +58,7 @@ type Worker struct {
 // Setup is what Prepare adds to one task.
 type Setup struct {
 	Tools   []agent.Tool
-	Context func(ctx context.Context) (string, error)
+	Context func(ctx context.Context) ([]agent.ContextBlock, error)
 	Done    func() error
 }
 

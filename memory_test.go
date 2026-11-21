@@ -178,15 +178,16 @@ func TestMemoryTextIsComposed(t *testing.T) {
 // changes, and stays in force when a cut leaves out the turn that held it
 // (audit 21/11: 96 KiB of rules were stored again at every turn).
 func TestHostContextOnlyWhenItChanges(t *testing.T) {
-	rules := "Regole: rispondi in italiano."
+	rules, notes := "Regole: rispondi in italiano.", "Note: nessuna"
 	p := fake.New(fake.Reply("a"), fake.Reply("b"), fake.Reply("c"), fake.Reply("d"))
 	conv := agent.NewConversation()
 	a := newAgent(t, agent.Config{Provider: p, ContextWindow: 400, Compaction: agent.Compaction{},
-		Context: func(context.Context) (string, error) { return rules, nil }})
+		Context: func(context.Context) ([]agent.ContextBlock, error) {
+			return []agent.ContextBlock{{Name: "rules", Text: rules}, {Name: "notes", Text: notes}}, nil
+		}})
+	changes := []func(){func() {}, func() { notes = "Note: decisioni.md" }, func() { rules = "Regole: rispondi in inglese." }}
 	for i, text := range []string{"uno", "due", "tre"} {
-		if i == 2 {
-			rules = "Regole: rispondi in inglese."
-		}
+		changes[i]() // turn 2: another block changed, the rules do not come again; turn 3: the rules
 		if _, err := a.Run(context.Background(), conv, agent.UserText(text)); err != nil {
 			t.Fatal(err)
 		}
@@ -200,7 +201,10 @@ func TestHostContextOnlyWhenItChanges(t *testing.T) {
 	}
 	reqs := p.Requests()
 	sent := joinModelText(reqs[len(reqs)-1].Messages)
-	if !strings.Contains(sent, "omitted") || !strings.Contains(sent, "rispondi in inglese") {
+	if countIn(conv.Messages(), "Note:") != 2 {
+		t.Fatal("the notes block was not added once per change")
+	}
+	if !strings.Contains(sent, "omitted") || !strings.Contains(sent, "rispondi in inglese") || !strings.Contains(sent, "decisioni.md") {
 		t.Fatalf("after the cut the rules in force are gone: %q", sent)
 	}
 }
