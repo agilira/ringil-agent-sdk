@@ -12,8 +12,11 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/agilira/go-errors"
 
@@ -382,5 +385,52 @@ func TestProtectedPaths(t *testing.T) {
 		if got := Protected(p, nil); got != want {
 			t.Errorf("%s: %v", p, got)
 		}
+	}
+}
+
+// The ASCII fast path of fold agrees with the full one.
+func TestFoldASCIIFastPath(t *testing.T) {
+	for r := rune(0); r < 0x80; r++ {
+		s := string(r)
+		full := strings.Map(func(r rune) rune {
+			least := r
+			for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+				least = min(least, f)
+			}
+			return unicode.ToLower(least)
+		}, s)
+		if got := fold(s); got != full {
+			t.Errorf("%q: %q, want %q", s, got, full)
+		}
+	}
+}
+
+// Anchored finds a home's secrets where they lie, without walking: at the
+// top, and where the multi-name patterns point.
+func TestAnchored(t *testing.T) {
+	dir := tree(t, map[string]string{".ssh/id_rsa": "k", ".netrc": "n", ".config/gh/hosts.yml": "t", ".config/other/x": "ok",
+		"id_ed25519": "k", "notes.txt": "ok", "proj/.env": "deep", ".local/share/keyrings/login": "k"})
+	got, err := Anchored(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	want := []string{".config/gh", ".local/share/keyrings", ".netrc", ".ssh", "id_ed25519"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("%v, want %v", got, want)
+	}
+}
+
+// Multi-name patterns are matched ignoring case, as the policy does
+// (audit 21/11: on macOS Glob missed ~/.cargo/Credentials.toml).
+func TestAnchoredIgnoresCase(t *testing.T) {
+	dir := tree(t, map[string]string{".cargo/Credentials.toml": "t", ".M2/settings-security.xml": "s", ".cargo/config.toml": "ok"})
+	got, err := Anchored(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	if want := []string{".M2/settings-security.xml", ".cargo/Credentials.toml"}; !slices.Equal(got, want) {
+		t.Fatalf("%v, want %v", got, want)
 	}
 }

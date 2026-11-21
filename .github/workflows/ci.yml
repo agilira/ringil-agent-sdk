@@ -48,6 +48,9 @@ jobs:
     - name: Memory (SQLite)
       working-directory: memory/sqlite
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
+    - name: Provider (Anthropic)
+      working-directory: provider/anthropic
+      run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
     - name: CLI
       working-directory: cmd/ringil
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...

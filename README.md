@@ -117,6 +117,32 @@ go run ./examples/chat -tool "che tempo fa a Roma?"
 
 Per un server HTTP non locale (LAN, pod) impostare `AllowHTTP: true`.
 
+`provider/anthropic` è Claude sull'API Messages di Anthropic, con l'SDK Go ufficiale
+(modulo a parte: chi non usa Claude non se lo porta dietro). Claude pensa prima di
+rispondere (adaptive thinking); i suoi blocchi di pensiero tornano al modello, invariati,
+finché dura un giro di tool, e poi restano fuori; un blocco che l'API trovasse non più
+valido viene scartato da lei, mai una richiesta rifiutata. L'ambiente non viene letto
+(nessuna `ANTHROPIC_*` sposta i prompt o aggiunge credenziali), niente redirect, corpi
+limitati, stream fermi interrotti (anche un server che non risponde affatto), nessun retry
+proprio (lo fa `provider/retry`), tracing dell'SDK spento. Ogni chiamata è in streaming,
+anche senza sink, così nessun limite d'uscita incontra un timeout. Claude non accetta
+parametri di campionamento: `Temperature` non viene inviata. `Effort` (low ... max) regola
+quanto pensa. `ToolChoiceRequired` è `any`; ai modelli che non accettano una scelta forzata
+(Opus 5.5, Sonnet 5.5, Fable 5.1+) viene chiesto a parole, come consiglia l'API.
+
+```go
+p, err := anthropic.New(anthropic.Config{Model: "claude-opus-5-5", APIKey: os.Getenv("ANTHROPIC_API_KEY"), Effort: "medium"})
+```
+
+Nella CLI: `--provider anthropic` (o `RINGIL_PROVIDER`, o `provider:` in `ringil.yaml`),
+`--model claude-haiku-5-5`; la chiave è `ANTHROPIC_API_KEY`. `RINGIL_BASE_URL` e
+`RINGIL_EMBED_MODEL` sono dell'endpoint compatibile OpenAI e non valgono per Anthropic;
+`base` e `key_env` di `ringil.yaml` valgono solo se il file dice anche `provider: anthropic`
+(`--base` e `--key-env` sempre): una chiave non va mai all'endpoint dell'altra. Un
+profilo con `provider: anthropic` è un endpoint a sé: usa solo la sua chiave. Anthropic
+non ha modelli di embedding: per la memoria per significato, `embedder` con `kind: ollama`.
+`make live-anthropic` prova il provider con `claude-haiku-5-5`.
+
 ## Tool
 
 Un tool è una funzione Go tipizzata; lo schema JSON viene generato dalla struct:

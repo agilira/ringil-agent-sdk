@@ -61,6 +61,11 @@ var DefaultProtected = []string{
 	// files that make other tools run code: MCP servers, direnv; ringil's
 	// own configuration
 	".mcp.json", ".envrc", "ringil.yaml",
+	// what the shell and the desktop run on the host: startup files and
+	// autostart entries (a home granted writable would otherwise let a
+	// command leave code for the next login)
+	".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshrc", ".zprofile", ".zshenv", ".zlogin",
+	".config/fish/config.fish", ".config/autostart", ".config/systemd/user", "Library/LaunchAgents",
 }
 
 // Protected reports whether abs matches the protected patterns
@@ -77,8 +82,8 @@ var templateSuffixes = []string{".example", ".sample", ".template", ".dist"}
 
 // policy decides which paths are excluded.
 type policy struct {
-	patterns [][]string // each pattern split into lower-cased components
-	longest  int        // components in the longest pattern
+	patterns [][]namePattern // each pattern split into lower-cased components
+	longest  int             // components in the longest pattern
 }
 
 func newPolicy(patterns []string) (policy, error) {
@@ -90,7 +95,11 @@ func newPolicy(patterns []string) (policy, error) {
 				return policy{}, err
 			}
 		}
-		p.patterns = append(p.patterns, parts)
+		compiled := make([]namePattern, len(parts))
+		for i, part := range parts {
+			compiled[i] = compilePart(part)
+		}
+		p.patterns = append(p.patterns, compiled)
 		p.longest = max(p.longest, len(parts))
 	}
 	return p, nil
@@ -122,34 +131,55 @@ func (p policy) excludedLeaf(abs string) bool {
 	return false
 }
 
-func matchAt(pat, parts []string) bool {
+func matchAt(pat []namePattern, parts []string) bool {
 	if len(parts) < len(pat) {
 		return false
 	}
 	for j, pp := range pat {
-		if !matchPart(pp, parts[j]) {
+		if !pp.match(parts[j]) {
 			return false
 		}
 	}
 	return !isTemplate(parts[len(pat)-1])
 }
 
-// matchPart is path.Match with fast paths for the common shapes: a plain
-// name, "prefix*" and "*suffix". A walk calls it for every entry and
-// pattern.
-func matchPart(pat, name string) bool {
+// namePattern is one component of a pattern, its shape found once: a walk
+// matches every entry against every pattern.
+type namePattern struct {
+	kind byte   // '=' a plain name, '>' "prefix*", '<' "*suffix", 0 any other glob
+	fix  string // the name, prefix or suffix
+	raw  string
+}
+
+func compilePart(pat string) namePattern {
 	meta := strings.IndexAny(pat, "*?[\\")
 	switch {
 	case meta < 0:
-		return pat == name
+		return namePattern{kind: '=', fix: pat, raw: pat}
 	case meta == len(pat)-1 && pat[meta] == '*':
-		return strings.HasPrefix(name, pat[:meta])
+		return namePattern{kind: '>', fix: pat[:meta], raw: pat}
 	case meta == 0 && pat[0] == '*' && !strings.ContainsAny(pat[1:], "*?[\\"):
-		return strings.HasSuffix(name, pat[1:])
+		return namePattern{kind: '<', fix: pat[1:], raw: pat}
 	}
-	ok, err := path.Match(pat, name)
+	return namePattern{raw: pat}
+}
+
+// match is path.Match, with fast paths for the common shapes.
+func (np namePattern) match(name string) bool {
+	switch np.kind {
+	case '=':
+		return np.fix == name
+	case '>':
+		return strings.HasPrefix(name, np.fix)
+	case '<':
+		return strings.HasSuffix(name, np.fix)
+	}
+	ok, err := path.Match(np.raw, name)
 	return err == nil && ok
 }
+
+// matchPart matches one pattern component against a name.
+func matchPart(pat, name string) bool { return compilePart(pat).match(name) }
 
 func isTemplate(name string) bool {
 	for _, s := range templateSuffixes {
@@ -202,10 +232,31 @@ func normalize(name string) string {
 	return strings.TrimRight(fold(name), ". ")
 }
 
+func ascii(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiLower is fold for an ASCII letter. 'K' and 'S' fold with non-ASCII
+// letters (Kelvin, long s) to their lower case too: the same result.
+func asciiLower(r rune) rune {
+	if 'A' <= r && r <= 'Z' {
+		return r + 'a' - 'A'
+	}
+	return r
+}
+
 // fold maps every letter to one form per Unicode case class: the file
 // systems that ignore case treat "ſ" as "s" and "K" (Kelvin) as "k",
 // which lower-casing alone does not.
 func fold(s string) string {
+	if ascii(s) { // the common case, fast: a walk folds every name
+		return strings.Map(asciiLower, s)
+	}
 	return strings.Map(func(r rune) rune {
 		least := r
 		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {

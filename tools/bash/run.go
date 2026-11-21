@@ -33,7 +33,7 @@ func (t *tool) settle() error {
 		}
 		t.cfg.Read[i] = abs
 	}
-	t.home = t.homeDir()
+	t.home, t.homeShown = t.homeDir()
 	t.path = t.cfg.Path
 	if t.path == nil {
 		t.path = t.visiblePath(os.Getenv("PATH"))
@@ -41,23 +41,27 @@ func (t *tool) settle() error {
 	return nil
 }
 
-// homeDir is where HOME goes in the sandbox, "" for none: not when the
-// working directory or a Read path holds the home (it is shown as it is).
-func (t *tool) homeDir() string {
-	home := t.cfg.Home
+// homeDir is where HOME goes in the sandbox: a private home (home), or,
+// when the working directory or a Read path holds the home, the home as it
+// is (shown); neither for none.
+func (t *tool) homeDir() (home, shown string) {
+	home = t.cfg.Home
 	if home == "" {
 		home, _ = os.UserHomeDir() // #nosec G104 -- no home: HOME stays the temporary directory
 	}
 	home = filepath.Clean(home)
-	if !filepath.IsAbs(home) || within(home, t.cfg.Dir) || sandbox.Reserved(home) || home == "/tmp" {
-		return ""
+	if !filepath.IsAbs(home) || sandbox.Reserved(home) || home == "/tmp" {
+		return "", ""
+	}
+	if within(home, t.cfg.Dir) {
+		return "", filepath.ToSlash(home)
 	}
 	for _, r := range t.cfg.Read {
 		if within(home, r) {
-			return ""
+			return "", filepath.ToSlash(home)
 		}
 	}
-	return filepath.ToSlash(home)
+	return filepath.ToSlash(home), ""
 }
 
 // visiblePath keeps the host's PATH entries a sandboxed command can see:
@@ -116,7 +120,7 @@ func (t *tool) runSandboxed(ctx context.Context, command string, out *capture) e
 		return err
 	}
 	err = p.Wait()
-	out.notes = guardRepos(context.WithoutCancel(ctx), t.cfg.Dir, repos)
+	out.notes = guardRepos(context.WithoutCancel(ctx), t.cfg.Dir, repos, t.workFind)
 	return err
 }
 
@@ -135,6 +139,7 @@ func (t *tool) spec(ctx context.Context, command string, out *capture) (sandbox.
 		Env:       env,
 		Path:      t.path,
 		Home:      t.home,
+		HomeShown: t.homeShown,
 		Mounts:    mounts,
 		Limits:    t.limits(ctx),
 		Protected: t.cfg.Never,
@@ -181,6 +186,8 @@ func (t *tool) mounts(ctx context.Context) ([]sandbox.Mount, repoState, error) {
 		}
 	}
 	sort.SliceStable(mounts, func(i, j int) bool { return depth(target(mounts[i])) < depth(target(mounts[j])) })
+	hideLinkTargets(mounts)
+	fit(mounts)
 	return mounts, repos, nil
 }
 
@@ -208,7 +215,7 @@ func (t *tool) readMount(ctx context.Context, r string) (sandbox.Mount, bool, er
 		m.Target = filepath.ToSlash(r)
 	}
 	if info.IsDir() {
-		if m.Hide, err = t.hiddenOf(ctx, real); err != nil {
+		if m.Hide, err = t.readHidden(real); err != nil {
 			return sandbox.Mount{}, false, err
 		}
 	}
@@ -221,15 +228,16 @@ func depth(p string) int { return strings.Count(filepath.ToSlash(filepath.Clean(
 // (walked each time: they come and go) and its protected paths read-only.
 // It also returns the repositories found, for the checks after the run.
 func (t *tool) workMount(ctx context.Context) (sandbox.Mount, repoState, error) {
-	hide, err := files.Hidden(ctx, t.cfg.Dir, t.cfg.Exclude)
+	hide, err := t.workHidden(ctx)
 	if err != nil {
 		return sandbox.Mount{}, nil, err
 	}
+	hide = append(hide, t.neverIn(t.cfg.Dir)...) // run from the home: its configuration in it
 	protected := t.cfg.Protected
 	if protected == nil {
 		protected = files.DefaultProtected
 	}
-	found, err := files.Hidden(ctx, t.cfg.Dir, protected)
+	found, err := t.workFind(ctx, protected)
 	if err != nil {
 		return sandbox.Mount{}, nil, err
 	}
@@ -237,7 +245,7 @@ func (t *tool) workMount(ctx context.Context) (sandbox.Mount, repoState, error) 
 	for _, p := range found {
 		ro = append(ro, readOnly(t.cfg.Dir, p)...)
 	}
-	repos, err := scanRepos(ctx, t.cfg.Dir)
+	repos, err := scanRepos(ctx, t.cfg.Dir, t.workFind)
 	if err != nil {
 		return sandbox.Mount{}, nil, err
 	}
@@ -262,20 +270,52 @@ func readOnly(dir, rel string) []string {
 	return out
 }
 
-// hiddenOf walks a Read directory once for the tool's life: toolchains
-// are large and change little.
-func (t *tool) hiddenOf(ctx context.Context, dir string) ([]string, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if h, ok := t.hidden[dir]; ok {
-		return h, nil
+// workHidden is what the working directory hides: a project's secrets
+// wherever they are (walked at each command: they come and go), or, when
+// it is the home itself, its secrets where they lie (a home is not walked,
+// as a Read directory is not: two million entries took seconds).
+func (t *tool) workHidden(ctx context.Context) ([]string, error) {
+	return t.workFind(ctx, t.cfg.Exclude)
+}
+
+// workFind is what patterns (nil: the exclusion defaults) match in the
+// working directory: all of a project, walked; of the home, where they lie
+// (the protected startup files and .git as its secrets: the home is not
+// walked at each command).
+func (t *tool) workFind(ctx context.Context, patterns []string) ([]string, error) {
+	if t.homeShown != "" && filepath.Clean(filepath.FromSlash(t.homeShown)) == t.cfg.Dir {
+		return files.Anchored(t.cfg.Dir, patterns)
 	}
-	h, err := files.Hidden(ctx, dir, t.cfg.Exclude)
+	return files.Hidden(ctx, t.cfg.Dir, patterns)
+}
+
+// readHidden is what a Read directory hides: the secrets where they lie
+// at its top (files.Anchored, no walk: a home of two million entries took
+// seconds and was refused past one million), and the protected paths
+// inside it (the agent's own configuration in the home), which the
+// sandbox requires hidden.
+func (t *tool) readHidden(dir string) ([]string, error) {
+	hide, err := files.Anchored(dir, t.cfg.Exclude)
 	if err != nil {
 		return nil, err
 	}
-	t.hidden[dir] = h
-	return h, nil
+	return append(hide, t.neverIn(dir)...), nil
+}
+
+// neverIn is the protected paths inside dir, relative: hidden there, the
+// sandbox grants dir.
+func (t *tool) neverIn(dir string) []string {
+	var out []string
+	for _, p := range t.cfg.Never {
+		real := p
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			real = r
+		}
+		if rel, err := filepath.Rel(dir, real); err == nil && rel != "." && filepath.IsLocal(rel) {
+			out = append(out, filepath.ToSlash(rel))
+		}
+	}
+	return out
 }
 
 // runHost runs command outside the sandbox, with the user's rights, in the

@@ -183,7 +183,7 @@ func checkGrant(m Mount, real string, dir bool, protected []string) error {
 		return configError("hidden and read-only paths need a directory mount: " + m.Source)
 	}
 	for _, p := range protected {
-		if within(real, p) || within(p, real) {
+		if within(real, p) || within(p, real) && !masked(m, real, p) {
 			return errors.New(ErrGrant, "a granted directory overlaps protected data: "+m.Source)
 		}
 	}

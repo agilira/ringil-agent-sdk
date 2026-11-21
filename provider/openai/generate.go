@@ -34,9 +34,9 @@ func (p *provider) Generate(ctx context.Context, req *agent.Request, sink agent.
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	resp, err := p.send(ctx, body)
+	resp, err := p.send(ctx, body, cancel)
 	if err != nil {
-		return nil, err
+		return finish(ctx, nil, err)
 	}
 	out, err := p.read(resp, sink, cancel)
 	return finish(ctx, out, err)
@@ -61,7 +61,9 @@ func (p *provider) read(resp *http.Response, sink agent.TextSink, cancel context
 	return out, err
 }
 
-func (p *provider) send(ctx context.Context, body []byte) (*http.Response, error) {
+// send posts the request; a server that takes it and sends no answer for
+// the stall timeout is cut, as a silent body is.
+func (p *provider) send(ctx context.Context, body []byte, cancel context.CancelCauseFunc) (*http.Response, error) {
 	key, err := p.apiKey(ctx)
 	if err != nil {
 		return nil, err
@@ -71,6 +73,10 @@ func (p *provider) send(ctx context.Context, body []byte) (*http.Response, error
 		return nil, errors.Wrap(err, agent.ErrProviderConfig, "request cannot be built")
 	}
 	p.setHeaders(httpReq, key)
+	if p.stall > 0 {
+		t := time.AfterFunc(p.stall, func() { cancel(errStalled) })
+		defer t.Stop()
+	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		return nil, networkError(ctx, err)

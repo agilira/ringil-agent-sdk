@@ -1,13 +1,13 @@
 # Go Makefile - AGILira Standard
 # Usage: make help
 
-.PHONY: help test race coverage fmt vet staticcheck errcheck gosec govulcheck gocyclo lint security check check-race deps clean tools fuzz bench live live-local live-nim chat
+.PHONY: help test race coverage fmt vet staticcheck errcheck gosec govulcheck gocyclo lint security check check-race deps clean tools fuzz bench live live-local live-nim chat live-anthropic
 .DEFAULT_GOAL := help
 
 # Variables
 TOOLS_DIR := $(HOME)/go/bin
 # The library and the CLI are separate modules; every check runs on both.
-MODULES := . ./mcp ./a2a ./memory/sqlite ./cmd/ringil
+MODULES := . ./mcp ./a2a ./memory/sqlite ./provider/anthropic ./cmd/ringil
 EACH = for m in $(MODULES); do (cd $$m && $(1)) || exit 1; done
 
 # Colors for output
@@ -101,6 +101,10 @@ fuzz: ## Run every fuzz target (FUZZTIME, default 30s each)
 live: ## Run live tests against the endpoint in .env (real calls, may cost)
 	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
 	@set -a && . ./.env && set +a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../memory/sqlite && go test -tags live -run '^TestLive' -count=1 -v ./...
+
+live-anthropic: ## Run the Claude provider's live tests (ANTHROPIC_API_KEY in .env; claude-haiku-5-5 unless RINGIL_ANTHROPIC_MODEL)
+	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
+	@set -a && . ./.env && set +a && cd provider/anthropic && go test -tags live -run '^TestLive' -count=1 -v ./...
 
 NIM_MODEL ?= nvidia/nemotron-3.5-bolt-e4b
 NIM_EMBED ?= nvidia/nemotron-3-embed-1b

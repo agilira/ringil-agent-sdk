@@ -191,7 +191,7 @@ func (c *cli) runInstance(ctx *orpheus.Context, name string) func(context.Contex
 // connections, nothing of another run, no terminal.
 func (c *cli) forRun() *cli {
 	return &cli{in: strings.NewReader(""), out: io.Discard, errOut: io.Discard, getenv: c.getenv,
-		newProvider: c.newProvider, turnContext: c.turnContext, configDir: c.configDir, newEmbedder: c.newEmbedder,
+		newProvider: c.newProvider, newAnthropic: c.newAnthropic, turnContext: c.turnContext, configDir: c.configDir, newEmbedder: c.newEmbedder,
 		newSandbox: c.newSandbox, cwd: c.cwd, home: c.home, server: c.server, remote: c.remote, shared: true, events: c.events,
 		triggers: c.triggers, bridge: c.bridge, board: c.board, settings: c.settings}
 }

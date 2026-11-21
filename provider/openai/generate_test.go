@@ -275,6 +275,27 @@ func TestStalledBodyIsInterrupted(t *testing.T) {
 	}
 }
 
+// A server that takes the request and never answers is cut too (audit
+// 21/11: the stall began only with the body).
+func TestNoAnswerIsInterrupted(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	p := serve(t, func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	p.stall = 50 * time.Millisecond
+	start := time.Now()
+	for _, sink := range []agent.TextSink{nil, func(string) error { return nil }} {
+		_, err := ask(p, sink)
+		if !errors.HasCode(err, agent.ErrProviderInterrupted) || !isRetryable(err) || time.Since(start) > 5*time.Second {
+			t.Fatalf("no answer: %v after %v", err, time.Since(start))
+		}
+	}
+}
+
 func TestStallDisabled(t *testing.T) {
 	s := newStallReader(strings.NewReader("x"), -1, nil)
 	defer s.stop()

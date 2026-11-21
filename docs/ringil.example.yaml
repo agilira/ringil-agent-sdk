@@ -7,7 +7,11 @@
 # instructions and sessions_dir are from this file's directory. A key
 # ringil does not know is an error.
 
-# The model: an OpenAI-compatible endpoint.
+# The model: an OpenAI-compatible endpoint (provider: openai, the
+# default), or Claude (provider: anthropic: no base needed, the key in
+# ANTHROPIC_API_KEY unless key_env names another; RINGIL_BASE_URL does not
+# apply to it).
+provider: openai
 base: https://api.example.com/v1
 model: example-model
 key_env: RINGIL_API_KEY        # the variable holding the key
@@ -91,6 +95,9 @@ profiles:
     model: local-model
     key_env: LOCAL_KEY
     images: true
+  claude:
+    provider: anthropic        # another provider: its own endpoint and key
+    model: claude-haiku-5-5    # key in ANTHROPIC_API_KEY (or key_env)
 
 # MCP servers, with the keys of the common format: a server's entry in
 # JSON from a vendor's page goes here as it is (JSON is YAML).

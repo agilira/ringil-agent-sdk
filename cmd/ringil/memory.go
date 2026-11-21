@@ -22,6 +22,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/memory/sqlite"
 	"github.com/agilira/ringil-agent-sdk/provider/ollama"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
+	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
 // memory opens the user's memory, or returns nil with --no-memory. It is on
@@ -134,12 +135,23 @@ func (c *cli) embedder(ctx *orpheus.Context) (agent.Embedder, error) {
 	if err != nil || model == "" {
 		return nil, err
 	}
+	return c.endpointEmbedder(ctx, res, model)
+}
+
+// endpointEmbedder is model at the chat model's endpoint, with its key.
+func (c *cli) endpointEmbedder(ctx *orpheus.Context, res secrets.Resolver, model string) (agent.Embedder, error) {
+	switch kind, err := c.providerKind(ctx, res); {
+	case err != nil:
+		return nil, err
+	case kind == providerAnthropic:
+		return nil, errors.New(ErrUsage, "Anthropic has no embedding models: set embedder kind ollama, or no embed_model")
+	}
 	base, err := c.roleSetting(ctx, res, "base", "RINGIL_BASE_URL")
 	if err != nil {
 		return nil, err
 	}
-	keyName := c.keyEnv(ctx)
-	if err := validKeyName(keyName); err != nil {
+	keyName, err := c.keyName(ctx, res)
+	if err != nil {
 		return nil, err
 	}
 	return c.newEmbedder(openai.Config{

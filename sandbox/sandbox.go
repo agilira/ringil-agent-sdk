@@ -122,15 +122,20 @@ type Spec struct {
 	// this absolute path, gone when the program ends, where mounts may
 	// place a user's configuration (a .gitconfig, a toolchain). Unset,
 	// HOME is /tmp.
-	Home    string
-	Mounts  []Mount
-	Network Network
+	Home string
+	// HomeShown, with no Home, is the user's home where a mount grants it
+	// at its own path: HOME points there (and XDG_CACHE_HOME to the
+	// temporary directory), so ~ finds the user's files.
+	HomeShown string
+	Mounts    []Mount
+	Network   Network
 	// Proxy is the host's Unix socket of the egress proxy, for
 	// ProxiedNetwork.
 	Proxy  string
 	Limits Limits
-	// Protected are absolute host paths that no mount may contain or be
-	// inside: credentials, session stores, the agent's own configuration.
+	// Protected are absolute host paths that no mount may be inside, or
+	// contain unless it hides them (in a writable mount they must exist):
+	// credentials, session stores, the agent's own configuration.
 	// They are compared by resolved path: a hard link or bind-mount alias
 	// elsewhere is not detected, so do not grant directories holding such
 	// aliases. Mount sources are resolved too, so a source path must not be
@@ -326,8 +331,13 @@ func fixedEnv(spec Spec, tmp, proxy string) map[string]string {
 	if len(spec.Path) > 0 {
 		env["PATH"] = strings.Join(spec.Path, ":")
 	}
-	if spec.Home != "" {
+	switch {
+	case spec.Home != "":
 		env["HOME"] = spec.Home
+	case spec.HomeShown != "":
+		// The home, granted as it is: ~ finds its files; what tools cache
+		// goes to the temporary directory, as the home may be read-only.
+		env["HOME"], env["XDG_CACHE_HOME"] = spec.HomeShown, tmp+"/.cache"
 	}
 	if spec.Network == ProxiedNetwork {
 		for _, k := range proxyEnv {

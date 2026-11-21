@@ -118,7 +118,9 @@ func retryable(err error) bool {
 func (e *embedder) attempt(ctx context.Context, body []byte, n int) ([][]float32, error) {
 	ctx, cancel := context.WithTimeout(ctx, embedTimeout)
 	defer cancel()
-	resp, err := e.send(ctx, body)
+	ctx, stalled := context.WithCancelCause(ctx)
+	defer stalled(nil)
+	resp, err := e.send(ctx, body, stalled)
 	if err != nil {
 		return nil, err
 	}
