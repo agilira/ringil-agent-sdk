@@ -208,13 +208,33 @@ per parole e lo segnala. Solo https, o http verso il loopback; le credenziali
 mem, err := chroma.New(ctx, chroma.Config{URL: "http://127.0.0.1:8000", Collection: "acme-antonio", Embedder: emb})
 ```
 
+`memory/mem0` tiene la memoria in un server Mem0 self-hosted (API REST, mem0ai 2.x): un
+`user_id` per persona (o per chat). Mem0 non conserva il testo com'è: il suo modello ci
+legge i fatti e li riscrive (a volte più d'uno, a volte nessuno se li conosce già); `Put`
+restituisce il primo fatto tenuto, e quando non ne tiene nessuno lo dice al modello.
+`Raw` conserva il testo così com'è (lo stesso testo resta uno). Vettori, modello e ricerca
+sono del server, non il nostro `Embedder`. Gli ID li fa Mem0; `Put` con un ID scelto da chi
+chiama (un import, una sincronizzazione) crea o sostituisce quel ricordo, tenendo l'ID come
+`run_id`, che Mem0 confronta esatto in SQL e non cambia mai. La sua lista non ha ordine:
+oltre 1000 ricordi i più recenti possono mancare, e lo segnala.
+Il server cancella e modifica qualsiasi ID, di chiunque sia: il pacchetto controlla che
+ogni ricordo sia di questa memoria prima di toccarlo, e scarta dalle risposte quelli di
+altri. Misurato con Mem0 2.2.1, gpt-4.1-mini per l'estrazione e text-embedding-3-small:
+una frase con due fatti diventa due ricordi in 3,8 s; il ricordo cercato prende 0,42-0,68,
+le domande che non c'entrano al massimo 0,31 (soglia di default 0,4 sulla somiglianza). Con modelli piccoli
+in locale (qwen2.5:3b) l'estrazione non trova niente: serve un modello che regga il JSON.
+
+```go
+mem, err := mem0.New(ctx, mem0.Config{URL: "http://127.0.0.1:8888", User: "acme-antonio", Headers: key})
+```
+
 A ogni domanda i ricordi pertinenti entrano nel contesto di quel turno, delimitati e
 marcati come dati, mai nella conversazione salvata. Nella CLI la memoria è attiva di
 default (`--no-memory` per toglierla), per significato con `--embed-model` o
 `RINGIL_EMBED_MODEL`; `ringil memory`, `memory search`, `memory rm`. In `ringil.yaml`,
-`memory_store` (kind `chroma`, `url`, `collection_prefix`, `headers` con `${NOME}`)
-la sposta su Chroma: `<prefisso>-user` per l'utente, `<prefisso>-chat-<chat>` per i
-profili con memoria per chat.
+`memory_store` (kind `chroma` o `mem0`, `url`, `collection_prefix`, `headers` con
+`${NOME}`, `raw` per Mem0) la sposta su Chroma o Mem0: `<prefisso>-user` per l'utente,
+`<prefisso>-chat-<chat>` per i profili con memoria per chat.
 
 ## Delega ai sub-agenti
 

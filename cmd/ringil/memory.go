@@ -18,6 +18,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/memory/chroma"
+	"github.com/agilira/ringil-agent-sdk/memory/mem0"
 	"github.com/agilira/ringil-agent-sdk/memory/sqlite"
 	"github.com/agilira/ringil-agent-sdk/provider/ollama"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
@@ -25,9 +26,9 @@ import (
 
 // memory opens the user's memory, or returns nil with --no-memory. It is on
 // by default: a complete agent remembers what the user told it. It lives
-// in a SQLite database in the config directory, or on a Chroma server
-// (memory_store); with an embedding model it also finds memories by
-// meaning. The database is closed when the run ends.
+// in a SQLite database in the config directory, or on a Chroma or Mem0
+// server (memory_store); with an embedding model it also finds memories by
+// meaning (Mem0 always does, with its own). The database is closed when the run ends.
 func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 	if c.flagBool(ctx, "no-memory") {
 		return nil, nil
@@ -40,11 +41,15 @@ func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 	if !ok {
 		return nil, nil
 	}
+	store := c.conf().Memory
+	if store.Kind == "mem0" {
+		return c.mem0Memory(ctx, store)
+	}
 	emb, err := c.embedder(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if store := c.conf().Memory; store.Kind == "chroma" {
+	if store.Kind == "chroma" {
 		return c.chromaMemory(ctx, store, emb)
 	}
 	m, err := sqlite.New(dir, emb)
@@ -55,11 +60,11 @@ func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 	return m, nil
 }
 
-// chatCollection is a chat's collection: <prefix>-chat-<chat>, or, for a
-// chat whose name Chroma would refuse (ending in - or _, holding ..), the
-// same with a hash of it.
-func chatCollection(prefix, chat string) string {
-	if name := prefix + "-chat-" + chat; chroma.ValidCollection(name) {
+// chatCollection is a chat's collection, or Mem0 user: <prefix>-chat-<chat>,
+// or, for a chat whose name the server would refuse (valid), the same with
+// a hash of it.
+func chatCollection(prefix, chat string, valid func(string) bool) string {
+	if name := prefix + "-chat-" + chat; valid(name) {
 		return name
 	}
 	sum := sha256.Sum256([]byte(chat))
@@ -78,10 +83,26 @@ func (c *cli) chromaMemory(ctx *orpheus.Context, store memoryStore, emb agent.Em
 	}
 	name := store.prefix() + "-user"
 	if c.role != nil && c.role.Memory == "chat" { // memoryDir made sure of the chat
-		name = chatCollection(store.prefix(), channel.ChatOf(c.runConversation))
+		name = chatCollection(store.prefix(), channel.ChatOf(c.runConversation), chroma.ValidCollection)
 	}
 	return chroma.New(ctx.Context(), chroma.Config{URL: store.URL, Tenant: store.Tenant, Database: store.Database,
 		Collection: name, Embedder: emb, Headers: headerFunc(store.Headers, res), AllowHTTP: c.flagBool(ctx, "allow-http")})
+}
+
+// mem0Memory is the memory memoryDir chose (the user's, or a chat's)
+// under a Mem0 user_id of its own. The vectors are the server's: Ringil's
+// embedder is not used.
+func (c *cli) mem0Memory(ctx *orpheus.Context, store memoryStore) (agent.Memory, error) {
+	res, err := c.resolver(ctx)
+	if err != nil {
+		return nil, err
+	}
+	name := store.prefix() + "-user"
+	if c.role != nil && c.role.Memory == "chat" { // memoryDir made sure of the chat
+		name = chatCollection(store.prefix(), channel.ChatOf(c.runConversation), mem0.ValidUser)
+	}
+	return mem0.New(ctx.Context(), mem0.Config{URL: store.URL, User: name, Raw: store.Raw,
+		Headers: headerFunc(store.Headers, res), AllowHTTP: c.flagBool(ctx, "allow-http")})
 }
 
 // memoryDir is where the role remembers: the user's memory, or a chat's
@@ -139,7 +160,7 @@ func (c *cli) cmdMemory(ctx *orpheus.Context) error {
 	recs, err := m.Search(ctx.Context(), strings.Join(ctx.Positional(), " "), 1000)
 	switch {
 	case errors.HasCode(err, agent.ErrMemoryPartial):
-		c.note("searching by words only: " + err.Error())
+		c.note(err.Error()) // which part worked, in the memory's words
 	case err != nil:
 		return err
 	}

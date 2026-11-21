@@ -92,9 +92,11 @@ func (e embedderConfig) check() error {
 }
 
 // memoryStore is where memories are kept: a SQLite database in the config
-// directory (kind "" or sqlite), or a Chroma server (kind chroma), each memory (the
-// user's, a chat's) in a collection of its own, <prefix>-user and
-// <prefix>-chat-<chat>. Chroma needs an embedding model (embed_model).
+// directory (kind "" or sqlite), a Chroma server (kind chroma) or a Mem0
+// server (kind mem0), each memory (the user's, a chat's) in a collection,
+// or under a Mem0 user_id, of its own: <prefix>-user and
+// <prefix>-chat-<chat>. Chroma needs an embedding model (embed_model);
+// Mem0 makes its own vectors, and Raw keeps texts without its extraction.
 // Headers go with every request, ${NAME} read from the secrets each time.
 type memoryStore struct {
 	Kind     string            `argus:"kind"`
@@ -103,6 +105,7 @@ type memoryStore struct {
 	Database string            `argus:"database"`
 	Prefix   string            `argus:"collection_prefix"`
 	Headers  map[string]string `argus:"headers"`
+	Raw      bool              `argus:"raw"`
 }
 
 var collectionPrefix = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -110,11 +113,14 @@ var collectionPrefix = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 func (m memoryStore) prefix() string { return cmp.Or(m.Prefix, "ringil") }
 
 func (m memoryStore) check() error {
+	server, known := map[string]bool{"": false, "sqlite": false, "chroma": true, "mem0": true}[m.Kind]
 	switch {
-	case m.Kind != "" && m.Kind != "sqlite" && m.Kind != "chroma":
-		return errors.New(ErrUsage, "memory_store.kind is sqlite or chroma")
-	case m.Kind == "chroma" && m.URL == "":
-		return errors.New(ErrUsage, "memory_store: chroma needs its url")
+	case !known:
+		return errors.New(ErrUsage, "memory_store.kind is sqlite, chroma or mem0")
+	case server && m.URL == "":
+		return errors.New(ErrUsage, "memory_store: "+m.Kind+" needs its url")
+	case m.Raw && m.Kind != "mem0":
+		return errors.New(ErrUsage, "memory_store.raw is for mem0")
 	case m.Prefix != "" && !collectionPrefix.MatchString(m.Prefix):
 		return errors.New(ErrUsage, "memory_store.collection_prefix is 1-64 letters, digits, . _ -, starting with a letter or digit")
 	}
