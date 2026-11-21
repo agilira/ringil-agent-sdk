@@ -185,10 +185,10 @@ func prepareFile(dir string) error {
 	if l, err := root.Lstat(File); err == nil && !l.Mode().IsRegular() {
 		return errors.New(agent.ErrMemoryIO, "the memory database is not a regular file (a link?)")
 	}
-	_ = root.Chmod(File, 0o600) // one made by hand, or by a looser umask
-	f, err := root.OpenFile(File, os.O_RDWR|os.O_CREATE|lockfile.NoFollow, 0o600)
+	_ = root.Chmod(File, 0o600)         // one made by hand, or by a looser umask
+	f, err := lockfile.Open(root, File) // many opening a new one at once: macOS
 	if err != nil {
-		return errors.Wrap(err, agent.ErrMemoryIO, "cannot open the memory database")
+		return ioError(err, "cannot open the memory database")
 	}
 	st, err := f.Stat()
 	_ = f.Close()
