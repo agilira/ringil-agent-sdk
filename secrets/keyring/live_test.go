@@ -10,37 +10,32 @@ package keyring
 import (
 	"context"
 	"crypto/rand"
-	"os"
 	"runtime"
-	"strconv"
 	"testing"
 	"time"
+
+	"github.com/agilira/go-errors"
 )
 
-// liveKeyring is a keyring of its own service; on a Linux machine with no
-// session bus (a CI runner) there is none, and the test is skipped.
+// liveKeyring is a keyring of its own service. A Linux machine may have
+// no keyring service (a CI runner, even with a session bus): there the
+// test is skipped; on macOS and Windows the system's keyring is always
+// there, and the test runs.
 func liveKeyring(t *testing.T) *Keyring {
 	t.Helper()
-	if _, ok := sessionBus(); !ok {
-		t.Skip("no session bus: no keyring here")
-	}
 	k, err := New("ringil-live-test-" + rand.Text()[:8])
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, _, err := k.Lookup(ctx, "PROBE"); err != nil {
+		if runtime.GOOS != "windows" && runtime.GOOS != "darwin" && errors.HasCode(err, ErrUnavailable) {
+			t.Skip("no keyring service here")
+		}
+		t.Fatal(err)
+	}
 	return k
-}
-
-// sessionBus is where a Linux keyring would be; elsewhere the system's.
-func sessionBus() (string, bool) {
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		return "", true
-	}
-	if a := os.Getenv("DBUS_SESSION_BUS_ADDRESS"); a != "" {
-		return a, true
-	}
-	_, err := os.Stat("/run/user/" + strconv.Itoa(os.Getuid()) + "/bus")
-	return "", err == nil
 }
 
 func TestLiveSystemKeyring(t *testing.T) {
