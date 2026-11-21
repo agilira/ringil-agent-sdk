@@ -42,10 +42,11 @@ func SystemText(text string) Message {
 	return Message{Role: RoleSystem, Parts: []Part{{Type: PartText, Text: text}}}
 }
 
-// Sources of a PartContext.
+// ContextMemory is the Source of the memories recalled for a turn; the
+// host's blocks have "host:" and their name (ContextBlock.Name).
 const (
 	ContextMemory = "memory"
-	ContextHost   = "host"
+	contextHost   = "host:"
 )
 
 // PartType identifies the kind of content a [Part] carries.
@@ -68,10 +69,11 @@ const (
 	// provider's prompt cache keeps them. [Message.Text] leaves it out;
 	// [Message.ModelText] includes it.
 	//
-	// Source says which: ContextMemory or ContextHost. A turn adds only
-	// what is new: memories not recalled earlier in the conversation, and
-	// the host's context when it changed (as Claude Code adds its
-	// reminders), so the history does not grow by the same text each turn.
+	// Source says which: ContextMemory, or "host:" and the name of one of
+	// the host's blocks (Config.Context). A turn adds only what is new:
+	// memories not recalled earlier in the conversation, and each block
+	// when it changed (as Claude Code adds its reminders), so the history
+	// does not grow by the same text each turn.
 	PartContext PartType = "context"
 	// PartReasoning is what a model thought before it answered, as its
 	// provider gave it: Text (possibly empty: Claude omits it by default),

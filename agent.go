@@ -100,14 +100,14 @@ type Config struct {
 	// returns the one the model gets (to redact it, shorten it, add to
 	// it). Its CallID is kept whatever it returns.
 	AfterTool func(ctx context.Context, call ToolCall, result ToolResult) ToolResult
-	// Context, when set, is called at the start of every run and its text
-	// goes with that run's input, as a PartContext of the user message:
-	// what changes between turns, such as the index of the project notes
-	// or the project's rules. The system prompt stays the same at every
-	// turn, so the provider's cache keeps it and the history. Return ""
-	// for nothing; an error is reported as an event and the run goes on
-	// without it.
-	Context func(ctx context.Context) (string, error)
+	// Context, when set, is called at the start of every run: its blocks
+	// (the project's rules, the index of the notes, today's date) go with
+	// that run's input as PartContext of the user message, each only when
+	// it is new or changed since the conversation last held it. The system
+	// prompt stays the same at every turn, so the provider's cache keeps
+	// it and the history. An error is reported as an event and the run
+	// goes on without the blocks.
+	Context func(ctx context.Context) ([]ContextBlock, error)
 	// Discovery lists deferrable tools by name only once their schemas
 	// exceed DiscoveryThreshold bytes (default 16 KiB); the model loads
 	// the ones it needs with tool_search.
@@ -362,7 +362,7 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	if err != nil {
 		return err
 	}
-	host, err := r.context(ctx)
+	blocks, err := r.context(ctx)
 	if err != nil {
 		return err
 	}
@@ -370,7 +370,7 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	// system prompt: the system prompt and the history stay as they were,
 	// and the provider's cache keeps them (a system prompt rebuilt at each
 	// turn rewrote the whole prompt into the cache every time, 21/11).
-	input.Parts = append(r.added(recalled, host), input.Parts...)
+	input.Parts = append(r.added(recalled, blocks), input.Parts...)
 	if err := r.add(ctx, input); err != nil {
 		return err
 	}
@@ -380,22 +380,19 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	return nil
 }
 
-// context is the host's context for this run (Config.Context).
-func (r *run) context(ctx context.Context) (string, error) {
+// context is the host's blocks for this run (Config.Context).
+func (r *run) context(ctx context.Context) ([]ContextBlock, error) {
 	if r.cfg.Context == nil {
-		return "", nil
+		return nil, nil
 	}
-	text, err := r.cfg.Context(ctx)
+	blocks, err := r.cfg.Context(ctx)
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return nil, ctx.Err()
 	}
 	if err != nil {
-		return "", r.emit(Event{Kind: EventContext, Err: err})
+		return nil, r.emit(Event{Kind: EventContext, Err: err})
 	}
-	if text == "" {
-		return "", nil
-	}
-	return "\n\n" + text, nil
+	return blocks, nil
 }
 
 // recall is the memories relevant to the input, as the block that goes
@@ -416,37 +413,43 @@ func (r *run) recall(ctx context.Context, query string) (string, error) {
 	return memoryBlock(recs, recalledBefore(r.msgs)), r.emit(Event{Kind: EventRecalled, Text: what, Err: err})
 }
 
+// ContextBlock is one piece of the host's context (Config.Context),
+// named so that it comes back only when it changes: "rules", "notes",
+// "environment".
+type ContextBlock struct {
+	Name string
+	Text string
+}
+
 // added is what goes with the input: the memories (already new ones
-// only) and the host's context when it changed.
-func (r *run) added(recalled, host string) []Part {
+// only) and each of the host's blocks that is new or changed.
+func (r *run) added(recalled string, blocks []ContextBlock) []Part {
 	var out []Part
 	if text := strings.TrimSpace(recalled); text != "" {
 		out = append(out, Part{Type: PartContext, Source: ContextMemory, Text: text})
 	}
-	if text := strings.TrimSpace(host); text != "" && text != lastHostContext(r.msgs) {
-		out = append(out, Part{Type: PartContext, Source: ContextHost, Text: text})
+	held := hostBlocks(r.msgs)
+	for _, b := range blocks {
+		text, source := strings.TrimSpace(b.Text), contextHost+b.Name
+		if was, ok := held[source]; text != "" && (!ok || was != text) {
+			out = append(out, Part{Type: PartContext, Source: source, Text: text})
+		}
 	}
 	return out
 }
 
-// lastHostContext is the host's context the conversation holds last: the
-// one in force for the model.
-func lastHostContext(msgs []Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if p, ok := hostContext(msgs[i]); ok {
-			return p.Text
+// hostBlocks maps each host block the conversation holds to its latest
+// text: the one in force for the model.
+func hostBlocks(msgs []Message) map[string]string {
+	out := map[string]string{}
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if p.Type == PartContext && strings.HasPrefix(p.Source, contextHost) {
+				out[p.Source] = p.Text
+			}
 		}
 	}
-	return ""
-}
-
-func hostContext(m Message) (Part, bool) {
-	for _, p := range m.Parts {
-		if p.Type == PartContext && p.Source == ContextHost {
-			return p, true
-		}
-	}
-	return Part{}, false
+	return out
 }
 
 // recalledBefore says whether a memory's line is already in the

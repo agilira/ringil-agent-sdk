@@ -744,15 +744,17 @@ func TestCleanStripsInvisibles(t *testing.T) {
 	}
 }
 
-// Audit 18/11: project notes changed without asking; a session name could
+// The project notes are kept without asking, as Claude Code keeps its
+// memory (21/11); deleting one asks. Audit 18/11: a session name could
 // point the scratchpad outside the config directory.
 func TestProjectNotesAskAndSessionScratch(t *testing.T) {
-	h := newHarness(t, "n\n", fake.Call("notes", `{"command":"create","path":"/project/INDEX.md","file_text":"x"}`), fake.Reply("ok"))
+	h := newHarness(t, "n\n", fake.Call("notes", `{"command":"create","path":"/project/INDEX.md","file_text":"x"}`),
+		fake.Call("notes", `{"command":"delete","path":"/project/INDEX.md"}`), fake.Reply("ok"))
 	if code := h.run("run", "salva"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
-	if !strings.Contains(h.err.String(), "wants to run notes") {
-		t.Fatalf("not asked: %q", h.err)
+	if out := h.err.String(); strings.Count(out, "wants to run notes") != 1 || !strings.Contains(out, "Saved /project/INDEX.md") {
+		t.Fatalf("asked other than for the delete: %q", out)
 	}
 	h2 := newHarness(t, "")
 	if code := h2.run("--session", "../../x", "run", "ciao"); code == exitOK {

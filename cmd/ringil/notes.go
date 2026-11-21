@@ -44,8 +44,10 @@ func (c *cli) notebooks(ctx *orpheus.Context) (*notes.Notes, error) {
 	}
 	project := filepath.Join(root, "projects", projectKey(cwd), "notes")
 	c.projectNotes = project
-	// Project notes last across sessions: a change there is confirmed.
-	return notes.New(notes.Scope{Name: "scratchpad", Dir: scratch}, notes.Scope{Name: "project", Dir: project, ConfirmChanges: true})
+	// The agent keeps its project notes as Claude Code keeps its memory,
+	// without asking at each change (found 21/11: every note was a
+	// question); deleting one still asks, in every scope.
+	return notes.New(notes.Scope{Name: "scratchpad", Dir: scratch}, notes.Scope{Name: "project", Dir: project})
 }
 
 // scratchDir is the session's scratchpad, keyed by sessions directory and

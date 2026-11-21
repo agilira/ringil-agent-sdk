@@ -116,8 +116,8 @@ func TestATerminalCheckDoesNotAsk(t *testing.T) {
 	h := newHarness(t, "y\n",
 		fake.Call("check_later", `{"what":"the notes","every":"10ms","for":"1s","times":1}`),
 		fake.Reply("I will look."),
-		fake.Call("notes", `{"command":"create","path":"/project/INDEX.md","file_text":"x"}`),
-		fake.Reply("Could not write the notes."))
+		fake.Call("notes", `{"command":"delete","path":"/project/INDEX.md"}`),
+		fake.Reply("Could not delete the notes."))
 	h.c.laterLimits = later.Limits{MinEvery: time.Millisecond}
 	if code := h.run("run", "watch"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -453,27 +454,39 @@ func (c *cli) withDelegate(ctx *orpheus.Context, model agent.Provider, tools age
 
 // runContext adds to every run the project's rules (AGENTS.md and the
 // other agents' files) and the notebooks' indexes.
-func (c *cli) runContext(nb *notes.Notes, withRules bool) func(context.Context) (string, error) {
+func (c *cli) runContext(nb *notes.Notes, withRules bool) func(context.Context) ([]agent.ContextBlock, error) {
 	cfg, ok := c.rulesConfig()
 	ok = ok && withRules
-	return func(ctx context.Context) (string, error) {
-		var parts []string
+	return func(ctx context.Context) ([]agent.ContextBlock, error) {
+		// Each block comes back to the model only when it changes: a new
+		// note does not send the rules again, a new day only the date.
+		blocks := []agent.ContextBlock{{Name: "environment", Text: c.environment()}}
 		if ok {
-			if r := rules.Render(rules.Load(cfg)); r != "" {
-				parts = append(parts, r)
-			}
+			blocks = append(blocks, agent.ContextBlock{Name: "rules", Text: rules.Render(rules.Load(cfg))})
 		}
 		if nb != nil {
 			n, err := nb.Context(ctx)
 			if err != nil {
-				return strings.Join(parts, "\n\n"), err
+				return blocks, err
 			}
-			if n != "" {
-				parts = append(parts, n)
-			}
+			blocks = append(blocks, agent.ContextBlock{Name: "notes", Text: n})
 		}
-		return strings.Join(parts, "\n\n"), nil
+		return blocks, nil
 	}
+}
+
+// environment is where and when the agent works, as Claude Code tells its
+// model (found 21/11: a note was dated 2025, the model had no date).
+func (c *cli) environment() string {
+	var b strings.Builder
+	b.WriteString("<environment>\n")
+	if cwd, err := c.cwd(); err == nil {
+		b.WriteString("Working directory: " + cwd + "\n")
+	}
+	b.WriteString("Platform: " + runtime.GOOS + "\n")
+	b.WriteString("Today's date: " + time.Now().Format("2006-01-02 (Monday)") + "\n")
+	b.WriteString("</environment>")
+	return b.String()
 }
 
 // rulesConfig: the start directory up to its repository root, and the
