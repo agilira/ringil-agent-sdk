@@ -179,7 +179,7 @@ func (l *launch) mountArgs(spec Spec) ([]string, error) {
 			return nil, err
 		}
 		fd := l.add(f)
-		if err := checkProtected(f, spec.Protected); err != nil {
+		if err := checkProtected(f, m, spec.Protected); err != nil {
 			return nil, err
 		}
 		if !dir && len(m.Hide)+len(m.ReadOnly) > 0 {
@@ -228,14 +228,16 @@ func (l *launch) innerArgs(m Mount) ([]string, error) {
 	return append(args, hideArgs(root, m)...), nil
 }
 
-// pinArgs binds every directory above a read-only path onto itself,
-// writable as before: a mount point cannot be renamed or removed, so the
-// program cannot move .git aside and put a copy it controls in its place.
-// Shallowest first, so that each lands on the one above.
+// pinArgs binds every directory above a read-only or hidden path onto
+// itself, as writable as its mount: a mount point cannot be renamed or removed,
+// so the program cannot move .git aside and put a copy it controls in its
+// place, nor move ~/.config aside to uncover the secrets hidden in it and
+// plant a decoy (audit 21/11). Shallowest first, so that each lands on
+// the one above.
 func (l *launch) pinArgs(root *os.Root, m Mount) ([]string, error) {
 	seen := map[string]bool{}
 	var dirs []string
-	for _, rel := range m.ReadOnly {
+	for _, rel := range append(append([]string(nil), m.ReadOnly...), m.Hide...) {
 		for d := path.Dir(rel); d != "." && !seen[d]; d = path.Dir(d) {
 			seen[d] = true
 			dirs = append(dirs, d)
@@ -252,7 +254,11 @@ func (l *launch) pinArgs(root *os.Root, m Mount) ([]string, error) {
 		if err != nil {
 			return nil, errors.Wrap(err, ErrGrant, "cannot open "+d+" in "+m.Source)
 		}
-		args = append(args, "--bind-fd", l.add(f), path.Join(targetOf(m), d))
+		bind := "--ro-bind-fd" // in a read-only mount, pinned read-only too
+		if m.Writable {
+			bind = "--bind-fd"
+		}
+		args = append(args, bind, l.add(f), path.Join(targetOf(m), d))
 	}
 	return args, nil
 }
@@ -319,10 +325,12 @@ func openDir(source string) (*os.File, error) {
 }
 
 // checkProtected resolves what the descriptor really points at and refuses
-// it when it contains, or lies inside, a protected path. Protected paths
-// are resolved too, including through symlinked parents of a file that does
-// not exist yet, which the sandbox could otherwise create.
-func checkProtected(f *os.File, protected []string) error {
+// it when it lies inside a protected path, or contains one it does not hide
+// (a home holds the agent's own configuration: hidden, the home is
+// granted). Protected paths are resolved too, including through symlinked
+// parents of a file that does not exist yet, which the sandbox could
+// otherwise create.
+func checkProtected(f *os.File, m Mount, protected []string) error {
 	actual, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(int(f.Fd())))
 	if err != nil || strings.HasSuffix(actual, " (deleted)") {
 		return errors.New(ErrGrant, "cannot resolve a granted directory")
@@ -332,7 +340,7 @@ func checkProtected(f *os.File, protected []string) error {
 		if err != nil {
 			return err
 		}
-		if within(actual, real) || within(real, actual) {
+		if within(actual, real) || within(real, actual) && !masked(m, actual, real) {
 			return errors.New(ErrGrant, "a granted directory overlaps protected data: "+p)
 		}
 	}

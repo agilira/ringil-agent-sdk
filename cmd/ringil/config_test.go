@@ -110,8 +110,8 @@ func TestConfigIsRead(t *testing.T) {
 
 func checkSettings(t *testing.T, c *cli, ctx *orpheus.Context) {
 	t.Helper()
-	if c.flagString(ctx, "allow-domains") != "pypi.org,*.github.com" || c.flagInt(ctx, "max-turns") != 7 || c.keyEnv(ctx) != "ACME_KEY" {
-		t.Errorf("settings %q %d %q", c.flagString(ctx, "allow-domains"), c.flagInt(ctx, "max-turns"), c.keyEnv(ctx))
+	if c.flagString(ctx, "allow-domains") != "pypi.org,*.github.com" || c.flagInt(ctx, "max-turns") != 7 || keyEnvOf(c, ctx) != "ACME_KEY" {
+		t.Errorf("settings %q %d %q", c.flagString(ctx, "allow-domains"), c.flagInt(ctx, "max-turns"), keyEnvOf(c, ctx))
 	}
 }
 
@@ -720,4 +720,10 @@ func TestChatCollectionNames(t *testing.T) {
 	if chatCollection("acme", "support-", chroma.ValidCollection) == chatCollection("acme", "support_", chroma.ValidCollection) {
 		t.Error("two chats share a collection")
 	}
+}
+
+func keyEnvOf(c *cli, ctx *orpheus.Context) string {
+	res, _ := c.resolver(ctx)
+	name, _ := c.keyEnv(ctx, res)
+	return name
 }

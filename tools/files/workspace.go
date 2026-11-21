@@ -198,7 +198,13 @@ func (w *workspace) first() string {
 
 // dirList describes the grants in tool descriptions.
 func (w *workspace) dirList() string {
-	list := strings.Join(w.Dirs(), ", ")
+	dirs := w.Dirs()
+	// The first is the working directory: said so, a model that is not
+	// told searches the home first (measured 21/11: a minute lost).
+	list := dirs[0] + " (the working directory: relative paths and searches start here)"
+	if len(dirs) > 1 {
+		list += ", " + strings.Join(dirs[1:], ", ")
+	}
 	if w.ask != nil {
 		list += " (for any other directory use its absolute path: the user will be asked)"
 	}

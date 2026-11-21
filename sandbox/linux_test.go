@@ -130,6 +130,37 @@ func TestProtectedPathsCannotBeGranted(t *testing.T) {
 	}
 }
 
+// A mount that holds a protected path is granted when it hides it (a home
+// with the agent's configuration in it): the program never sees it. In a
+// writable mount the path must exist, or the program could create it.
+func TestProtectedPathsHiddenInAMount(t *testing.T) {
+	s := sandboxOrSkip(t)
+	parent := t.TempDir()
+	secret := filepath.Join(parent, "secrets")
+	if err := os.Mkdir(secret, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secret, "k"), []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, writable := range []bool{false, true} {
+		out, _, err := run(t, s, Spec{Argv: []string{"/bin/sh", "-c", "cat /w/secrets/k 2>&1; ls /w"}, Protected: []string{secret},
+			Mounts: []Mount{{Source: parent, Target: "/w", Writable: writable, Hide: []string{"secrets"}}}})
+		if err != nil || strings.Contains(out, "SECRET") || !strings.Contains(out, "secrets") {
+			t.Fatalf("writable %v: %q %v", writable, out, err)
+		}
+	}
+	missing := filepath.Join(parent, "later")
+	_, err := s.Start(context.Background(), Spec{Argv: []string{"/usr/bin/true"}, Protected: []string{missing},
+		Mounts: []Mount{{Source: parent, Target: "/w", Writable: true, Hide: []string{"later"}}}})
+	if !errors.HasCode(err, ErrGrant) {
+		t.Fatalf("a writable mount over a protected path the program could create: %v", err)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatal("created")
+	}
+}
+
 func TestNoNetworkMeansNoSockets(t *testing.T) {
 	s := sandboxOrSkip(t)
 	out, _, err := run(t, s, Spec{Argv: []string{"/usr/bin/python3", "-c",

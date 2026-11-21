@@ -186,7 +186,9 @@ func (m Message) Clone() Message {
 }
 
 // Usage reports the tokens a model call consumed, as the provider stated
-// them. Zero means not reported.
+// them. Zero means not reported. Input is the whole prompt, the part read
+// from the provider's cache (CacheRead) and the part written to it
+// (CacheWrite) included: adapters whose API counts them apart add them.
 type Usage struct {
 	Input      int `json:"input"`
 	Output     int `json:"output"`

@@ -116,8 +116,11 @@ type Config struct {
 	// configuration and info/ are read-only, so committing works.
 	Protected []string
 	// Read are host files and directories a sandboxed command may read,
-	// at their own paths: toolchains, ~/.gitconfig. Secrets in them are
-	// hidden as in Dir. ReadDefaults suggests the usual ones.
+	// at their own paths: toolchains, ~/.gitconfig, the home. The secrets
+	// where they lie in them are hidden (files.Anchored: their top, and
+	// the paths like .config/gh), without walking them; Dir, which
+	// commands write, has all its secrets hidden. ReadDefaults suggests
+	// the usual ones.
 	Read []string
 	// Home is HOME inside the sandbox, a private empty directory where Read
 	// paths below it appear; default the user's home path. It is not used
@@ -143,16 +146,15 @@ type Config struct {
 }
 
 type tool struct {
-	cfg   Config
-	box   sandbox.Sandbox
-	noBox error // why there is no sandbox
-	proxy *egress.Proxy
-	home  string
-	path  []string
+	cfg       Config
+	box       sandbox.Sandbox
+	noBox     error // why there is no sandbox
+	proxy     *egress.Proxy
+	home      string
+	homeShown string
+	path      []string
 
-	mu     sync.Mutex
-	hidden map[string][]string // Read directory → its hidden paths, walked once
-	runMu  sync.Mutex          // one sandboxed command at a time
+	runMu sync.Mutex // one sandboxed command at a time
 }
 
 type input struct {
@@ -180,7 +182,7 @@ func newTool(cfg Config) (*tool, error) {
 	if cfg.MaxOutput <= 0 {
 		cfg.MaxOutput = DefaultMaxOutput
 	}
-	t := &tool{cfg: cfg, box: cfg.Sandbox, hidden: map[string][]string{}}
+	t := &tool{cfg: cfg, box: cfg.Sandbox}
 	if t.box == nil {
 		t.box, t.noBox = sandbox.New()
 	}

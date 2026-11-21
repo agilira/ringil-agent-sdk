@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -42,7 +43,22 @@ const (
 	maxRegexInst = 1000
 )
 
-var errStop = stderrors.New("stop walking")
+// maxWalked: a walk stops after this many entries and says so, so that a
+// search of a whole home directory (two million entries, 98 s measured
+// 21/11) does not hold the agent for a minute: about 3-5 s of walking. A
+// variable for tests.
+var maxWalked = 200_000
+
+var (
+	errStop = stderrors.New("stop walking")
+	// errWalked: the walk met maxWalked entries; what it found stands.
+	errWalked = stderrors.New("walked the maximum of entries")
+)
+
+// walkedNote is what a tool says when its walk stopped at maxWalked.
+func walkedNote(what string) string {
+	return "(stopped after " + strconv.Itoa(maxWalked) + " entries: give a narrower path" + what + ")\n"
+}
 
 // entry is one name met while walking, with its absolute path.
 type entry struct {
@@ -54,7 +70,14 @@ type entry struct {
 // opened and verified like any file, so a directory swapped for a link
 // cannot lead the walk into excluded data. depth 0 means unlimited.
 func (w *workspace) walk(ctx context.Context, dir *opened, depth int, fn func(entry) error) error {
-	err := w.walkDir(ctx, dir, depth, 1, fn)
+	walked := 0
+	counted := func(e entry) error {
+		if walked++; walked > maxWalked {
+			return errWalked
+		}
+		return fn(e)
+	}
+	err := w.walkDir(ctx, dir, depth, 1, counted)
 	if err == errStop {
 		return nil
 	}
@@ -81,7 +104,7 @@ func (w *workspace) walkDir(ctx context.Context, dir *opened, depth, level int, 
 // visit reports one entry and descends into it when it is a directory
 // within depth; excluded names are neither reported nor entered.
 func (w *workspace) visit(ctx context.Context, e entry, depth, level int, fn func(entry) error) error {
-	if w.policy.excluded(e.abs) {
+	if w.policy.excludedLeaf(e.abs) { // its ancestors were checked on the way down
 		return nil
 	}
 	if err := fn(e); err != nil {
@@ -217,10 +240,14 @@ func (w *workspace) list(ctx context.Context, in listIn) (string, error) {
 		pg.add(w.describe(e), "")
 		return nil
 	})
-	if err != nil {
+	if err != nil && err != errWalked {
 		return "", err
 	}
-	return pg.render("entries", "The directory is empty."), nil
+	out := pg.render("entries", "The directory is empty.")
+	if err == errWalked {
+		out += walkedNote(" or a smaller depth")
+	}
+	return out, nil
 }
 
 func (w *workspace) describe(e entry) string {
@@ -264,10 +291,14 @@ func (w *workspace) glob(ctx context.Context, in globIn) (string, error) {
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && err != errWalked {
 		return "", err
 	}
-	return pg.render("files", "No files match."), nil
+	out := pg.render("files", "No files match.")
+	if err == errWalked {
+		out += walkedNote(" or pattern")
+	}
+	return out, nil
 }
 
 // relTo is abs relative to base, slash-separated.
@@ -408,13 +439,14 @@ type grepRun struct {
 	skipped int
 	scanned int64
 	stopped bool
+	walked  bool // the walk stopped at maxWalked entries
 }
 
 func (g *grepRun) run(ctx context.Context, start *opened) error {
 	if !start.info.IsDir() {
 		return g.search(ctx, start)
 	}
-	return g.w.walk(ctx, start, 0, func(e entry) error {
+	err := g.w.walk(ctx, start, 0, func(e entry) error {
 		if g.stopped {
 			return errStop
 		}
@@ -423,6 +455,11 @@ func (g *grepRun) run(ctx context.Context, start *opened) error {
 		}
 		return g.file(ctx, e.abs)
 	})
+	if err == errWalked {
+		g.walked = true
+		return nil
+	}
+	return err
 }
 
 // file opens and searches one file; refusals and errors count as skipped.
@@ -481,6 +518,9 @@ func (g *grepRun) report() string {
 	}
 	if g.stopped {
 		out += "(search stopped after 256 MiB: narrow the path or use include)\n"
+	}
+	if g.walked {
+		out += walkedNote(" or use include")
 	}
 	return out
 }

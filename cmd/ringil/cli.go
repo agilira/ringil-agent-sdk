@@ -32,6 +32,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/later"
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/notes"
+	"github.com/agilira/ringil-agent-sdk/provider/anthropic"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
 	"github.com/agilira/ringil-agent-sdk/rules"
@@ -56,6 +57,8 @@ type cli struct {
 	getenv      func(string) string
 	// newProvider builds the model client; tests swap in a fake.
 	newProvider func(openai.Config) (agent.Provider, error)
+	// newAnthropic builds a Claude client; tests swap in a fake.
+	newAnthropic func(anthropic.Config) (agent.Provider, error)
 	// turnContext scopes one user turn, so Ctrl-C stops the answer, not the
 	// chat.
 	turnContext func(context.Context) (context.Context, context.CancelFunc)
@@ -147,7 +150,8 @@ type cli struct {
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 	return &cli{
 		in: in, out: out, errOut: errOut, getenv: os.Getenv, newEmbedder: func(cfg openai.Config) (agent.Embedder, error) { return openai.NewEmbedder(cfg) },
-		newProvider: openai.New,
+		newProvider:  openai.New,
+		newAnthropic: anthropic.New,
 		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
@@ -166,7 +170,8 @@ func (c *cli) app() *orpheus.App {
 		SetVersion(version).
 		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
 		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
-		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key").
+		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key (anthropic: ANTHROPIC_API_KEY)").
+		AddGlobalFlag("provider", "", "", "the API the model speaks: openai (OpenAI-compatible, default) or anthropic (or RINGIL_PROVIDER); anthropic needs no --base").
 		AddGlobalIntFlag("workflow-calls", "", 0, "most successful model calls one workflow may make, across resumes; 0 is no limit").
 		AddGlobalIntFlag("workflow-tokens", "", 0, "most tokens one workflow may use, across resumes; 0 is no limit").
 		AddGlobalFlag("embed-model", "", "", "embedding model for memory by meaning (or RINGIL_EMBED_MODEL); same endpoint and key as the chat model").
@@ -767,7 +772,11 @@ func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	base, err := c.roleSetting(ctx, res, "base", "RINGIL_BASE_URL")
+	kind, err := c.providerKind(ctx, res)
+	if err != nil {
+		return nil, err
+	}
+	base, err := c.baseFor(ctx, res, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -775,12 +784,30 @@ func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	if base == "" || model == "" {
+	if model == "" || base == "" && kind != providerAnthropic {
 		return nil, errors.New(ErrUsage, "set --base and --model, or RINGIL_BASE_URL and RINGIL_MODEL")
 	}
-	keyName := c.keyEnv(ctx)
-	if err := validKeyName(keyName); err != nil {
+	keyName, err := c.keyName(ctx, res)
+	if err != nil {
 		return nil, err
+	}
+	return c.newModel(ctx, res, kind, base, model, keyName)
+}
+
+// keyName is keyEnv, checked to be a variable's name.
+func (c *cli) keyName(ctx *orpheus.Context, res secrets.Resolver) (string, error) {
+	name, err := c.keyEnv(ctx, res)
+	if err != nil {
+		return "", err
+	}
+	return name, validKeyName(name)
+}
+
+// newModel is the provider for model at base: Anthropic's API, or an
+// OpenAI-compatible one.
+func (c *cli) newModel(ctx *orpheus.Context, res secrets.Resolver, kind, base, model, keyName string) (agent.Provider, error) {
+	if kind == providerAnthropic {
+		return c.newAnthropic(anthropic.Config{BaseURL: base, Model: model, KeyFunc: keyFunc(res, keyName), AllowHTTP: c.flagBool(ctx, "allow-http")})
 	}
 	return c.newProvider(openai.Config{
 		BaseURL:   base,

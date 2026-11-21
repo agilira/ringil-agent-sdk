@@ -9,8 +9,6 @@ import (
 	"context"
 	"os"
 	"strings"
-
-	"github.com/agilira/ringil-agent-sdk/tools/files"
 )
 
 // gitGuarded are the entries of a .git directory through which git runs
@@ -30,8 +28,10 @@ type repo struct {
 // slash-separated) to what it held.
 type repoState map[string]repo
 
-func scanRepos(ctx context.Context, dir string) (repoState, error) {
-	found, err := files.Hidden(ctx, dir, []string{".git"})
+// scanRepos finds the repositories of dir with find (the working
+// directory's own way of looking).
+func scanRepos(ctx context.Context, dir string, find func(context.Context, []string) ([]string, error)) (repoState, error) {
+	found, err := find(ctx, []string{".git"})
 	if err != nil {
 		return nil, err
 	}
@@ -62,8 +62,8 @@ func scanRepos(ctx context.Context, dir string) (repoState, error) {
 // file pointing git elsewhere, and in a repository the command made, its
 // hooks and any configuration beyond the plain settings git init and
 // clone write. It returns what it undid.
-func guardRepos(ctx context.Context, dir string, before repoState) []string {
-	after, err := scanRepos(ctx, dir)
+func guardRepos(ctx context.Context, dir string, before repoState, find func(context.Context, []string) ([]string, error)) []string {
+	after, err := scanRepos(ctx, dir, find)
 	if err != nil {
 		return []string{"the repositories could not be checked after the command: " + err.Error()}
 	}

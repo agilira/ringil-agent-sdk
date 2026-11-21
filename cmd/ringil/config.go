@@ -26,6 +26,7 @@ import (
 type config struct {
 	Model          string   `argus:"model"`
 	Base           string   `argus:"base"`
+	Provider       string   `argus:"provider"`
 	KeyEnv         string   `argus:"key_env"`
 	EmbedModel     string   `argus:"embed_model"`
 	Instructions   string   `argus:"instructions"`
@@ -255,7 +256,7 @@ func (s serveConfig) fixed() serveConfig {
 // Validate is what a file must be to be applied at all: a reload that
 // fails it is refused and the last good file stays.
 func (f *config) Validate() error {
-	checks := []func() error{f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check}
+	checks := []func() error{f.checkProvider, f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check}
 	for _, check := range checks {
 		if err := check(); err != nil {
 			return err
@@ -389,6 +390,8 @@ func (f *config) stringOf(name string) string {
 		return f.Model
 	case "base":
 		return f.Base
+	case "provider":
+		return f.Provider
 	case "key-env":
 		return f.KeyEnv
 	case "embed-model":
