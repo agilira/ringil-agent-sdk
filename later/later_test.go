@@ -136,16 +136,16 @@ func TestChecksComeDueAndEndAtTheirMax(t *testing.T) {
 func TestTheLastCheckIsTheOneBeforeTheSpanEnds(t *testing.T) {
 	r := newRecorder()
 	b := testBoard(t, r)
-	if _, err := b.Add("c", "x", 40*time.Millisecond, 100*time.Millisecond, 0); err != nil {
+	if _, err := b.Add("c", "x", 200*time.Millisecond, 500*time.Millisecond, 0); err != nil {
 		t.Fatal(err)
 	}
 	if c := r.next(t); c.Last {
 		t.Fatalf("first is last: %+v", c)
 	}
 	if c := r.next(t); !c.Last {
-		t.Fatalf("second, at 80ms of 100ms, is not the last: %+v", c)
+		t.Fatalf("second, at 400ms of 500ms, is not the last: %+v", c)
 	}
-	r.none(t, 100*time.Millisecond)
+	r.none(t, 300*time.Millisecond)
 }
 
 func TestACheckNotTakenIsOfferedAgainUncounted(t *testing.T) {
@@ -302,7 +302,9 @@ func TestTheModelReadsWhyACheckIsRefused(t *testing.T) {
 func TestEveryCheckThatFitsRuns(t *testing.T) {
 	r := newRecorder()
 	b := testBoard(t, r)
-	c, err := b.Add("c", "x", 20*time.Millisecond, 60*time.Millisecond, 0)
+	// Periods with room for a loaded runner: a check late past the window
+	// ends the series, as it should (21/11: 20 ms in 60 failed on macOS).
+	c, err := b.Add("c", "x", 200*time.Millisecond, 600*time.Millisecond, 0)
 	if err != nil || c.Max != 3 {
 		t.Fatalf("%+v %v", c, err)
 	}
@@ -311,5 +313,5 @@ func TestEveryCheckThatFitsRuns(t *testing.T) {
 			t.Fatalf("check %d: %+v", n, got)
 		}
 	}
-	r.none(t, 60*time.Millisecond)
+	r.none(t, 300*time.Millisecond)
 }
