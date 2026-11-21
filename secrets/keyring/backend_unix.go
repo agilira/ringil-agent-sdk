@@ -89,12 +89,18 @@ func open() (*conn, error) {
 	return c, nil
 }
 
+func (c *conn) obj(p dbus.ObjectPath) dbus.BusObject {
+	return c.bus.Object(c.owner, p)
+}
+
 func (c *conn) setup() error {
 	if err := c.bus.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, ssName).Store(&c.owner); err != nil {
 		return errNoKeyring
 	}
-	svc := c.bus.Object(ssName, ssPath)
+	svc := c.obj(ssPath)
 	var out dbus.Variant
+	// "plain" is intentional on a per-UID local session bus socket: any
+	// same-UID process can already access the user's keyring directly.
 	if err := svc.Call(ssIface+".OpenSession", 0, "plain", dbus.MakeVariant("")).Store(&out, &c.session); err != nil {
 		return errNoKeyring
 	}
@@ -110,12 +116,12 @@ func (c *conn) close() { _ = c.bus.Close() } // #nosec G104 -- the call's answer
 func (c *conn) find(service, name string) ([]dbus.ObjectPath, error) {
 	want := attributes(service, name)
 	var found []dbus.ObjectPath
-	if err := c.bus.Object(ssName, c.coll).Call(collIface+".SearchItems", 0, want).Store(&found); err != nil {
+	if err := c.obj(c.coll).Call(collIface+".SearchItems", 0, want).Store(&found); err != nil {
 		return nil, err
 	}
 	var ours []dbus.ObjectPath
 	for _, item := range found {
-		v, err := c.bus.Object(ssName, item).GetProperty(itemIface + ".Attributes")
+		v, err := c.obj(item).GetProperty(itemIface + ".Attributes")
 		if err != nil {
 			return nil, err
 		}
@@ -130,7 +136,7 @@ func (c *conn) find(service, name string) ([]dbus.ObjectPath, error) {
 func (c *conn) unlock(paths ...dbus.ObjectPath) error {
 	var unlocked []dbus.ObjectPath
 	var prompt dbus.ObjectPath
-	if err := c.bus.Object(ssName, ssPath).Call(ssIface+".Unlock", 0, paths).Store(&unlocked, &prompt); err != nil {
+	if err := c.obj(ssPath).Call(ssIface+".Unlock", 0, paths).Store(&unlocked, &prompt); err != nil {
 		return err
 	}
 	_, err := c.prompt(prompt)
@@ -152,7 +158,7 @@ func (c *conn) prompt(p dbus.ObjectPath) (dbus.Variant, error) {
 	signals := make(chan *dbus.Signal, 8)
 	c.bus.Signal(signals)
 	defer c.bus.RemoveSignal(signals)
-	if err := c.bus.Object(ssName, p).Call(promptIface+".Prompt", 0, "").Err; err != nil {
+	if err := c.obj(p).Call(promptIface+".Prompt", 0, "").Err; err != nil {
 		return dbus.Variant{}, err
 	}
 	return c.answer(p, signals)
@@ -173,7 +179,7 @@ func (c *conn) answer(p dbus.ObjectPath, signals chan *dbus.Signal) (dbus.Varian
 				return result, err
 			}
 		case <-timeout.C:
-			_ = c.bus.Object(ssName, p).Call(promptIface+".Dismiss", 0).Err // #nosec G104 -- the call fails anyway
+			_ = c.obj(p).Call(promptIface+".Dismiss", 0).Err // #nosec G104 -- the call fails anyway
 			return dbus.Variant{}, errRefused
 		}
 	}
@@ -210,7 +216,7 @@ func (secretService) get(service, name string) (string, bool, error) {
 		return "", false, err
 	}
 	var s secret
-	if err := c.bus.Object(ssName, items[0]).Call(itemIface+".GetSecret", 0, c.session).Store(&s); err != nil {
+	if err := c.obj(items[0]).Call(itemIface+".GetSecret", 0, c.session).Store(&s); err != nil {
 		return "", false, err
 	}
 	return string(s.Value), true, nil
@@ -234,7 +240,7 @@ func (secretService) set(service, name, value string) error {
 	// Never replace=true: GNOME Keyring then replaces the first entry that
 	// holds these attributes, another application's with more included
 	// (measured 21/11). A new entry, then ours before it go.
-	if err := c.bus.Object(ssName, c.coll).Call(collIface+".CreateItem", 0, props, s, false).Store(&item, &prompt); err != nil {
+	if err := c.obj(c.coll).Call(collIface+".CreateItem", 0, props, s, false).Store(&item, &prompt); err != nil {
 		return err
 	}
 	result, err := c.prompt(prompt)
@@ -280,7 +286,7 @@ func (c *conn) deleteOthers(service, name string, keep dbus.ObjectPath) error {
 
 func (c *conn) deleteItem(item dbus.ObjectPath) error {
 	var prompt dbus.ObjectPath
-	if err := c.bus.Object(ssName, item).Call(itemIface+".Delete", 0).Store(&prompt); err != nil {
+	if err := c.obj(item).Call(itemIface+".Delete", 0).Store(&prompt); err != nil {
 		return err
 	}
 	_, err := c.prompt(prompt)

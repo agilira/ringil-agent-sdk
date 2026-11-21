@@ -56,6 +56,14 @@ jobs:
       # The live tests use the runner's own keychain or credential
       # manager, with a service of their own; Linux runners have none.
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./... && go test -tags live -run Live -timeout 5m ./...
+    - name: Secrets (Vault, live)
+      # A Vault dev server on the Linux runner: the store against the real
+      # API at every push.
+      if: runner.os == 'Linux'
+      run: |
+        docker run -d --name vault --cap-add=IPC_LOCK -p 127.0.0.1:8200:8200 -e VAULT_DEV_ROOT_TOKEN_ID=ci-root hashicorp/vault:1.19
+        for i in $(seq 30); do curl -sf http://127.0.0.1:8200/v1/sys/health >/dev/null && break; sleep 1; done
+        VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=ci-root go test -tags live -run LiveVault -v ./secrets/vault/
     - name: CLI
       working-directory: cmd/ringil
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...

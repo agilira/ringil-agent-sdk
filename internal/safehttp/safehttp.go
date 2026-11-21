@@ -71,9 +71,31 @@ func Client(base *http.Client, headers Headers, max int64, streams bool) *http.C
 	if next == nil {
 		next = http.DefaultTransport
 	}
+	if t, ok := next.(*http.Transport); ok {
+		next = tunnelOnly(t)
+	}
 	c.Transport = transport{next: next, headers: headers, max: max, streams: streams}
 	c.CheckRedirect = sameOriginRedirect
 	return &c
+}
+
+// tunnelOnly is t with its proxy (the environment's, by default) used
+// only for https, which the proxy tunnels without reading: a plain http
+// request through it would hand the proxy the credentials in clear, and
+// let it answer in the server's place (audit 21/11, a Vault token).
+func tunnelOnly(t *http.Transport) *http.Transport {
+	proxy := t.Proxy
+	if proxy == nil {
+		return t
+	}
+	c := t.Clone()
+	c.Proxy = func(req *http.Request) (*url.URL, error) {
+		if req.URL.Scheme != "https" {
+			return nil, nil
+		}
+		return proxy(req)
+	}
+	return c
 }
 
 func sameOriginRedirect(req *http.Request, via []*http.Request) error {

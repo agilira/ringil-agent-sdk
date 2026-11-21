@@ -22,8 +22,13 @@ type credentials struct{}
 func system() backend { return credentials{} }
 
 // target is the entry's name in the Credential Manager, which ignores
-// case: the exact name is kept in UserName and checked on every call.
+// case: both TargetName (carrying service) and UserName (exact name)
+// are checked on every call.
 func target(service, name string) string { return service + ":" + name }
+
+func sameEntry(c *wincred.GenericCredential, service, name string) bool {
+	return c.UserName == name && c.TargetName == target(service, name)
+}
 
 // read is the entry for service and name, if there is one under any
 // case.
@@ -37,8 +42,8 @@ func read(service, name string) (*wincred.GenericCredential, error) {
 
 func (credentials) get(service, name string) (string, bool, error) {
 	c, err := read(service, name)
-	if err != nil || c == nil || c.UserName != name {
-		return "", false, err // another name differing in case is not this one
+	if err != nil || c == nil || !sameEntry(c, service, name) {
+		return "", false, err // another service or name differing in case is not this one
 	}
 	return string(c.CredentialBlob), true, nil
 }
@@ -51,7 +56,7 @@ func (credentials) set(service, name, value string) error {
 	if err != nil {
 		return err
 	}
-	if old != nil && old.UserName != name {
+	if old != nil && !sameEntry(old, service, name) {
 		return errCaseClash // it would replace the other one
 	}
 	c := wincred.NewGenericCredential(target(service, name))
@@ -63,7 +68,7 @@ func (credentials) set(service, name, value string) error {
 
 func (credentials) del(service, name string) error {
 	c, err := read(service, name)
-	if err != nil || c == nil || c.UserName != name {
+	if err != nil || c == nil || !sameEntry(c, service, name) {
 		return err
 	}
 	return c.Delete()
