@@ -23,6 +23,7 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 
 	"github.com/agilira/ringil-agent-sdk/memory/chroma"
+	"github.com/agilira/ringil-agent-sdk/memory/mem0"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 )
@@ -590,7 +591,7 @@ func TestTheInstructionsFlag(t *testing.T) {
 }
 
 func TestMemoryStoreChecked(t *testing.T) {
-	for _, m := range []memoryStore{{Kind: "redis"}, {Kind: "chroma"}, {Kind: "chroma", URL: "http://x", Prefix: "-bad"}} {
+	for _, m := range []memoryStore{{Kind: "redis"}, {Kind: "chroma"}, {Kind: "chroma", URL: "http://x", Prefix: "-bad"}, {Kind: "mem0"}, {Raw: true}, {Kind: "chroma", URL: "http://x", Raw: true}} {
 		if err := (&config{Memory: m}).Validate(); err == nil {
 			t.Errorf("accepted %+v", m)
 		}
@@ -631,6 +632,38 @@ func TestChromaCollections(t *testing.T) {
 	})
 	if strings.Join(names, " ") != "acme-user acme-chat-telegram-42" {
 		t.Fatalf("collections %v", names)
+	}
+}
+
+// Mem0 keeps each memory under a user_id of its own, and needs no
+// embedder of ours.
+func TestMem0Users(t *testing.T) {
+	var users []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		users = append(users, r.URL.Query().Get("user_id"))
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+	}))
+	defer srv.Close()
+	h := newHarness(t, "")
+	writeConfig(t, h.dir, "memory_store:\n  kind: mem0\n  url: "+srv.URL+"\n  collection_prefix: acme\n")
+	loaded(t, h.c, nil, func(ctx *orpheus.Context) error {
+		if _, err := h.c.memory(ctx); err != nil {
+			t.Fatal(err)
+		}
+		r := h.c.forRun()
+		r.settings = h.c.settings
+		r.role, r.runConversation = &profile{Memory: "chat"}, "telegram-42_3"
+		if _, err := r.memory(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return nil
+	})
+	if strings.Join(users, " ") != "acme-user acme-chat-telegram-42" {
+		t.Fatalf("users %q", users)
+	}
+	long := chatCollection(strings.Repeat("p", 64), strings.Repeat("c", 64), mem0.ValidUser)
+	if !mem0.ValidUser(long) { // the longest prefix and chat: hashed to fit
+		t.Fatalf("%q", long)
 	}
 }
 
@@ -676,15 +709,15 @@ func TestOllamaEmbedder(t *testing.T) {
 
 // Audit 20/11: a chat whose name Chroma would refuse still has a collection.
 func TestChatCollectionNames(t *testing.T) {
-	if got := chatCollection("acme", "telegram-42"); got != "acme-chat-telegram-42" {
+	if got := chatCollection("acme", "telegram-42", chroma.ValidCollection); got != "acme-chat-telegram-42" {
 		t.Errorf("%q", got)
 	}
 	for _, chat := range []string{"support-", "team_x_", "a..b"} {
-		if got := chatCollection("acme", chat); !chroma.ValidCollection(got) || !strings.HasPrefix(got, "acme-chat-") {
+		if got := chatCollection("acme", chat, chroma.ValidCollection); !chroma.ValidCollection(got) || !strings.HasPrefix(got, "acme-chat-") {
 			t.Errorf("%s: %q", chat, got)
 		}
 	}
-	if chatCollection("acme", "support-") == chatCollection("acme", "support_") {
+	if chatCollection("acme", "support-", chroma.ValidCollection) == chatCollection("acme", "support_", chroma.ValidCollection) {
 		t.Error("two chats share a collection")
 	}
 }

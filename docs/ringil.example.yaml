@@ -44,15 +44,18 @@ embedder:
   # dimensions: 0
 
 # Where memories are kept: a SQLite database in the config directory by
-# default (by words, and by meaning with an embedder), or a Chroma server,
-# each memory in a collection of its own: <prefix>-user for the user,
-# <prefix>-chat-<chat> for the profiles with memory: chat. Chroma finds
-# memories by meaning: it needs an embedder.
+# default (by words, and by meaning with an embedder), a Chroma server or
+# a Mem0 server, each memory in a collection (Mem0: a user_id) of its own:
+# <prefix>-user for the user, <prefix>-chat-<chat> for the profiles with
+# memory: chat. Chroma finds memories by meaning: it needs an embedder.
+# Mem0 has its own, and its own model, which keeps the facts it finds in
+# what is remembered (raw: true keeps the text as it is).
 memory_store:
-  kind: sqlite                 # or chroma
+  kind: sqlite                 # or chroma, mem0
   # url: http://127.0.0.1:8000
   # collection_prefix: acme
-  # headers: {X-Chroma-Token: "${CHROMA_TOKEN}"}
+  # headers: {X-Chroma-Token: "${CHROMA_TOKEN}"}   # Mem0: X-API-Key
+  # raw: false                 # mem0 only
 
 # Voice in the chats: a model that hears voice messages and one that
 # speaks the answers. RINGIL_TRANSCRIBE_* and RINGIL_SPEECH_* in the
