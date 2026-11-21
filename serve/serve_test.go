@@ -229,7 +229,7 @@ func approvalProfile(t *testing.T, s **Server, ran *bool, steps ...fake.Step) Pr
 	if err != nil {
 		t.Fatal(err)
 	}
-	approve := func(ctx context.Context, c agent.ToolCall, sp agent.ToolSpec) (bool, error) {
+	approve := func(ctx context.Context, c agent.ToolCall, sp agent.ToolSpec) (agent.Decision, error) {
 		return (*s).Approve(ctx, c, sp)
 	}
 	return profile(t, "default", agent.Config{Provider: fake.New(steps...), Tools: reg, Approve: approve})

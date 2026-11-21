@@ -11,19 +11,34 @@ import (
 	"time"
 )
 
-// role is who a sender is to the Bridge.
-type role int
+// Role is who a sender is to the Bridge: what Config.Authorize answers.
+type Role int
 
+// Roles, from no rights to all.
 const (
-	stranger role = iota
-	public
-	member
-	owner
+	// Stranger is not answered (unless there is a PublicProfile).
+	Stranger Role = iota
+	// Public talks with PublicProfile, within MaxPerHour.
+	Public
+	// Member talks with MemberProfile, within MaxPerHour; never approves.
+	Member
+	// Owner talks with Profile, and is the only one who approves.
+	Owner
 )
 
-// memberCheck is an answer of IsMember, and when it was given.
+type role = Role
+
+const (
+	stranger = Stranger
+	public   = Public
+	member   = Member
+	owner    = Owner
+)
+
+// memberCheck is an answer of IsMember or Authorize, and when it was given.
 type memberCheck struct {
 	member bool
+	role   Role // Authorize's
 	at     time.Time
 }
 
@@ -41,6 +56,9 @@ func idSet(ids []string) map[string]bool {
 // listed phone they shared or by IsMember, the public when there is a public profile, else a stranger.
 func (b *Bridge) roleOf(ctx context.Context, from string) role {
 	who := b.people()
+	if b.cfg.Authorize != nil && from != "" {
+		return b.hostRole(ctx, from, who)
+	}
 	switch {
 	case from == "":
 		return stranger
@@ -61,6 +79,9 @@ func (b *Bridge) roleOf(ctx context.Context, from string) role {
 func (b *Bridge) known(from string) bool {
 	if from == "" {
 		return false
+	}
+	if b.cfg.Authorize != nil {
+		return b.knownByHost(from)
 	}
 	if who := b.people(); who.owners[from] || who.members[from] || b.phoneMember(from) {
 		return true
@@ -99,6 +120,55 @@ func (b *Bridge) isMember(ctx context.Context, from string) bool {
 	b.checked[from] = memberCheck{member: yes && err == nil, at: now}
 	b.mu.Unlock()
 	return yes && err == nil
+}
+
+// hostRole is the role Authorize gives, as the profiles allow: a member
+// without MemberProfile is not answered; a stranger is the public when
+// there is a PublicProfile.
+func (b *Bridge) hostRole(ctx context.Context, from string, who *people) role {
+	r := b.authorized(ctx, from)
+	if r == member && who.memberProfile == "" {
+		r = stranger
+	}
+	if r == stranger && who.publicProfile != "" {
+		r = public
+	}
+	return r
+}
+
+// knownByHost: Authorize said, not long ago, that from is a member or
+// an owner (listening asks no one).
+func (b *Bridge) knownByHost(from string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c, ok := b.checked[from]
+	return ok && c.role >= member && b.now().Sub(c.at) < b.memberCheck()
+}
+
+// authorized asks Authorize, keeping its answers for MemberCheck; an
+// error is a stranger, kept briefly.
+func (b *Bridge) authorized(ctx context.Context, from string) Role {
+	now := b.now()
+	b.mu.Lock()
+	c, ok := b.checked[from]
+	b.mu.Unlock()
+	if ok && now.Sub(c.at) < b.memberCheck() {
+		return c.role
+	}
+	ask, cancel := context.WithTimeout(ctx, memberAskTimeout)
+	defer cancel()
+	r, err := b.cfg.Authorize(ask, from)
+	if err != nil || r < Stranger || r > Owner {
+		b.report(Event{Kind: MemberCheckFailed, From: from, Err: err})
+		r, now = Stranger, now.Add(memberRetry-b.memberCheck())
+	}
+	b.mu.Lock()
+	if len(b.checked) >= maxTracked {
+		clear(b.checked)
+	}
+	b.checked[from] = memberCheck{role: r, at: now}
+	b.mu.Unlock()
+	return r
 }
 
 // A membership check waits at most memberAskTimeout; a failed one is

@@ -7,6 +7,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"io"
@@ -392,5 +393,102 @@ func TestWithSecondary(t *testing.T) {
 	joined := withSecondary(plain, second)
 	if !stderrors.Is(joined, plain) || !stderrors.Is(joined, second) {
 		t.Fatalf("plain primary: %v", joined)
+	}
+}
+
+// A model's reasoning (reasoning_content) is kept, and goes back to that
+// model within the round of tool calls only (DeepSeek's thinking mode
+// wants it there; servers refuse it after).
+func TestReasoningGoesBackWithinTheRound(t *testing.T) {
+	var bodies []string
+	p := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(data))
+		reply(t, w, `{"choices":[{"message":{"content":"","reasoning_content":"think A","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	})
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("go")}}
+	first, err := p.Generate(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := first.Message.Reasoning("openai:m"); len(r) != 1 || r[0].Text != "think A" || r[0].Source != "openai:m" || first.Message.Text() != "" {
+		t.Fatalf("%+v", first.Message.Parts)
+	}
+	req.Messages = append(req.Messages, first.Message, agent.ToolMessage(agent.ToolResult{CallID: "c1", Content: "ok"}))
+	if _, err := p.Generate(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(bodies[1], `"reasoning_content":"think A"`) {
+		t.Fatalf("in the round: %s", bodies[1])
+	}
+	req.Messages = append(req.Messages, agent.AssistantText("done"), agent.UserText("next"))
+	notAfterTheRound(t, p, req, &bodies)
+}
+
+// notAfterTheRound: once the user writes again, the reasoning goes to no
+// model, this one or another.
+func notAfterTheRound(t *testing.T, p *provider, req *agent.Request, bodies *[]string) {
+	t.Helper()
+	other := mustNew(t, Config{BaseURL: p.cfg.BaseURL, Model: "other", APIKey: "secret"})
+	other.endpoint, other.client = p.endpoint, p.client
+	for _, q := range []*provider{p, other} {
+		if _, err := q.Generate(context.Background(), req, nil); err != nil {
+			t.Fatal(err)
+		}
+		if last := (*bodies)[len(*bodies)-1]; strings.Contains(last, "reasoning_content") {
+			t.Fatalf("after the round, or to another model: %s", last)
+		}
+	}
+}
+
+// A tool's images go to an OpenAI-compatible model in a user message
+// after the results (tool messages carry text only); to one without
+// images, a note.
+func TestToolResultImages(t *testing.T) {
+	var bodies []string
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 16)...)
+	for _, images := range []bool{true, false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			data, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(data))
+			reply(t, w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+		}))
+		p := mustNew(t, Config{BaseURL: srv.URL + "/v1", Model: "m", Images: images})
+		calls := agent.Message{Role: agent.RoleAssistant, Calls: []agent.ToolCall{{ID: "c1", Name: "shot", Input: json.RawMessage(`{}`)}}}
+		res := agent.ToolResult{CallID: "c1", Content: "screen", Images: []agent.Part{{Type: agent.PartImage, MIME: "image/png", Data: png}}}
+		if _, err := p.Generate(context.Background(), &agent.Request{Messages: []agent.Message{agent.UserText("guarda"), calls, agent.ToolMessage(res)}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		srv.Close()
+	}
+	if !strings.Contains(bodies[0], `"tool_call_id":"c1"`) || !strings.Contains(bodies[0], `data:image/png;base64,`) {
+		t.Fatalf("with images: %s", bodies[0])
+	}
+	if strings.Contains(bodies[1], "data:image") || !strings.Contains(bodies[1], "cannot see") {
+		t.Fatalf("without: %s", bodies[1])
+	}
+}
+
+// The request takes what other servers need: max_completion_tokens
+// (OpenAI's reasoning models; by default at api.openai.com),
+// reasoning_effort and the host's own fields, which never replace the
+// provider's.
+func TestRequestOptions(t *testing.T) {
+	var body map[string]any
+	p := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		reply(t, w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	})
+	p.cfg.MaxCompletionTokens, p.cfg.ReasoningEffort, p.cfg.MaxTokens = true, "low", 500
+	p.cfg.Extra = map[string]any{"top_k": 20, "model": "other", "provider": map[string]any{"sort": "price"}}
+	if _, err := ask(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if body["max_completion_tokens"] != float64(500) || body["max_tokens"] != nil || body["reasoning_effort"] != "low" ||
+		body["top_k"] != float64(20) || body["model"] != "m" || body["provider"] == nil {
+		t.Fatalf("%v", body)
+	}
+	if oai := mustNew(t, Config{BaseURL: "https://api.openai.com/v1", Model: "gpt-5", APIKey: "k"}); !oai.cfg.MaxCompletionTokens {
+		t.Fatal("api.openai.com sends max_tokens")
 	}
 }

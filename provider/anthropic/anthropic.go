@@ -7,11 +7,11 @@
 // API, through Anthropic's official Go SDK. It is a module of its own, so
 // that an agent that does not use Claude does not carry the SDK.
 //
-// Claude thinks before it answers (adaptive thinking): its thinking blocks
-// go back to it, unchanged, while a round of tool calls lasts, as the API
-// asks, and are left out after it (the agent changes the system prompt
-// between turns, which would make them invalid). A block the API finds
-// invalid anyway is dropped by it, never a refused request.
+// Claude thinks before it answers (adaptive thinking): its thinking comes
+// back as reasoning parts of the message, and goes back to it, unchanged,
+// at every turn, as the API keeps it (the agent's history only grows at its
+// end). A block the API finds invalid anyway is dropped by it, never a
+// refused request.
 //
 // Claude takes no sampling parameters: a request's Temperature is not
 // sent (the models refuse it); the prompt and Effort steer the answer. A

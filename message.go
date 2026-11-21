@@ -27,6 +27,25 @@ const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
+	// RoleSystem is an instruction from the host in the middle of the
+	// conversation, with the authority of the system prompt: it comes
+	// after the turn it concerns, so the system prompt and the history
+	// before it stay as they were, and in the provider's cache. Providers
+	// send it as their API allows (Claude: a mid-conversation system
+	// message; OpenAI-compatible servers, many of which take a system
+	// message only first: a marked user message).
+	RoleSystem Role = "system"
+)
+
+// SystemText returns a mid-conversation system message holding text.
+func SystemText(text string) Message {
+	return Message{Role: RoleSystem, Parts: []Part{{Type: PartText, Text: text}}}
+}
+
+// Sources of a PartContext.
+const (
+	ContextMemory = "memory"
+	ContextHost   = "host"
 )
 
 // PartType identifies the kind of content a [Part] carries.
@@ -41,6 +60,28 @@ const (
 	// PartImage is an image a user sent: MIME and Data. It is kept whole
 	// in the conversation; [CheckImage] says which ones are accepted.
 	PartImage PartType = "image"
+	// PartContext is text the host added to a user message, not the
+	// user's words: the memories recalled for it and the run's context
+	// (Config.Context). It goes to the model with the message and stays in
+	// the conversation, as mature agents keep their reminders: the system
+	// prompt and the history before it never change between turns, so the
+	// provider's prompt cache keeps them. [Message.Text] leaves it out;
+	// [Message.ModelText] includes it.
+	//
+	// Source says which: ContextMemory or ContextHost. A turn adds only
+	// what is new: memories not recalled earlier in the conversation, and
+	// the host's context when it changed (as Claude Code adds its
+	// reminders), so the history does not grow by the same text each turn.
+	PartContext PartType = "context"
+	// PartReasoning is what a model thought before it answered, as its
+	// provider gave it: Text (possibly empty: Claude omits it by default),
+	// and Signature, opaque, which the provider checks when the thinking
+	// comes back to it; Redacted marks thinking the provider encrypted
+	// whole (in Signature). Source names the provider that made it
+	// ("anthropic", "openai:<model>"): providers send back only their own.
+	// It is part of an assistant message, before its text; [Message.Text]
+	// and [Message.ModelText] leave it out.
+	PartReasoning PartType = "reasoning"
 )
 
 // Part is one piece of message content.
@@ -51,6 +92,23 @@ type Part struct {
 	// image/webp, and its bytes.
 	MIME string `json:"mime,omitempty"`
 	Data []byte `json:"data,omitempty"`
+	// Signature and Redacted are a reasoning part's; Source a reasoning
+	// part's or a context part's.
+	Signature string `json:"signature,omitempty"`
+	Redacted  bool   `json:"redacted,omitempty"`
+	Source    string `json:"source,omitempty"`
+}
+
+// Reasoning is m's reasoning parts made by source, exactly (a provider's
+// name, as in PartReasoning: "openai:gpt-5" is not "openai:gpt-5-mini").
+func (m Message) Reasoning(source string) []Part {
+	var out []Part
+	for _, p := range m.Parts {
+		if p.Type == PartReasoning && p.Source == source {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // MaxImageBytes bounds an image: the smallest limit of the main model
@@ -103,6 +161,9 @@ func (m Message) Images() int {
 			n++
 		}
 	}
+	if m.Result != nil {
+		n += len(m.Result.Images)
+	}
 	return n
 }
 
@@ -124,6 +185,8 @@ type ToolResult struct {
 	CallID  string `json:"call_id"`
 	Content string `json:"content"`
 	IsError bool   `json:"is_error,omitempty"`
+	// Images are the result's images (parts of type PartImage).
+	Images []Part `json:"images,omitempty"`
 }
 
 // Message is one turn of a conversation. Assistant messages may carry tool
@@ -148,6 +211,21 @@ func AssistantText(text string) Message {
 // ToolMessage returns a tool message holding result.
 func ToolMessage(result ToolResult) Message {
 	return Message{Role: RoleTool, Result: &result}
+}
+
+// ModelText is what the model reads of m's text: its context parts, then
+// its text parts.
+func (m Message) ModelText() string {
+	var ctx, text strings.Builder
+	for _, part := range m.Parts {
+		switch part.Type {
+		case PartContext:
+			ctx.WriteString(part.Text + "\n\n")
+		case PartText:
+			text.WriteString(part.Text)
+		}
+	}
+	return ctx.String() + text.String()
 }
 
 // Text concatenates the text parts of m.
@@ -180,6 +258,10 @@ func (m Message) Clone() Message {
 	}
 	if m.Result != nil {
 		result := *m.Result
+		result.Images = append([]Part(nil), result.Images...)
+		for i := range result.Images {
+			result.Images[i].Data = append([]byte(nil), result.Images[i].Data...)
+		}
 		m.Result = &result
 	}
 	return m
@@ -218,20 +300,23 @@ const (
 	StopMaxTurns  StopReason = "max_turns"  // the host's turn limit was reached
 	StopCancelled StopReason = "cancelled"  // the context was cancelled
 	StopLoop      StopReason = "loop"       // the loop detector stopped the run (LoopStop)
+	StopDenied    StopReason = "denied"     // the host's approval stopped the run (Decision.Stop)
 )
 
-// latestImagesOnly is msgs with the images of the last message that has
-// some, and a note in place of the earlier ones: a conversation does not
-// send every image it ever had on every turn (some servers take one image
-// per request; all of them charge for each). msgs is not changed.
-func latestImagesOnly(msgs []Message) []Message {
-	last := -1
-	for i := len(msgs) - 1; i >= 0 && last < 0; i-- {
+// latestImages is msgs with the images of the keep latest messages that
+// have some, and a note in place of the earlier ones (Config.KeepImages);
+// keep 0 keeps them all. msgs is not changed.
+func latestImages(msgs []Message, keep int) []Message {
+	if keep <= 0 {
+		return msgs
+	}
+	last, seen := -1, 0
+	for i := len(msgs) - 1; i >= 0 && seen < keep; i-- {
 		if msgs[i].Images() > 0 {
-			last = i
+			last, seen = i, seen+1
 		}
 	}
-	if last < 0 {
+	if seen < keep {
 		return msgs
 	}
 	out := append([]Message(nil), msgs...)
@@ -245,6 +330,13 @@ func latestImagesOnly(msgs []Message) []Message {
 
 // imagesAsNote is m with its n images replaced by a note at the end.
 func imagesAsNote(m Message, n int) Message {
+	if m.Result != nil && len(m.Result.Images) > 0 { // a tool's images
+		res := *m.Result
+		res.Images = nil
+		res.Content += "\n[" + strconv.Itoa(len(m.Result.Images)) + " images the tool returned here are no longer shown]"
+		m.Result = &res
+		return m
+	}
 	parts := make([]Part, 0, len(m.Parts)+1)
 	for _, p := range m.Parts {
 		if p.Type != PartImage {

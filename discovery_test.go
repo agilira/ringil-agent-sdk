@@ -7,6 +7,7 @@ package agent_test
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,10 +55,8 @@ func TestDeferredToolsLoadOnSearch(t *testing.T) {
 	if _, err := a.Run(context.Background(), conv, agent.UserText("ancora")); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range p.Requests()[3].Tools {
-		if loaded := !strings.Contains(s.Description, "Parameters not shown"); loaded != (s.Name != "slack_post") {
-			t.Fatalf("next run: %s loaded=%v", s.Name, loaded)
-		}
+	if got := names(p.Requests()[3].Tools); got != names(p.Requests()[0].Tools) {
+		t.Fatalf("next run: %s", got)
 	}
 }
 
@@ -71,9 +70,7 @@ func checkFirstRun(t *testing.T, reqs []*agent.Request, calls int) {
 	if g := first[1]; !strings.Contains(g.Description, "Parameters not shown") || string(g.InputSchema) != `{"type":"object"}` {
 		t.Fatalf("light entry %+v", g)
 	}
-	if g := reqs[1].Tools[1]; strings.Contains(g.Description, "Parameters not shown") {
-		t.Fatalf("not loaded after search: %+v", g)
-	}
+	sameListWithParameters(t, first, reqs[1])
 	if calls != 1 {
 		t.Fatalf("gmail_fetch ran %d times", calls)
 	}
@@ -169,4 +166,20 @@ func toolResults(msgs []agent.Message) []string {
 		}
 	}
 	return out
+}
+
+// sameListWithParameters: 21/11, the list stays as it was, so the
+// provider's cache keeps it; the loaded tool's parameters came in
+// tool_search's result.
+func sameListWithParameters(t *testing.T, first []agent.ToolSpec, next *agent.Request) {
+	t.Helper()
+	if !slices.EqualFunc(next.Tools, first, func(a, b agent.ToolSpec) bool {
+		return a.Name == b.Name && a.Description == b.Description && string(a.InputSchema) == string(b.InputSchema)
+	}) {
+		t.Fatalf("the tools changed after a search: %s", names(next.Tools))
+	}
+	last := next.Messages[len(next.Messages)-1]
+	if last.Result == nil || !strings.Contains(last.Result.Content, `"name":"gmail_fetch"`) || !strings.Contains(last.Result.Content, `"parameters"`) {
+		t.Fatalf("the search gave no parameters: %+v", last)
+	}
 }

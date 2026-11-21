@@ -555,8 +555,9 @@ func TestRecallReachesTheModel(t *testing.T) {
 		}
 	}
 	reqs := h.script.Requests()
-	if sys := reqs[len(reqs)-1].System; !strings.Contains(sys, "Il budget 2027 è 50000 euro") {
-		t.Fatalf("not recalled: %q", sys)
+	last := reqs[len(reqs)-1].Messages
+	if got := last[len(last)-1].ModelText(); !strings.Contains(got, "Il budget 2027 è 50000 euro") {
+		t.Fatalf("not recalled: %q", got)
 	}
 	if !strings.Contains(h.err.String(), "* recalled 1 memory") {
 		t.Fatalf("recall not shown: %q", h.err)

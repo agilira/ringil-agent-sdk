@@ -104,7 +104,19 @@ func (t *tool) Call(ctx context.Context, input json.RawMessage) (agent.ToolOutpu
 	if res.IsError {
 		return agent.ToolOutput{}, agent.ToolError(ErrCall, text)
 	}
-	return agent.ToolOutput{Content: text}, nil
+	return agent.ToolOutput{Content: text, Images: images(res)}, nil
+}
+
+// images are the result's images a model API takes; the others stay
+// named in the text.
+func images(res *sdk.CallToolResult) []agent.Part {
+	var out []agent.Part
+	for _, c := range res.Content {
+		if v, ok := c.(*sdk.ImageContent); ok && agent.CheckImage(v.MIMEType, v.Data) == nil {
+			out = append(out, agent.Part{Type: agent.PartImage, MIME: v.MIMEType, Data: v.Data})
+		}
+	}
+	return out
 }
 
 func capText(s string, n int) string {
@@ -140,6 +152,9 @@ func contentText(c sdk.Content) string {
 	case *sdk.TextContent:
 		return v.Text
 	case *sdk.ImageContent:
+		if agent.CheckImage(v.MIMEType, v.Data) == nil {
+			return "[image " + v.MIMEType + ", attached]"
+		}
 		return "[image " + v.MIMEType + " not shown]"
 	case *sdk.AudioContent:
 		return "[audio " + v.MIMEType + " not shown]"

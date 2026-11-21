@@ -9,8 +9,10 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	stderrors "errors"
 	"iter"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,16 +79,34 @@ type Config struct {
 	// Compaction controls how a conversation that outgrows the context is
 	// shortened; the zero value is on, without model-written summaries.
 	Compaction Compaction
-	// Approve, when set, is asked before every tool call; false or an
-	// error refuses the call, and the model is told the user did not
-	// approve it. Which calls to ask about is the host's choice: the CLI
-	// asks for tools marked Destructive, an app may ask for more or none.
-	Approve func(ctx context.Context, call ToolCall, spec ToolSpec) (bool, error)
+	// NoEmptyRetry turns off the second request after an empty reply (by
+	// default the model is told, in a system message, the names of the
+	// tools that exist: an empty reply is often a call to one that does
+	// not, which the provider dropped).
+	NoEmptyRetry bool
+	// KeepImages is how many of the latest messages with images send
+	// them; the earlier ones carry a note in their place. Zero sends them
+	// all, as mature agents do; 1 suits servers that take one image per
+	// request (llama.cpp and some vLLM builds).
+	KeepImages int
+	// Approve, when set, is asked before every tool call. Its Decision
+	// may run the call (with other arguments, if it sets Input), or refuse
+	// it, telling the model why (Message), and end the run after the calls
+	// of this turn (Stop). An error refuses the call. Which calls to ask
+	// about is the host's choice: the CLI asks for tools marked
+	// Destructive, an app may ask for more or none.
+	Approve func(ctx context.Context, call ToolCall, spec ToolSpec) (Decision, error)
+	// AfterTool, when set, sees every result before the model does and
+	// returns the one the model gets (to redact it, shorten it, add to
+	// it). Its CallID is kept whatever it returns.
+	AfterTool func(ctx context.Context, call ToolCall, result ToolResult) ToolResult
 	// Context, when set, is called at the start of every run and its text
-	// is added to the system prompt for that run: what changes between
-	// turns, such as the index of the project notes or the project's
-	// rules. Return "" for nothing; an error is reported as an event and
-	// the run goes on without it.
+	// goes with that run's input, as a PartContext of the user message:
+	// what changes between turns, such as the index of the project notes
+	// or the project's rules. The system prompt stays the same at every
+	// turn, so the provider's cache keeps it and the history. Return ""
+	// for nothing; an error is reported as an event and the run goes on
+	// without it.
 	Context func(ctx context.Context) (string, error)
 	// Discovery lists deferrable tools by name only once their schemas
 	// exceed DiscoveryThreshold bytes (default 16 KiB); the model loads
@@ -94,8 +114,9 @@ type Config struct {
 	Discovery          Discovery
 	DiscoveryThreshold int
 	// Memory, when set, recalls the records relevant to each user turn
-	// into that run's system prompt. Writing memories is up to the host,
-	// or to the model through the tools in package memory.
+	// into that turn's input (a PartContext, as Context). Writing memories
+	// is up to the host, or to the model through the tools in package
+	// memory.
 	Memory Memory
 	// Recall is how many records join the context; zero means 5, a
 	// negative value turns automatic recall off.
@@ -103,8 +124,9 @@ type Config struct {
 	// Observers receive every event of every run of this agent; see
 	// Observer.
 	Observers []Observer
-	// Loop configures the loop detector; the zero value warns the model
-	// when the same calls keep giving the same results.
+	// Loop configures the loop detector; the zero value reports to the
+	// host, in the tool events, when the same calls keep giving the same
+	// results (LoopWarn also tells the model).
 	Loop Loop
 	// StrictResume refuses a conversation that ended in the middle of tool
 	// calls (ErrSessionIncomplete) instead of telling the model those calls
@@ -299,6 +321,7 @@ type run struct {
 	hist       Tool          // read_history, nil when compaction is off or the host has its own
 	loops      *loopDetector // nil when disabled
 	loopStop   bool          // LoopStop refused a call: the run ends after this batch
+	denyStop   bool          // Approve said Stop: the run ends after this batch
 	batch      *loopDetector // the detector plus the calls admitted in the current batch
 	modelStart time.Time     // when the current model call began
 }
@@ -334,56 +357,117 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	if err := r.recover(ctx); err != nil {
 		return err
 	}
-	if err := r.add(ctx, input.Clone()); err != nil {
+	input = input.Clone()
+	recalled, err := r.recall(ctx, input.Text())
+	if err != nil {
 		return err
 	}
-	if err := r.recall(ctx, input.Text()); err != nil {
+	host, err := r.context(ctx)
+	if err != nil {
 		return err
 	}
-	if err := r.addContext(ctx); err != nil {
+	// What the host adds for this turn goes with the input, not in the
+	// system prompt: the system prompt and the history stay as they were,
+	// and the provider's cache keeps them (a system prompt rebuilt at each
+	// turn rewrote the whole prompt into the cache every time, 21/11).
+	input.Parts = append(r.added(recalled, host), input.Parts...)
+	if err := r.add(ctx, input); err != nil {
 		return err
 	}
 	if r.disc != nil {
-		r.system += r.disc.block()
+		r.system += r.disc.block() // the same at every turn: the catalog of the tools
 	}
 	return nil
 }
 
-// addContext appends the host's per-run context to the system prompt.
-func (r *run) addContext(ctx context.Context) error {
+// context is the host's context for this run (Config.Context).
+func (r *run) context(ctx context.Context) (string, error) {
 	if r.cfg.Context == nil {
-		return nil
+		return "", nil
 	}
 	text, err := r.cfg.Context(ctx)
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return "", ctx.Err()
 	}
 	if err != nil {
-		return r.emit(Event{Kind: EventContext, Err: err})
+		return "", r.emit(Event{Kind: EventContext, Err: err})
 	}
-	if text != "" {
-		r.system += "\n\n" + text
+	if text == "" {
+		return "", nil
 	}
-	return nil
+	return "\n\n" + text, nil
 }
 
-// recall adds the memories relevant to the input to this run's system
-// prompt. A failing memory does not stop the turn: the event reports it.
-func (r *run) recall(ctx context.Context, query string) error {
+// recall is the memories relevant to the input, as the block that goes
+// with it. A failing memory does not stop the turn: the event reports it.
+func (r *run) recall(ctx context.Context, query string) (string, error) {
 	n := r.cfg.recallCount()
 	if n == 0 {
-		return nil
+		return "", nil
 	}
 	recs, err := r.cfg.Memory.Search(ctx, query, n)
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return "", ctx.Err()
 	}
-	r.system = r.cfg.System + memoryBlock(recs)
 	what := strconv.Itoa(len(recs)) + " memories"
 	if len(recs) == 1 {
 		what = "1 memory"
 	}
-	return r.emit(Event{Kind: EventRecalled, Text: what, Err: err})
+	return memoryBlock(recs, recalledBefore(r.msgs)), r.emit(Event{Kind: EventRecalled, Text: what, Err: err})
+}
+
+// added is what goes with the input: the memories (already new ones
+// only) and the host's context when it changed.
+func (r *run) added(recalled, host string) []Part {
+	var out []Part
+	if text := strings.TrimSpace(recalled); text != "" {
+		out = append(out, Part{Type: PartContext, Source: ContextMemory, Text: text})
+	}
+	if text := strings.TrimSpace(host); text != "" && text != lastHostContext(r.msgs) {
+		out = append(out, Part{Type: PartContext, Source: ContextHost, Text: text})
+	}
+	return out
+}
+
+// lastHostContext is the host's context the conversation holds last: the
+// one in force for the model.
+func lastHostContext(msgs []Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if p, ok := hostContext(msgs[i]); ok {
+			return p.Text
+		}
+	}
+	return ""
+}
+
+func hostContext(m Message) (Part, bool) {
+	for _, p := range m.Parts {
+		if p.Type == PartContext && p.Source == ContextHost {
+			return p, true
+		}
+	}
+	return Part{}, false
+}
+
+// recalledBefore says whether a memory's line is already in the
+// conversation: it is not added again.
+func recalledBefore(msgs []Message) func(line string) bool {
+	var held []string
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if p.Type == PartContext && p.Source == ContextMemory {
+				held = append(held, p.Text)
+			}
+		}
+	}
+	return func(line string) bool {
+		for _, h := range held {
+			if strings.Contains(h, line) {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // recover answers the calls a previous run left without results. They are
@@ -447,13 +531,16 @@ func (r *run) execute(ctx context.Context) error {
 		if r.loopStop {
 			return r.finish(StopLoop)
 		}
+		if r.denyStop {
+			return r.finish(StopDenied)
+		}
 	}
 }
 
 func (r *run) callModel(ctx context.Context) (*Response, error) {
 	r.modelStart = time.Now()
 	resp, err := r.request(ctx, r.system)
-	if err == nil && empty(resp) && r.cfg.Tools != nil && len(r.toolSpecs()) > 0 {
+	if err == nil && empty(resp) && !r.cfg.NoEmptyRetry && r.cfg.Tools != nil && len(r.toolSpecs()) > 0 {
 		// An empty answer after a turn is often a tool call the provider
 		// dropped (a name not in the list): ask once more, saying so. The
 		// empty call is reported and counted, not recorded.
@@ -462,7 +549,13 @@ func (r *run) callModel(ctx context.Context) (*Response, error) {
 			return nil, err
 		}
 		r.modelStart = time.Now()
-		resp, err = r.request(ctx, r.system+r.emptyNudge())
+		// The nudge joins the conversation as a system message, after
+		// what it concerns: the system prompt and the history stay as
+		// they were (21/11: it rebuilt the system prompt, a cache miss).
+		if err := r.add(ctx, SystemText(r.emptyNudge())); err != nil {
+			return nil, err
+		}
+		resp, err = r.request(ctx, r.system)
 	}
 	if err != nil {
 		return nil, err
@@ -478,8 +571,8 @@ func (r *run) emptyNudge() string {
 	for _, s := range specs[:min(len(specs), 40)] {
 		names = append(names, s.Name)
 	}
-	return "\n\n[Your last reply was empty: a call to a tool name that does not exist is dropped. The only tool names are: " +
-		strings.Join(names, ", ") + ". Call one of them exactly (a command or action goes in its arguments), or answer in text.]"
+	return "Your last reply was empty: a call to a tool name that does not exist is dropped. The only tool names are: " +
+		strings.Join(names, ", ") + ". Call one of them exactly (a command or action goes in its arguments), or answer in text."
 }
 
 func empty(resp *Response) bool {
@@ -537,7 +630,7 @@ func (r *run) generate(ctx context.Context, full *Request, budget int) (*Respons
 		}
 	}
 	req.Tools = r.withHistory(req.Tools)
-	req.Messages = latestImagesOnly(req.Messages)
+	req.Messages = latestImages(req.Messages, r.cfg.KeepImages)
 	r.lastBytes = requestBytes(&req)
 	r.lastImages = 0
 	for _, m := range req.Messages {
@@ -595,7 +688,11 @@ type outcome struct {
 	took time.Duration // how long the call ran
 }
 
-func (r *run) runBatch(ctx context.Context, calls []ToolCall) error {
+func (r *run) runBatch(ctx context.Context, asked []ToolCall) error {
+	// The calls run as approved (Decision.Input) without touching the
+	// model's message, which shares asked; the loop detector judges what
+	// the model asked (audit 21/11: the host's input rewrote the history).
+	calls := slices.Clone(asked)
 	out := make([]outcome, len(calls))
 	run := make([]bool, len(calls))
 	r.batch = r.loops.clone() // calls run together are checked against each other too
@@ -603,16 +700,17 @@ func (r *run) runBatch(ctx context.Context, calls []ToolCall) error {
 		if err := r.emit(Event{Kind: EventToolStart, Call: &calls[i], UnknownTool: r.unknown(calls[i].Name)}); err != nil {
 			return err
 		}
-		res, err, ok := r.gate(ctx, calls[i])
+		res, err, ok := r.gate(ctx, &calls[i])
 		out[i], run[i] = outcome{res: res, err: err, loop: r.loopNote(err)}, ok
 		if ok {
-			r.batch.admit(calls[i])
+			r.batch.admit(asked[i])
 		}
 	}
 	r.runCalls(ctx, calls, run, out)
 	for i := range calls {
 		if run[i] {
-			r.watch(calls[i], &out[i])
+			r.watch(asked[i], &out[i])
+			r.after(ctx, calls[i], &out[i])
 		}
 	}
 	// Every call that ran is recorded before any stop: a result lost after
@@ -688,8 +786,8 @@ func (r *run) record(ctx context.Context, call *ToolCall, o outcome, quiet bool)
 
 // gate decides whether a call runs: an unknown tool or the host's refusal
 // answers it at once (ok false) with the result to record.
-func (r *run) gate(ctx context.Context, call ToolCall) (ToolResult, error, bool) {
-	if res, err, refused := r.precheck(ctx, call); refused {
+func (r *run) gate(ctx context.Context, call *ToolCall) (ToolResult, error, bool) {
+	if res, err, refused := r.precheck(ctx, *call); refused {
 		return res, err, false
 	}
 	if r.cfg.Approve == nil {
@@ -699,16 +797,49 @@ func (r *run) gate(ctx context.Context, call ToolCall) (ToolResult, error, bool)
 	if !ok {
 		return ToolResult{}, nil, true
 	}
-	allowed, err := r.cfg.Approve(ctx, call, spec)
-	if err == nil && allowed {
+	d, err := r.cfg.Approve(ctx, *call, spec)
+	if d.Stop {
+		r.denyStop = true
+	}
+	if err == nil && d.Allow {
+		if d.Input != nil {
+			call.Input, call.BadInput = append(json.RawMessage(nil), d.Input...), false
+		}
 		return ToolResult{}, nil, true
 	}
+	return refused(*call, d, err)
+}
+
+// refused is the answer to a call the approval refused.
+func refused(call ToolCall, d Decision, err error) (ToolResult, error, bool) {
 	denied := errors.New(ErrToolDenied, "the user did not approve the call")
 	if err != nil {
 		denied = errors.Wrap(err, ErrToolDenied, "approval failed")
 	}
-	return ToolResult{CallID: call.ID, Content: "The user did not approve this call. Ask before trying again.", IsError: true}, denied, false
+	text := cmp.Or(d.Message, "The user did not approve this call. Ask before trying again.")
+	return ToolResult{CallID: call.ID, Content: text, IsError: true}, denied, false
 }
+
+// Decision is what Config.Approve decides about a call.
+type Decision struct {
+	// Allow runs the call.
+	Allow bool
+	// Input, with Allow, is the arguments the call runs with instead of
+	// the model's (the model's message keeps its own).
+	Input json.RawMessage
+	// Message, without Allow, is what the model is told; empty is "The
+	// user did not approve this call."
+	Message string
+	// Stop ends the run once the calls of this turn are answered
+	// (StopDenied), allowed or not.
+	Stop bool
+}
+
+// Allow is a Decision that runs the call as the model asked.
+func Allow() Decision { return Decision{Allow: true} }
+
+// Deny is a Decision that refuses the call, telling the model message.
+func Deny(message string) Decision { return Decision{Message: message} }
 
 // precheck answers, without asking anyone, a call that cannot or must
 // not run: the run is cancelled, the tool is unknown, or the call would
@@ -732,7 +863,7 @@ func (r *run) loopGate(call ToolCall) (ToolResult, error, bool) {
 	switch {
 	case r.loopStop:
 		return refuse("Not run: the run was stopped by the loop detector.", "stopped")
-	case r.cfg.Loop.Action == LoopWarn || !r.batch.continues(call):
+	case r.cfg.Loop.Action <= LoopWarn || !r.batch.continues(call):
 		return ToolResult{}, nil, false
 	case r.cfg.Loop.Action == LoopStop:
 		r.loopStop = true
@@ -752,6 +883,32 @@ func (r *run) loopNote(err error) string {
 	return "blocked"
 }
 
+// after gives the result to AfterTool, keeping its call's ID.
+func (r *run) after(ctx context.Context, call ToolCall, o *outcome) {
+	if r.cfg.AfterTool == nil || ctx.Err() != nil {
+		return
+	}
+	res, ok := r.afterTool(ctx, call, o.res)
+	if !ok {
+		o.res = ToolResult{CallID: o.res.CallID, Content: "The result was withheld: the application failed to check it.", IsError: true}
+		return
+	}
+	res.CallID = o.res.CallID
+	res.Images = checkedImages(res.Images) // the host's images pass the same check as a tool's
+	o.res = res
+}
+
+// afterTool runs Config.AfterTool; a panic in it withholds the result
+// (it may have been about to redact it) rather than end the run.
+func (r *run) afterTool(ctx context.Context, call ToolCall, res ToolResult) (out ToolResult, ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	return r.cfg.AfterTool(ctx, call, res), true
+}
+
 // watch records a call that ran and warns the model, in its result, when
 // the call repeats a loop.
 func (r *run) watch(call ToolCall, o *outcome) {
@@ -762,7 +919,15 @@ func (r *run) watch(call ToolCall, o *outcome) {
 	if times == 0 {
 		return
 	}
-	o.res.Content = loopWarning(times, period) + o.res.Content
+	if r.cfg.Loop.Action == LoopReport {
+		o.loop = "repeated"
+		return
+	}
+	warn := r.cfg.Loop.Warning
+	if warn == nil {
+		warn = loopWarning
+	}
+	o.res.Content = warn(times, period) + o.res.Content
 	o.loop = "warned"
 }
 

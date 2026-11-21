@@ -77,7 +77,10 @@ func TestStreamedCall(t *testing.T) {
 
 // The thinking of a round goes back with its turn, before its calls, while
 // the round lasts; after the user writes again it is left out.
-func TestThinkingGoesBackForItsRound(t *testing.T) {
+// The thinking goes back at every turn, as the API keeps it (21/11: it
+// was left out after each round, when the system prompt still changed
+// between turns); a saved conversation keeps it in its reasoning parts.
+func TestThinkingGoesBackAtEveryTurn(t *testing.T) {
 	for _, streamed := range []bool{false, true} {
 		var sink agent.TextSink
 		if streamed {
@@ -90,30 +93,40 @@ func TestThinkingGoesBackForItsRound(t *testing.T) {
 func thinkingRound(t *testing.T, sink agent.TextSink) {
 	t.Helper()
 	streamed := sink != nil
-	f, url := newFake(t, thinkingThenCall("sig-round", "toolu_1", "lookup", `{"word":"a"}`), text("fatto"), text("ancora"))
+	f, url := newFake(t, thinkingThenCall("sig-round", "toolu_1", "lookup", `{"word":"a"}`), text("fatto"), text("ancora"), text("di nuovo"))
 	p := open(t, url, Config{})
-	{
-		req := &agent.Request{Messages: []agent.Message{agent.UserText("cerca a")}, Tools: []agent.ToolSpec{lookup}}
-		first, err := p.Generate(t.Context(), req, sink)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Messages = append(req.Messages, first.Message, agent.ToolMessage(agent.ToolResult{CallID: "toolu_1", Content: "trovato"}))
-		second, err := p.Generate(t.Context(), req, sink)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sent := f.sent(1)
-		if !has(sent, `"signature":"sig-round"`, `"type":"tool_result"`) || strings.Index(sent, "sig-round") > strings.Index(sent, `"tool_use"`) {
-			t.Fatalf("streamed %v, the round went back as %s", streamed, sent)
-		}
-		req.Messages = append(req.Messages, second.Message, agent.UserText("e poi?"))
-		if _, err := p.Generate(t.Context(), req, sink); err != nil {
-			t.Fatal(err)
-		}
-		if sent := f.sent(2); strings.Contains(sent, "sig-round") || !has(sent, `"tool_use"`, `"tool_result"`) {
-			t.Fatalf("streamed %v, after the round: %s", streamed, sent)
-		}
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("cerca a")}, Tools: []agent.ToolSpec{lookup}}
+	first, err := p.Generate(t.Context(), req, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := first.Message.Reasoning("anthropic"); len(r) != 1 || r[0].Signature != "sig-round" || first.Message.Text() != "" {
+		t.Fatalf("reasoning %+v", first.Message.Parts)
+	}
+	req.Messages = append(req.Messages, first.Message, agent.ToolMessage(agent.ToolResult{CallID: "toolu_1", Content: "trovato"}))
+	second, err := p.Generate(t.Context(), req, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.sent(1); !has(sent, `"signature":"sig-round"`, `"type":"tool_result"`) || strings.Index(sent, "sig-round") > strings.Index(sent, `"tool_use"`) {
+		t.Fatalf("streamed %v, the round went back as %s", streamed, sent)
+	}
+	req.Messages = append(req.Messages, second.Message, agent.UserText("e poi?"))
+	afterTheRound(t, f, url, p, req, sink)
+}
+
+// afterTheRound: the thinking still goes back after the user writes
+// again, and from a provider resumed elsewhere (a new process) too.
+func afterTheRound(t *testing.T, f *fakeAPI, url string, p agent.Provider, req *agent.Request, sink agent.TextSink) {
+	t.Helper()
+	if _, err := p.Generate(t.Context(), req, sink); err != nil {
+		t.Fatal(err)
+	}
+	if sent := f.sent(2); !has(sent, `"signature":"sig-round"`, `"tool_use"`, `"tool_result"`) {
+		t.Fatalf("after the round: %s", sent)
+	}
+	if _, err := open(t, url, Config{}).Generate(t.Context(), req, sink); err != nil || !strings.Contains(f.sent(3), `"signature":"sig-round"`) {
+		t.Fatalf("resumed: %v %s", err, f.sent(3))
 	}
 }
 
@@ -431,4 +444,65 @@ func TestInfo(t *testing.T) {
 func isRetryable(err error) bool {
 	var r errors.Retryable
 	return stderrors.As(err, &r) && r.IsRetryable()
+}
+
+// A host's system message goes as one where the API takes it (after a
+// user turn, before the model's), else as a marked note in a user turn.
+func TestSystemMessages(t *testing.T) {
+	f, url := newFake(t, text("ok"))
+	msgs := []agent.Message{agent.SystemText("first note"), agent.UserText("ciao"), agent.SystemText("after the user"),
+		agent.AssistantText("risposta"), agent.SystemText("before a user turn"), agent.UserText("e poi?"), agent.SystemText("last")}
+	if _, err := open(t, url, Config{}).Generate(t.Context(), &agent.Request{Messages: msgs}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var sent []struct {
+		Role    string           `json:"role"`
+		Content []map[string]any `json:"content"`
+	}
+	_ = json.Unmarshal([]byte(f.sent(0)), &sent)
+	roles := ""
+	for _, m := range sent {
+		roles += m.Role + " "
+	}
+	if roles != "user system assistant user system " {
+		t.Fatalf("roles %q in %s", roles, f.sent(0))
+	}
+	if !has(f.sent(0), `system-reminder\u003e\nfirst note`, `system-reminder\u003e\nbefore a user turn`) {
+		t.Fatalf("notes %s", f.sent(0))
+	}
+}
+
+// A tool result, a host's note, then the user: one user turn, the result
+// first (audit 21/11: two user turns in a row).
+func TestSystemAfterAToolResult(t *testing.T) {
+	f, url := newFake(t, text("ok"))
+	calls := agent.Message{Role: agent.RoleAssistant, Calls: []agent.ToolCall{{ID: "toolu_1", Name: "t", Input: json.RawMessage(`{}`)}}}
+	msgs := []agent.Message{agent.UserText("via"), calls, agent.ToolMessage(agent.ToolResult{CallID: "toolu_1", Content: "fatto"}),
+		agent.SystemText("Your last reply was empty."), agent.UserText("allora?")}
+	if _, err := open(t, url, Config{}).Generate(t.Context(), &agent.Request{Messages: msgs}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var sent []struct {
+		Role    string           `json:"role"`
+		Content []map[string]any `json:"content"`
+	}
+	_ = json.Unmarshal([]byte(f.sent(0)), &sent)
+	if len(sent) != 3 || sent[2].Role != "user" || sent[2].Content[0]["type"] != "tool_result" || len(sent[2].Content) != 3 {
+		t.Fatalf("%s", f.sent(0))
+	}
+}
+
+// A tool's images go to Claude inside its result.
+func TestToolResultImages(t *testing.T) {
+	f, url := newFake(t, text("un grafico"))
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 16)...)
+	calls := agent.Message{Role: agent.RoleAssistant, Calls: []agent.ToolCall{{ID: "toolu_1", Name: "shot", Input: json.RawMessage(`{}`)}}}
+	res := agent.ToolResult{CallID: "toolu_1", Content: "screen", Images: []agent.Part{{Type: agent.PartImage, MIME: "image/png", Data: png}}}
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("guarda"), calls, agent.ToolMessage(res)}}
+	if _, err := open(t, url, Config{}).Generate(t.Context(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !has(f.sent(0), `"type":"tool_result"`, `"type":"image"`, `"media_type":"image/png"`, `"text":"screen"`) {
+		t.Fatalf("%s", f.sent(0))
+	}
 }

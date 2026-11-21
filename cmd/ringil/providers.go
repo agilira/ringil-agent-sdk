@@ -89,6 +89,20 @@ func (c *cli) baseFor(ctx *orpheus.Context, res secrets.Resolver, kind string) (
 	return "", nil
 }
 
+// keepImages is how many of the latest messages send their images: all
+// to Claude; to an OpenAI-compatible server only the latest, as local ones
+// (llama.cpp, some vLLM builds) take one image per request.
+func (c *cli) keepImages(ctx *orpheus.Context) int {
+	res, err := c.resolver(ctx)
+	if err != nil {
+		return 1
+	}
+	if kind, err := c.providerKind(ctx, res); err == nil && kind == providerAnthropic {
+		return 0
+	}
+	return 1
+}
+
 // ownEndpoint: the role talks to an endpoint of its own, its base or
 // another provider than the main one; it sends only its own key there,
 // and the main key never leaves for it.

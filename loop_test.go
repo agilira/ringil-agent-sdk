@@ -61,6 +61,8 @@ func loopRun(t *testing.T, cfg agent.Config, steps []fake.Step) (results, loops 
 	return results, loops, res
 }
 
+var warn = agent.Loop{Action: agent.LoopWarn}
+
 func warned(results []string) string {
 	var marks []string
 	for _, r := range results {
@@ -69,9 +71,19 @@ func warned(results []string) string {
 	return strings.Join(marks, " ")
 }
 
-func TestLoopWarnsByDefault(t *testing.T) {
+// By default a loop is the host's to know: the results stay the tools'
+// own (21/11: the model's results were written into by default).
+func TestLoopIsReportedByDefault(t *testing.T) {
 	var runs atomic.Int32
-	results, loops, res := loopRun(t, agent.Config{Tools: tools(t, constant("ping", &runs))}, script("ping", "ping", "ping", "ping"))
+	results, loops, _ := loopRun(t, agent.Config{Tools: tools(t, constant("ping", &runs))}, script("ping", "ping", "ping", "ping"))
+	if got := warned(results); got != "false false false false" || len(loops) != 2 || loops[0] != "ping:repeated" {
+		t.Fatalf("warned %s, %v", got, loops)
+	}
+}
+
+func TestLoopWarns(t *testing.T) {
+	var runs atomic.Int32
+	results, loops, res := loopRun(t, agent.Config{Tools: tools(t, constant("ping", &runs)), Loop: warn}, script("ping", "ping", "ping", "ping"))
 	if got := warned(results); got != "false false true true" || runs.Load() != 4 || res.Text != "done" {
 		t.Fatalf("warned %s runs %d text %q", got, runs.Load(), res.Text)
 	}
@@ -87,7 +99,7 @@ func TestChangingResultsAreNotALoop(t *testing.T) {
 		page++
 		return "page " + strconv.Itoa(page), nil
 	})
-	results, loops, _ := loopRun(t, agent.Config{Tools: tools(t, next)}, script("read_page", "read_page", "read_page", "read_page", "read_page"))
+	results, loops, _ := loopRun(t, agent.Config{Tools: tools(t, next), Loop: warn}, script("read_page", "read_page", "read_page", "read_page", "read_page"))
 	if got := warned(results); strings.Contains(got, "true") || len(loops) != 0 {
 		t.Fatalf("warned %s", got)
 	}
@@ -97,12 +109,12 @@ func TestChangingResultsAreNotALoop(t *testing.T) {
 func TestCyclesOfTwoAndThree(t *testing.T) {
 	var runs atomic.Int32
 	reg := tools(t, constant("a", &runs), constant("b", &runs), constant("c", &runs))
-	results, _, _ := loopRun(t, agent.Config{Tools: reg}, script("a", "b", "a", "b", "a", "b"))
+	results, _, _ := loopRun(t, agent.Config{Tools: reg, Loop: warn}, script("a", "b", "a", "b", "a", "b"))
 	// Three whole cycles make a loop: the sixth call.
 	if got := warned(results); got != "false false false false false true" || !strings.Contains(results[5], "cycle of 2 calls") {
 		t.Fatalf("cycle of 2: %s %q", got, results[5])
 	}
-	results, _, _ = loopRun(t, agent.Config{Tools: reg}, script("a", "b", "c", "a", "b", "c", "a", "b", "c"))
+	results, _, _ = loopRun(t, agent.Config{Tools: reg, Loop: warn}, script("a", "b", "c", "a", "b", "c", "a", "b", "c"))
 	if got := warned(results); got != "false false false false false false false false true" || !strings.Contains(results[8], "cycle of 3 calls") {
 		t.Fatalf("cycle of 3: %s", got)
 	}
@@ -112,7 +124,7 @@ func TestCyclesOfTwoAndThree(t *testing.T) {
 func TestArgumentOrderDoesNotHideALoop(t *testing.T) {
 	var runs atomic.Int32
 	steps := []fake.Step{fake.Call("ping", `{"a":1,"b":2}`), fake.Call("ping", `{"b":2, "a":1}`), fake.Call("ping", `{ "a": 1, "b": 2 }`), fake.Reply("done")}
-	results, _, _ := loopRun(t, agent.Config{Tools: tools(t, constant("ping", &runs))}, steps)
+	results, _, _ := loopRun(t, agent.Config{Tools: tools(t, constant("ping", &runs)), Loop: warn}, steps)
 	if got := warned(results); got != "false false true" {
 		t.Fatalf("warned %s", got)
 	}
@@ -134,7 +146,10 @@ func TestLoopBlockRefusesTheNextRepeat(t *testing.T) {
 func TestLoopBlockBeforeApproval(t *testing.T) {
 	var runs, asked atomic.Int32
 	cfg := agent.Config{Tools: tools(t, constant("ping", &runs)), Loop: agent.Loop{Action: agent.LoopBlock},
-		Approve: func(context.Context, agent.ToolCall, agent.ToolSpec) (bool, error) { asked.Add(1); return true, nil }}
+		Approve: func(context.Context, agent.ToolCall, agent.ToolSpec) (agent.Decision, error) {
+			asked.Add(1)
+			return agent.Allow(), nil
+		}}
 	loopRun(t, cfg, script("ping", "ping", "ping", "ping"))
 	if asked.Load() != 3 {
 		t.Fatalf("asked %d times", asked.Load())
@@ -216,7 +231,7 @@ func TestWarningSurvivesCompaction(t *testing.T) {
 		return strings.Repeat("x", 20000), nil
 	}, agent.ReadOnly())
 	p := fake.New(fake.Call("read", `{}`), fake.Call("read", `{}`), together("read", "read"), fake.Reply("done"))
-	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, big), ContextWindow: 4000})
+	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, big), ContextWindow: 4000, Loop: warn})
 	if _, err := a.Run(context.Background(), nil, agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
@@ -256,5 +271,15 @@ func TestSameMeaningIsTheSameCall(t *testing.T) {
 	results, _, _ = loopRun(t, cfg, steps)
 	if runs.Load() != 3 || strings.Contains(warned(results), "true") {
 		t.Fatalf("runs %d warned %s", runs.Load(), warned(results))
+	}
+}
+
+// The warning is the host's to word.
+func TestLoopWarningWording(t *testing.T) {
+	var runs atomic.Int32
+	l := agent.Loop{Action: agent.LoopWarn, Warning: func(times, period int) string { return "[Loop: giro " + strconv.Itoa(times) + "]\n" }}
+	results, _, _ := loopRun(t, agent.Config{Tools: tools(t, constant("ping", &runs)), Loop: l}, script("ping", "ping", "ping"))
+	if !strings.HasPrefix(results[2], "[Loop: giro 3]") {
+		t.Fatalf("%q", results[2])
 	}
 }

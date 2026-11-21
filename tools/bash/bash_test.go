@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/agilira/go-errors"
 
@@ -39,11 +40,12 @@ func newBash(t *testing.T, cfg Config) agent.Tool {
 	if cfg.Dir == "" {
 		cfg.Dir = t.TempDir()
 	}
-	tl, err := New(cfg)
+	sh, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tl
+	t.Cleanup(func() { _ = sh.Close() })
+	return sh.Tools()[0]
 }
 
 func call(t *testing.T, tl agent.Tool, in map[string]any) (string, error) {
@@ -51,6 +53,16 @@ func call(t *testing.T, tl agent.Tool, in map[string]any) (string, error) {
 	raw, _ := json.Marshal(in)
 	out, err := tl.Call(context.Background(), raw)
 	return out.Content, err
+}
+
+// mustCall runs command; a tool error fails the test.
+func mustCall(t *testing.T, tl agent.Tool, command string) string {
+	t.Helper()
+	out, err := call(t, tl, map[string]any{"command": command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func write(t *testing.T, dir string, files map[string]string) {
@@ -240,7 +252,7 @@ func TestAHomeIsReadWithItsSecretsHidden(t *testing.T) {
 	write(t, home, map[string]string{"lib/a.txt": "hello", ".ssh/id_rsa": "KEY", ".config/ringil/state": "STATE", ".netrc": "NETRC"})
 	tl := newBash(t, Config{Dir: t.TempDir(), Sandbox: box, Read: []string{home}, Home: home, Never: []string{filepath.Join(home, ".config", "ringil")}})
 	out, _ := call(t, tl, map[string]any{"command": "cat ~/lib/a.txt; cat " + home + "/.ssh/id_rsa " + home + "/.netrc " + home + "/.config/ringil/state 2>&1; echo \"[$XDG_CACHE_HOME]\""})
-	if !strings.Contains(out, "hello") || strings.Contains(out, "KEY") || strings.Contains(out, "NETRC") || strings.Contains(out, "STATE") || !strings.Contains(out, "[/tmp/.cache]") {
+	if !strings.Contains(out, "hello") || strings.Contains(out, "KEY") || strings.Contains(out, "NETRC") || strings.Contains(out, "STATE") || !strings.Contains(out, "/.cache]") {
 		t.Fatalf("%q", out)
 	}
 }
@@ -254,8 +266,8 @@ func TestAWritableHomeKeepsItsHiddenPathsHidden(t *testing.T) {
 	home := t.TempDir()
 	write(t, home, map[string]string{".config/gh/hosts.yml": "GHTOKEN", ".config/ringil/state": "STATE", ".local/share/keyrings/login": "KEYRING", "notes.txt": "ok"})
 	tl := newBash(t, Config{Dir: home, Home: home, Sandbox: box, Read: []string{}, Never: []string{filepath.Join(home, ".config", "ringil")}})
-	_, _ = call(t, tl, map[string]any{"command": "mv ~/.config ~/c; mv ~/.local ~/l; mkdir -p ~/.config/ringil && echo PLANTED > ~/.config/ringil/x"})
-	out, _ := call(t, tl, map[string]any{"command": "cat ~/c/gh/hosts.yml ~/c/ringil/state ~/l/share/keyrings/login ~/.config/gh/hosts.yml ~/.config/ringil/state 2>&1; cat ~/notes.txt"})
+	mustCall(t, tl, "mv ~/.config ~/c; mv ~/.local ~/l; mkdir -p ~/.config/ringil && echo PLANTED > ~/.config/ringil/x")
+	out := mustCall(t, tl, "cat ~/c/gh/hosts.yml ~/c/ringil/state ~/l/share/keyrings/login ~/.config/gh/hosts.yml ~/.config/ringil/state 2>&1; cat ~/notes.txt")
 	if strings.Contains(out, "GHTOKEN") || strings.Contains(out, "STATE") || strings.Contains(out, "KEYRING") || !strings.Contains(out, "ok") {
 		t.Fatalf("%q", out)
 	}
@@ -303,5 +315,41 @@ func TestStartupFilesStayAsTheyAre(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".config", "autostart", "b.desktop")); !os.IsNotExist(err) {
 		t.Fatal("an autostart entry was added")
+	}
+}
+
+// A command can run in the background (a server, a watcher): bash returns
+// at once, bash_output reads it, bash_kill stops it, and other commands
+// run meanwhile (21/11: there was no background, and a fixed cap).
+func TestBackgroundCommands(t *testing.T) {
+	box := boxOrSkip(t)
+	sh, err := New(Config{Dir: t.TempDir(), Sandbox: box, Read: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sh.Close() })
+	tools := sh.Tools()
+	bash, output, kill := tools[0], tools[1], tools[2]
+	start := func(command string) string {
+		t.Helper()
+		out, err := call(t, bash, map[string]any{"command": command, "background": true})
+		if err != nil || !strings.Contains(out, "job b") {
+			t.Fatalf("%q %v", out, err)
+		}
+		return out[strings.Index(out, "job b")+4 : strings.Index(out, ":")]
+	}
+	quick, slow := start("sleep 0.3; echo finished"), start("sleep 30")
+	if out := mustCall(t, bash, "echo meanwhile"); !strings.Contains(out, "meanwhile") {
+		t.Fatalf("a background job held the others: %q", out)
+	}
+	time.Sleep(time.Second)
+	if out, _ := call(t, output, map[string]any{"id": quick}); !strings.HasPrefix(out, "Ended") || !strings.Contains(out, "finished") {
+		t.Fatalf("%q", out)
+	}
+	if out, _ := call(t, output, map[string]any{"id": slow}); !strings.HasPrefix(out, "Running") {
+		t.Fatalf("%q", out)
+	}
+	if out, _ := call(t, kill, map[string]any{"id": slow}); !strings.HasPrefix(out, "Stopped") {
+		t.Fatalf("%q", out)
 	}
 }

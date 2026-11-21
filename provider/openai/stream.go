@@ -29,6 +29,7 @@ type streamChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content   *string        `json:"content"`
+			Reasoning *string        `json:"reasoning_content"`
 			ToolCalls []wireToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
@@ -43,14 +44,15 @@ type partialCall struct {
 }
 
 type streamState struct {
-	sink    agent.TextSink
-	text    strings.Builder
-	calls   []*partialCall
-	byIndex map[int]*partialCall
-	usage   agent.Usage
-	finish  *string
-	done    bool
-	size    int
+	sink      agent.TextSink
+	text      strings.Builder
+	reasoning strings.Builder
+	calls     []*partialCall
+	byIndex   map[int]*partialCall
+	usage     agent.Usage
+	finish    *string
+	done      bool
+	size      int
 }
 
 func decodeStream(r io.Reader, sink agent.TextSink) (*agent.Response, error) {
@@ -136,10 +138,24 @@ func (s *streamState) choices(chunk streamChunk) error {
 			return err
 		}
 	}
+	if err := s.reasoningDelta(choice.Delta.Reasoning); err != nil {
+		return err
+	}
 	if choice.Delta.Content == nil || *choice.Delta.Content == "" {
 		return nil
 	}
 	return s.textDelta(*choice.Delta.Content)
+}
+
+func (s *streamState) reasoningDelta(r *string) error {
+	if r == nil || *r == "" {
+		return nil
+	}
+	if err := s.grow(len(*r)); err != nil {
+		return err
+	}
+	s.reasoning.WriteString(*r)
+	return nil
 }
 
 func (s *streamState) grow(n int) error {
@@ -211,7 +227,7 @@ func (s *streamState) result() (*agent.Response, error) {
 		finish = *s.finish
 	}
 	return &agent.Response{
-		Message: assistant(s.text.String(), calls),
+		Message: assistant(s.reasoning.String(), s.text.String(), calls),
 		Usage:   s.usage,
 		Stop:    decodeStop(finish, len(calls)),
 	}, nil

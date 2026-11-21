@@ -58,9 +58,8 @@ var DefaultProtected = []string{
 	".claude", ".codex", ".cursor", ".gemini", ".windsurf", ".continue", ".aider*", ".vscode", ".idea", ".zed", ".devcontainer",
 	// the repository and its automation
 	".git", ".github", ".gitlab-ci.yml", ".gitignore", ".gitattributes", ".gitmodules", ".pre-commit-config.yaml", ".husky",
-	// files that make other tools run code: MCP servers, direnv; ringil's
-	// own configuration
-	".mcp.json", ".envrc", "ringil.yaml",
+	// files that make other tools run code: MCP servers, direnv
+	".mcp.json", ".envrc",
 	// what the shell and the desktop run on the host: startup files and
 	// autostart entries (a home granted writable would otherwise let a
 	// command leave code for the next login)

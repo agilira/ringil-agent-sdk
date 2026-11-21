@@ -21,7 +21,7 @@ import (
 // bashTool runs commands in the first workspace directory; the others
 // are readable. Network domains are allowed by --allow-domains or asked
 // about; commands outside the sandbox and dangerous ones are confirmed.
-func (c *cli) bashTool(ctx *orpheus.Context, dirs []string) (agent.Tool, error) {
+func (c *cli) bashTool(ctx *orpheus.Context, dirs []string) ([]agent.Tool, error) {
 	box, err := c.newSandbox()
 	if err != nil {
 		box = nil // the tool finds none either: every command is confirmed
@@ -32,11 +32,21 @@ func (c *cli) bashTool(ctx *orpheus.Context, dirs []string) (agent.Tool, error) 
 		Read:    append(bash.ReadDefaults(), dirs[1:]...),
 		Network: bash.Network{Allow: splitList(c.flagString(ctx, "allow-domains")), Ask: c.askDomain},
 		Confirm: c.confirmCommand,
+		// ringil.yaml read-only in the sandbox too, as the file tools
+		// confirm it.
+		Protected: protectedPatterns,
 	}
 	if base, err := c.configDir(); err == nil {
 		cfg.Never = []string{filepath.Join(base, "ringil")}
 	}
-	return bash.New(cfg)
+	sh, err := bash.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	// Its background commands end with the session or the server's run,
+	// checked (audit 21/11: they outlived both).
+	c.closers = append(c.closers, sh.Close)
+	return sh.Tools(), nil
 }
 
 func splitList(s string) []string {
@@ -63,7 +73,7 @@ func (c *cli) confirmCommand(ctx context.Context, req bash.Request) (bool, error
 		if err != nil {
 			return false, err
 		}
-		return c.server.Approve(ctx, agent.ToolCall{ID: "bash-" + rand.Text()[:8], Name: "bash_" + string(req.Reason), Input: input}, agent.ToolSpec{})
+		return c.server.Ask(ctx, agent.ToolCall{ID: "bash-" + rand.Text()[:8], Name: "bash_" + string(req.Reason), Input: input})
 	}
 	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
@@ -94,7 +104,7 @@ func (c *cli) askDomain(ctx context.Context, host string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return c.server.Approve(ctx, agent.ToolCall{ID: "net-" + rand.Text()[:8], Name: "network_domain", Input: input}, agent.ToolSpec{})
+		return c.server.Ask(ctx, agent.ToolCall{ID: "net-" + rand.Text()[:8], Name: "network_domain", Input: input})
 	}
 	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()

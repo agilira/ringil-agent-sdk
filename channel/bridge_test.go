@@ -126,7 +126,7 @@ func rigWith(t *testing.T, bc Config, store bool, steps ...fake.Step) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	approve := func(ctx context.Context, c agent.ToolCall, sp agent.ToolSpec) (bool, error) {
+	approve := func(ctx context.Context, c agent.ToolCall, sp agent.ToolSpec) (agent.Decision, error) {
 		return r.srv.Approve(ctx, c, sp)
 	}
 	a, err := agent.New(agent.Config{Provider: r.model, Tools: reg, Approve: approve})

@@ -143,6 +143,15 @@ type Config struct {
 	// for builds and test runs).
 	Limits    sandbox.Limits
 	MaxOutput int
+	// Timeout is a command's when the model sets none (DefaultTimeout);
+	// MaxTimeout is the most it may set (MaxTimeout).
+	Timeout, MaxTimeout time.Duration
+	// BackgroundTimeout stops a background command that runs this long
+	// (DefaultBackgroundTimeout).
+	BackgroundTimeout time.Duration
+	// Description replaces the tool's own description, which assumes the
+	// file tools are there: a host with other tools says what fits.
+	Description string
 }
 
 type tool struct {
@@ -154,24 +163,52 @@ type tool struct {
 	homeShown string
 	path      []string
 
-	runMu sync.Mutex // one sandboxed command at a time
+	runMu sync.Mutex // one sandboxed command starts at a time
+	jobs  jobs
+
+	liveMu sync.Mutex
+	live   map[*capture]liveRun // sandboxed commands running, by output
+}
+
+// liveRun is a sandboxed command running: when it started and the
+// repositories as they were then.
+type liveRun struct {
+	at    time.Time
+	repos repoState
 }
 
 type input struct {
 	Command     string `json:"command" desc:"The command line, run by bash in the working directory."`
-	Timeout     int    `json:"timeout,omitempty" desc:"Seconds before the command is stopped; default 120, at most 600." min:"1" max:"600"`
+	Timeout     int    `json:"timeout,omitempty" desc:"Seconds before the command is stopped (the tool's description says the default and the most)." min:"1"`
+	Background  bool   `json:"background,omitempty" desc:"Run in the background (a server, a watcher, a long build): the tool returns at once with a job ID; read the output with bash_output, stop it with bash_kill."`
 	Unsandboxed bool   `json:"unsandboxed,omitempty" desc:"Run outside the sandbox, with the user's rights. Only when the command failed because of the sandbox (no network to a domain, a path it cannot write); the user must approve."`
 	Reason      string `json:"reason,omitempty" desc:"With unsandboxed: why the sandbox is not enough, shown to the user."`
 }
 
-// New returns the bash tool.
-func New(cfg Config) (agent.Tool, error) {
+// Shell is a bash tool with its background commands.
+type Shell struct{ t *tool }
+
+// New returns a Shell for cfg.
+func New(cfg Config) (*Shell, error) {
 	t, err := newTool(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return agent.NewTool("bash", t.description(), t.call, agent.Destructive(), agent.OpenWorld()), nil
+	return &Shell{t: t}, nil
 }
+
+// Tools are bash, and bash_output and bash_kill for the commands it runs
+// in the background.
+func (s *Shell) Tools() []agent.Tool {
+	bash := agent.NewTool("bash", s.t.description(), s.t.call, agent.Destructive(), agent.OpenWorld())
+	return []agent.Tool{bash, s.t.outputTool(), s.t.killTool()}
+}
+
+// Close stops the background commands and waits for them, and for the
+// checks of what they left in the repositories: call it when the agent is
+// done (a session, a server's run), or they run on until their timeout,
+// unchecked. Commands asked for afterwards are refused.
+func (s *Shell) Close() error { return s.t.close() }
 
 func newTool(cfg Config) (*tool, error) {
 	dir, err := workDir(cfg.Dir)
@@ -179,9 +216,7 @@ func newTool(cfg Config) (*tool, error) {
 		return nil, err
 	}
 	cfg.Dir = dir
-	if cfg.MaxOutput <= 0 {
-		cfg.MaxOutput = DefaultMaxOutput
-	}
+	defaults(&cfg)
 	t := &tool{cfg: cfg, box: cfg.Sandbox}
 	if t.box == nil {
 		t.box, t.noBox = sandbox.New()
@@ -196,6 +231,19 @@ func newTool(cfg Config) (*tool, error) {
 		return nil, err
 	}
 	return t, nil
+}
+
+// defaults fills what cfg leaves to the tool.
+func defaults(cfg *Config) {
+	if cfg.MaxOutput <= 0 {
+		cfg.MaxOutput = DefaultMaxOutput
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = DefaultTimeout
+	}
+	if cfg.MaxTimeout <= 0 {
+		cfg.MaxTimeout = MaxTimeout
+	}
 }
 
 // workDir resolves the working directory, which must exist.
@@ -214,7 +262,11 @@ func workDir(dir string) (string, error) {
 }
 
 func (t *tool) description() string {
-	d := "Run a bash command line in " + t.cfg.Dir + " and return its output and exit status. " +
+	if t.cfg.Description != "" {
+		return t.cfg.Description
+	}
+	d := "Run a bash command line in " + t.cfg.Dir + " and return its output and exit status (stopped after " +
+		t.cfg.Timeout.String() + " unless timeout says otherwise, at most " + t.cfg.MaxTimeout.String() + "; background for what runs longer). " +
 		"Use it for builds, tests, git and other programs; read, write and edit files with the file tools instead of cat, sed or echo. "
 	if t.noBox != nil {
 		return d + "There is no sandbox here: the user approves every command."
@@ -231,17 +283,24 @@ func (t *tool) description() string {
 }
 
 func (t *tool) call(ctx context.Context, in input) (agent.ToolOutput, error) {
-	command := strings.TrimSpace(in.Command)
-	if command == "" || strings.ContainsRune(command, 0) {
-		return agent.ToolOutput{}, agent.ToolError(ErrInput, "The command is empty.")
+	command, err := t.accept(in)
+	if err != nil {
+		return agent.ToolOutput{}, err
 	}
-	timeout := DefaultTimeout
+	timeout := t.cfg.Timeout
 	if in.Timeout > 0 {
-		timeout = min(time.Duration(in.Timeout)*time.Second, MaxTimeout)
+		timeout = min(time.Duration(in.Timeout)*time.Second, t.cfg.MaxTimeout)
 	}
 	outside := in.Unsandboxed || t.noBox != nil
 	if err := t.approve(ctx, command, outside, in.Reason); err != nil {
 		return agent.ToolOutput{}, err
+	}
+	if in.Background {
+		j, err := t.start(command, outside)
+		if err != nil {
+			return agent.ToolOutput{}, err
+		}
+		return agent.ToolOutput{Content: "Started in the background as job " + j.id + ": read its output with bash_output, stop it with bash_kill."}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -251,6 +310,18 @@ func (t *tool) call(ctx context.Context, in input) (agent.ToolOutput, error) {
 		run = t.runHost
 	}
 	return t.result(ctx, out, run(ctx, command, out), timeout)
+}
+
+// accept is the command to run, if there is one and the shell is open.
+func (t *tool) accept(in input) (string, error) {
+	command := strings.TrimSpace(in.Command)
+	if command == "" || strings.ContainsRune(command, 0) {
+		return "", agent.ToolError(ErrInput, "The command is empty.")
+	}
+	if t.isClosed() {
+		return "", agent.ToolError(ErrRun, "The shell is closed.")
+	}
+	return command, nil
 }
 
 // approve asks the user about a command outside the sandbox or a

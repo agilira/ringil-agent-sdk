@@ -110,14 +110,16 @@ func (d *discovery) mark(names []string) {
 	}
 }
 
-// specs are what the model gets: every tool not deferred, the deferred
-// ones it loaded, and tool_search.
-// specs are what the model gets: every tool not deferred, the deferred
-// ones it loaded, a light entry (name, one line, any object) for each of
-// the others, and tool_search. The entries matter: a provider may drop a
-// call to a name missing from the list, and models call tools by name.
-// Calling an entry runs the real tool, whose schema still checks the
-// arguments.
+// specs are what the model gets: every tool not deferred, a light entry
+// (name, one line, any object) for each deferred one, and tool_search. A
+// loaded tool keeps its entry: its parameters come in tool_search's
+// result, as mature agents do, so the list never changes and the
+// provider's cache keeps it (21/11: each load swapped the entry for the
+// full tool, and the list, the system prompt and the history went out of
+// the cache with it). The entries matter: a provider may drop a call to a
+// name missing from the list, and models call tools by name. Calling an
+// entry runs the real tool, whose schema still checks the arguments. Past
+// maxEntries, a tool is listed only once loaded.
 func (d *discovery) specs(all []ToolSpec) []ToolSpec {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -126,11 +128,13 @@ func (d *discovery) specs(all []ToolSpec) []ToolSpec {
 	for _, s := range all {
 		_, deferred := d.deferred[s.Name]
 		switch {
-		case !deferred || d.loaded[s.Name]:
+		case !deferred:
 			out = append(out, s)
 		case entries < maxEntries:
 			out = append(out, lightEntry(s))
 			entries++
+		case d.loaded[s.Name]:
+			out = append(out, s)
 		}
 	}
 	return append(out, d.searchTool().Spec())
@@ -151,7 +155,7 @@ func lightEntry(s ToolSpec) ToolSpec {
 
 // block explains the light entries in the system prompt.
 func (d *discovery) block() string {
-	text := "\n\n<deferred-tools>\nSome tools are listed with one line only and no parameters. Before using one, call " + SearchToolName + " with its exact name: its full parameters then become available."
+	text := "\n\n<deferred-tools>\nSome tools are listed with one line only and no parameters. Before using one, call " + SearchToolName + " with its exact name: its result gives the tool's full parameters, to call it with."
 	if n := len(d.order) - maxEntries; n > 0 {
 		text += " " + strconv.Itoa(n) + " more tools are not listed at all: find them with " + SearchToolName + " by describing the task."
 	}
@@ -179,8 +183,16 @@ type searchIn struct {
 }
 
 type searchOut struct {
-	Loaded []string `json:"loaded"`
-	Note   string   `json:"note"`
+	Loaded []string     `json:"loaded"`
+	Tools  []loadedTool `json:"tools,omitempty"`
+	Note   string       `json:"note"`
+}
+
+// loadedTool is a loaded tool's definition, for the model to call it by.
+type loadedTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
 }
 
 func (d *discovery) searchTool() Tool {
@@ -188,13 +200,27 @@ func (d *discovery) searchTool() Tool {
 		func(_ context.Context, in searchIn) (string, error) {
 			names := d.find(in)
 			d.mark(names)
-			out := searchOut{Loaded: names, Note: "These tools are now available to call."}
+			out := searchOut{Loaded: names, Tools: d.definitions(names), Note: "Call these tools with the parameters given here."}
 			if len(names) == 0 {
 				out.Note = "No deferred tool matches; try other words or the exact names listed in <deferred-tools>."
 			}
 			data, err := json.Marshal(out)
 			return string(data), err
 		}, ReadOnly())
+}
+
+// definitions are the full definitions of names.
+func (d *discovery) definitions(names []string) []loadedTool {
+	out := make([]loadedTool, 0, len(names))
+	for _, n := range names {
+		s := d.deferred[n]
+		schema := s.InputSchema
+		if len(schema) == 0 {
+			schema = json.RawMessage(`{"type":"object"}`)
+		}
+		out = append(out, loadedTool{Name: n, Description: s.Description, Parameters: schema})
+	}
+	return out
 }
 
 // find returns the exact names asked for, or the five tools whose names

@@ -65,7 +65,7 @@ func NewCrew(t Team) (*Crew, error) {
 		if !validName(w.Name) || c.byName[w.Name].Name != "" {
 			return nil, errors.New(ErrConfig, "worker names are distinct lowercase words")
 		}
-		if w.Provider == nil && t.Provider == nil {
+		if w.Provider == nil && t.Config.Provider == nil {
 			return nil, errors.New(ErrConfig, "worker "+w.Name+" has no model")
 		}
 		c.byName[w.Name] = w

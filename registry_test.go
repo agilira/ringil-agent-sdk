@@ -120,7 +120,7 @@ func TestWithAndSelectDoNotChangeTheOriginal(t *testing.T) {
 func TestExecuteSuccess(t *testing.T) {
 	r := mustRegistry(t, echo("a"))
 	res, err := r.Execute(context.Background(), ToolCall{ID: "1", Name: "a", Input: json.RawMessage(`{"x":1}`)})
-	if err != nil || res != (ToolResult{CallID: "1", Content: `{"x":1}`}) {
+	if err != nil || res.CallID != "1" || res.Content != `{"x":1}` || res.IsError || res.Images != nil {
 		t.Fatalf("res %+v err %v", res, err)
 	}
 }

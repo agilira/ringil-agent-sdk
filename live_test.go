@@ -390,7 +390,7 @@ func TestLiveDelegation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	crew, err := delegate.NewCrew(delegate.Team{Provider: model, Workers: []delegate.Worker{{Name: "warehouse", Description: "knows stock levels; it has the stock_level tool", Tools: wtools}}})
+	crew, err := delegate.NewCrew(delegate.Team{Config: agent.Config{Provider: model}, Workers: []delegate.Worker{{Name: "warehouse", Description: "knows stock levels; it has the stock_level tool", Tools: wtools}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestLiveDelegation(t *testing.T) {
 // plan, then a background task whose report arrives later.
 func TestLiveWorkflowAndBackground(t *testing.T) {
 	model := liveModel(t)
-	crew, err := delegate.NewCrew(delegate.Team{Provider: model, Workers: []delegate.Worker{{Name: "writer", Description: "writes short texts", System: "Answer in one short sentence."}}})
+	crew, err := delegate.NewCrew(delegate.Team{Config: agent.Config{Provider: model}, Workers: []delegate.Worker{{Name: "writer", Description: "writes short texts", System: "Answer in one short sentence."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +636,8 @@ func bashAgent(t *testing.T, model agent.Provider, cfg bash.Config) agent.Agent 
 	if err != nil {
 		t.Fatal(err)
 	}
-	tools, err := agent.NewRegistry(sh)
+	t.Cleanup(func() { _ = sh.Close() })
+	tools, err := agent.NewRegistry(sh.Tools()...)
 	if err != nil {
 		t.Fatal(err)
 	}
