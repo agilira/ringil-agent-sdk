@@ -443,7 +443,8 @@ func TestBroadGrantsAreNeverOffered(t *testing.T) {
 	a := &asker{allow: true}
 	r := open(t, Config{Dirs: []string{filepath.Join(parent, "proj")}, Ask: a.ask})
 	home, _ := os.UserHomeDir()
-	for _, p := range []string{"/project/INDEX.md", filepath.Join(parent, "nowhere", "x.txt"), filepath.Join(home, "no-such-dir-ringil", "x")} {
+	root := filepath.VolumeName(parent) + string(filepath.Separator) // "/" or "C:\\"
+	for _, p := range []string{filepath.Join(root, "project-ringil-none", "INDEX.md"), filepath.Join(parent, "nowhere", "x.txt"), filepath.Join(home, "no-such-dir-ringil", "x")} {
 		if msg := failCall(t, r, "read_file", map[string]any{"path": p}, ErrOutside); !strings.Contains(msg, "No such file") {
 			t.Errorf("%s: %q", p, msg)
 		}
