@@ -7,7 +7,7 @@
 # Variables
 TOOLS_DIR := $(HOME)/go/bin
 # The library and the CLI are separate modules; every check runs on both.
-MODULES := . ./mcp ./a2a ./memory/sqlite ./provider/anthropic ./cmd/ringil
+MODULES := . ./mcp ./a2a ./memory/sqlite ./provider/anthropic ./secrets/keyring ./cmd/ringil
 EACH = for m in $(MODULES); do (cd $$m && $(1)) || exit 1; done
 
 # Colors for output
