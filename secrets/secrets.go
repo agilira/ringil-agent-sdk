@@ -5,7 +5,8 @@
 
 // Package secrets resolves named credentials (API keys, tokens) for the
 // host. Sources are pluggable [Resolver]s: the process environment, a private
-// env file, and adapters in sub-packages (Vault, encrypted file, OS keyring).
+// env file, and adapters in sub-packages (secrets/keyring: the OS
+// keyring). A [Store] also keeps secrets.
 //
 // The model never receives a resolver. Errors never carry a value, and never
 // the message of a backend, which may echo one. A failing source stops the
@@ -43,6 +44,15 @@ const maxValue = 64 << 10
 // from one set to the empty string.
 type Resolver interface {
 	Lookup(ctx context.Context, name string) (value string, found bool, err error)
+}
+
+// Store is a Resolver that also keeps secrets: where an installer saves
+// the keys it is given (the OS keyring, a vault). Set and Delete check the
+// name and the value as Lookup does, and their errors carry no value.
+type Store interface {
+	Resolver
+	Set(ctx context.Context, name, value string) error
+	Delete(ctx context.Context, name string) error
 }
 
 var namePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
@@ -125,6 +135,10 @@ func Lookup(ctx context.Context, r Resolver, name string) (string, bool, error) 
 	}
 	return value, true, nil
 }
+
+// ValidateValue accepts a value a source may hold: valid UTF-8, no NUL,
+// at most 64 KiB. For a Store's Set.
+func ValidateValue(name, value string) error { return checkValue(name, value) }
 
 func checkValue(name, value string) error {
 	if len(value) > maxValue || !utf8.ValidString(value) || strings.ContainsRune(value, 0) {

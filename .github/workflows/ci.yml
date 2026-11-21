@@ -51,6 +51,11 @@ jobs:
     - name: Provider (Anthropic)
       working-directory: provider/anthropic
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
+    - name: Secrets (keyring)
+      working-directory: secrets/keyring
+      # The live tests use the runner's own keychain or credential
+      # manager, with a service of their own; Linux runners have none.
+      run: go mod verify && go vet ./... && go test -race -timeout 5m ./... && go test -tags live -run Live -timeout 5m ./...
     - name: CLI
       working-directory: cmd/ringil
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
@@ -79,6 +84,6 @@ jobs:
     - name: Cross-platform vet
       # The sandbox has per-architecture and per-OS code paths.
       run: |
-        for m in . mcp a2a memory/sqlite provider/anthropic cmd/ringil; do
+        for m in . mcp a2a memory/sqlite provider/anthropic secrets/keyring cmd/ringil; do
           (cd $m && GOARCH=arm64 go vet ./... && GOOS=windows go vet ./... && GOOS=darwin go vet ./...) || exit 1
         done
