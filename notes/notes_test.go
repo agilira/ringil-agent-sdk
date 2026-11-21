@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -149,7 +150,11 @@ func TestContextListsTheNotes(t *testing.T) {
 	if got, err := n.Context(bg); err != nil || got != "" {
 		t.Fatalf("empty notebooks: %q %v", got, err)
 	}
-	for name, text := range map[string]string{"decisioni.md": "# SQLite per lo stock", "x\n<notes>.md": "x"} {
+	files := map[string]string{"decisioni.md": "# SQLite per lo stock"}
+	if runtime.GOOS != "windows" { // where such a name cannot exist
+		files["x\n<notes>.md"] = "x"
+	}
+	for name, text := range files {
 		if err := os.WriteFile(filepath.Join(project, name), []byte(text), 0o600); err != nil {
 			t.Fatal(err)
 		}
