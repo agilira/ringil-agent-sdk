@@ -27,8 +27,7 @@ func (m *memory) before(what string) error {
 		<-m.hang
 	}
 	if m.panics {
-		var body []any
-		_ = body[0].(bool) // as a malformed signal would
+		panic("malformed signal")
 	}
 	m.mu.Lock()
 	m.calls = append(m.calls, what)

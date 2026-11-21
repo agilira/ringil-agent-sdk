@@ -66,7 +66,6 @@ type Keyring struct {
 
 // op is one call in the queue.
 type op struct {
-	ctx   context.Context
 	run   func() error
 	state atomic.Int32
 	done  chan error
@@ -78,13 +77,14 @@ const (
 	dropped
 )
 
-var serviceName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+var serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-// New is the keyring's entries of service, such as "ringil": letters,
-// digits, '.', '_' and '-', at most 64.
+// New is the keyring's entries of service, such as "ringil": starts
+// with a letter or digit, followed by letters, digits, '.', '_' and
+// '-', at most 64 in all.
 func New(service string) (*Keyring, error) {
 	if !serviceName.MatchString(service) {
-		return nil, errors.New(secrets.ErrSource, "a keyring service name is 1 to 64 letters, digits, '.', '_' or '-'")
+		return nil, errors.New(secrets.ErrSource, "a keyring service name starts with a letter or digit and holds 1 to 64 letters, digits, '.', '_' or '-'")
 	}
 	return &Keyring{service: service, sys: system()}, nil
 }
@@ -146,7 +146,7 @@ func (k *Keyring) do(ctx context.Context, run func() error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	o := &op{ctx: ctx, run: run, done: make(chan error, 1)}
+	o := &op{run: run, done: make(chan error, 1)}
 	k.mu.Lock()
 	if len(k.queue) >= maxQueued {
 		k.mu.Unlock()
@@ -179,11 +179,13 @@ func (k *Keyring) work() {
 	for {
 		k.mu.Lock()
 		if len(k.queue) == 0 {
+			k.queue = nil
 			k.running = false
 			k.mu.Unlock()
 			return
 		}
 		o := k.queue[0]
+		k.queue[0] = nil // release popped closure (which may hold a secret) for GC
 		k.queue = k.queue[1:]
 		k.mu.Unlock()
 		if !o.state.CompareAndSwap(queued, started) {

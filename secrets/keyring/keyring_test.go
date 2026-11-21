@@ -66,13 +66,15 @@ func TestServicesAreSeparate(t *testing.T) {
 }
 
 func TestServiceNames(t *testing.T) {
-	for _, bad := range []string{"", " ringil", "ringil\n", "rìngil", "my app", `a"b`, "a'b", `a\b`, string(make([]byte, 65))} {
+	for _, bad := range []string{"", "-", ".", "..", "-ringil", ".ringil", " ringil", "ringil\n", "rìngil", "my app", `a"b`, "a'b", `a\b`, string(make([]byte, 65))} {
 		if _, err := New(bad); !errors.HasCode(err, secrets.ErrSource) {
 			t.Errorf("%q accepted", bad)
 		}
 	}
-	if _, err := New("ringil.agent-sdk_2"); err != nil {
-		t.Fatal(err)
+	for _, ok := range []string{"a", "ringil.agent-sdk_2"} {
+		if _, err := New(ok); err != nil {
+			t.Fatalf("%q rejected: %v", ok, err)
+		}
 	}
 }
 
