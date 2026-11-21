@@ -43,6 +43,10 @@ type Compaction struct {
 	Summarize bool
 	// SummaryMaxTokens caps the summary's length; zero means 1024.
 	SummaryMaxTokens int
+	// SummaryTask replaces what the summarizer is asked to keep (by
+	// default the user's goals, decisions, facts, actions with their
+	// outcome, open questions). The transcript stays data either way.
+	SummaryTask string
 }
 
 const (
@@ -60,6 +64,11 @@ const (
 	maxBytesPerTok = 16.0
 	// summaryCacheSize bounds the summaries kept by a long-lived agent.
 	summaryCacheSize = 32
+	// stubBatch is how many tool results become stubs at once: the view
+	// then stays the same for that many results more, and the provider's
+	// cache keeps it (one stub more at every call missed it every time,
+	// as context editing's clear_at_least knows).
+	stubBatch = 8
 )
 
 func (c Compaction) threshold() float64 {
@@ -163,13 +172,22 @@ func withoutImageData(m Message) Message {
 	if m.Images() == 0 {
 		return m
 	}
-	parts := make([]Part, len(m.Parts))
-	for i, p := range m.Parts {
-		p.Data = nil
-		parts[i] = p
+	m.Parts = dataless(m.Parts)
+	if m.Result != nil {
+		res := *m.Result
+		res.Images = dataless(res.Images)
+		m.Result = &res
 	}
-	m.Parts = parts
 	return m
+}
+
+func dataless(parts []Part) []Part {
+	out := make([]Part, len(parts))
+	for i, p := range parts {
+		p.Data = nil
+		out[i] = p
+	}
+	return out
 }
 
 // compacted is a view and what it took to build it.
@@ -188,7 +206,10 @@ func (c *compactor) view(ctx context.Context, req *Request, budget int) compacte
 	if v.fits(budget) {
 		return compacted{msgs: req.Messages}
 	}
-	stubbed := v.stub(c.cfg.keep())
+	stubbed := v.stub(batched(v.msgs, c.cfg.keep()))
+	if !v.fits(budget) {
+		stubbed += v.stub(c.cfg.keep()) // the batch was not enough: down to keep
+	}
 	out := compacted{}
 	if !v.fits(budget) {
 		out = c.shorten(ctx, v, budget)
@@ -207,6 +228,23 @@ func (c *compactor) view(ctx context.Context, req *Request, budget int) compacte
 	out.msgs = v.msgs
 	out.what = joinNonEmpty(describeStubs(stubbed), clippedNote(clipped), out.what)
 	return out
+}
+
+// batched is how many of the latest results to keep whole so that the
+// stubs grow by stubBatch at a time: keep at least, fewer than
+// keep+stubBatch.
+func batched(msgs []Message, keep int) int {
+	searches := searchCalls(msgs)
+	results := 0
+	for _, m := range msgs {
+		if m.Role == RoleTool && m.Result != nil && !searches[m.Result.CallID] {
+			results++
+		}
+	}
+	if results <= keep {
+		return keep
+	}
+	return results - (results-keep)/stubBatch*stubBatch
 }
 
 func clippedNote(n int) string {
@@ -302,6 +340,11 @@ func (c *compactor) shorten(ctx context.Context, v *sized, budget int) compacted
 		} else {
 			usage, how = used, "left out (summary failed)"
 		}
+	} else {
+		// Kept, so that the next calls cut at the same place while it
+		// fits: the view, and the provider's cache, stay as they are.
+		hashes := prefixHashes(v.msgs[:cut])
+		c.store(cachedSummary{n: cut, hash: hashes[cut], text: note})
 	}
 	v.drop(cut, note)
 	return compacted{what: plural(cut, "earlier message") + " " + how, usage: usage}
@@ -311,12 +354,9 @@ func (c *compactor) shorten(ctx context.Context, v *sized, budget int) compacted
 // conversation, when the rest still fits with it: a growing chat then pays
 // for a new summary only when the old one stops being enough.
 func (c *compactor) reuse(v *sized, budget int) (compacted, bool) {
-	if !c.cfg.Summarize {
-		return compacted{}, false
-	}
 	prev := c.lookup(prefixHashes(v.msgs))
-	if prev.n == 0 || prev.n >= len(v.msgs) {
-		return compacted{}, false
+	if prev.n == 0 || prev.n >= len(v.msgs) || !startsTurn(v.msgs, prev.n) {
+		return compacted{}, false // the history after it changed: the view must start a turn (audit 21/11)
 	}
 	trial := v.clone()
 	trial.drop(prev.n, prev.text)
@@ -324,7 +364,11 @@ func (c *compactor) reuse(v *sized, budget int) (compacted, bool) {
 		return compacted{}, false
 	}
 	*v = *trial
-	return compacted{what: plural(prev.n, "earlier message") + " summarized"}, true
+	how := " summarized"
+	if prev.body == "" {
+		how = " left out"
+	}
+	return compacted{what: plural(prev.n, "earlier message") + how}, true
 }
 
 // reserve is the room, in bytes, kept for the note that replaces the cut.
@@ -395,12 +439,15 @@ func (v *sized) fits(budget int) bool {
 	return v.c.tokens(v.base+v.total) <= budget
 }
 
-// stub replaces all but the last keep tool results with a stub.
+// stub replaces all but the last keep tool results with a stub. The
+// results of tool_search stay: they hold the parameters of the tools they
+// loaded, which the model calls them by.
 func (v *sized) stub(keep int) int {
+	searches := searchCalls(v.msgs)
 	seen, stubbed := 0, 0
 	for i := len(v.msgs) - 1; i >= 0; i-- {
 		m := v.msgs[i]
-		if m.Role != RoleTool || m.Result == nil {
+		if m.Role != RoleTool || m.Result == nil || searches[m.Result.CallID] {
 			continue
 		}
 		seen++
@@ -418,6 +465,31 @@ func (v *sized) stub(keep int) int {
 		stubbed++
 	}
 	return stubbed
+}
+
+// searchCalls are the IDs of the tool_search calls in msgs.
+func searchCalls(msgs []Message) map[string]bool {
+	ids := map[string]bool{}
+	for _, m := range msgs {
+		for _, c := range m.Calls {
+			if c.Name == SearchToolName {
+				ids[c.ID] = true
+			}
+		}
+	}
+	return ids
+}
+
+// searchResults is what tool_search returned in msgs, joined.
+func searchResults(msgs []Message) string {
+	ids := searchCalls(msgs)
+	var out []string
+	for _, m := range msgs {
+		if m.Role == RoleTool && m.Result != nil && ids[m.Result.CallID] && !m.Result.IsError {
+			out = append(out, m.Result.Content)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 const stubPrefix = "[Tool result omitted to fit the context: "
@@ -459,6 +531,11 @@ func (v *sized) cut(budget, reserve int) int {
 
 // cutPoints are the indexes, after the first message, where a turn starts:
 // a user message not preceded by another user message.
+// startsTurn: msgs[i] is where a cut may fall.
+func startsTurn(msgs []Message, i int) bool {
+	return i > 0 && i < len(msgs) && msgs[i].Role == RoleUser && msgs[i-1].Role != RoleUser
+}
+
 func cutPoints(msgs []Message) []int {
 	var points []int
 	for i := 1; i < len(msgs); i++ {
@@ -472,6 +549,7 @@ func cutPoints(msgs []Message) []int {
 // drop removes the first cut messages and prepends note to the first kept
 // message, as its own part.
 func (v *sized) drop(cut int, note string) {
+	dropped := v.msgs[:cut]
 	v.offset += cut
 	v.msgs = v.msgs[cut:]
 	for _, s := range v.sizes[:cut] {
@@ -479,7 +557,20 @@ func (v *sized) drop(cut int, note string) {
 	}
 	v.sizes = v.sizes[cut:]
 	first := v.msgs[0].Clone()
-	first.Parts = append([]Part{{Type: PartText, Text: note + "\n\n"}}, first.Parts...)
+	lead := []Part{{Type: PartText, Text: note + "\n\n"}}
+	// The host's context in force goes on with the kept messages when it
+	// was in the part left out: it is added only when it changes.
+	if lastHostContext(v.msgs) == "" {
+		if host := lastHostContext(dropped); host != "" {
+			lead = append(lead, Part{Type: PartContext, Source: ContextHost, Text: host})
+		}
+	}
+	// So do the tools tool_search loaded there: their definitions were in
+	// its results (audit 21/11: after a cut only their names were left).
+	if loaded := searchResults(dropped); loaded != "" {
+		lead = append(lead, Part{Type: PartContext, Source: ContextHost, Text: "Tools loaded earlier with " + SearchToolName + ", still available:\n" + loaded})
+	}
+	first.Parts = append(lead, first.Parts...)
 	v.msgs[0] = first
 	v.resize(0)
 }

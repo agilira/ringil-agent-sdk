@@ -16,10 +16,10 @@ import (
 const maxRounds = 1024
 
 // rounds keeps each turn that thought and called tools, whole, by its first
-// call's ID: the API wants it back with the results, as it was made.
-// Thinking is opaque (its text may be empty, its signature binds it to
-// this conversation), so it never enters the agent's messages: a session
-// saved and resumed goes back without it, which the API takes.
+// call's ID: the API wants it back as it was made, thinking interleaved
+// with the calls where it was, which the message's parts (reasoning, then
+// text and calls) do not keep. A session resumed elsewhere goes back from
+// the parts: in the common order, thinking first, that is the same.
 type rounds struct {
 	mu    sync.Mutex
 	byID  map[string][]anthropic.BetaContentBlockParamUnion

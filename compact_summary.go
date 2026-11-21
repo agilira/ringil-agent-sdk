@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -114,7 +115,7 @@ func (c *compactor) summaryRequest(prev cachedSummary, msgs []Message, budget in
 		head.WriteString("Summary so far:\n" + prev.body + "\n\n")
 	}
 	head.WriteString("Conversation since then:\n")
-	tail := "\n\n" + summaryTask
+	tail := "\n\n" + cmp.Or(c.cfg.SummaryTask, summaryTask)
 	room := int(float64(budget)*bytesPerToken*0.9) - head.Len() - len(tail) - len(summarySystem)
 	return &Request{
 		System:    summarySystem,
@@ -140,8 +141,11 @@ func transcript(msgs []Message) string {
 }
 
 func label(r Role) string {
-	if r == RoleUser {
+	switch r {
+	case RoleUser:
 		return "User"
+	case RoleSystem:
+		return "Note from the application" // not the model's words (audit 21/11)
 	}
 	return "Assistant"
 }

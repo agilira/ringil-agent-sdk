@@ -206,3 +206,22 @@ func TestPlainStdioServerOutlivesConnectContext(t *testing.T) {
 		t.Fatalf("after connect: %q %v", out.Content, err)
 	}
 }
+
+// An image a server returns reaches the model as an image (21/11: it was
+// named only, "[image not shown]"); one that is not what it claims to be
+// stays named.
+func TestImagesInResults(t *testing.T) {
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 16)...)
+	res := &sdk.CallToolResult{Content: []sdk.Content{
+		&sdk.TextContent{Text: "a chart"},
+		&sdk.ImageContent{MIMEType: "image/png", Data: png},
+		&sdk.ImageContent{MIMEType: "image/png", Data: []byte("not a png")},
+	}}
+	imgs := images(res)
+	if len(imgs) != 1 || imgs[0].MIME != "image/png" || string(imgs[0].Data) != string(png) {
+		t.Fatalf("%+v", imgs)
+	}
+	if text := render(res); !strings.Contains(text, "attached") || !strings.Contains(text, "not shown") {
+		t.Fatalf("%q", text)
+	}
+}

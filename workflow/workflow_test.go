@@ -55,7 +55,7 @@ func (e *echo) Generate(ctx context.Context, req *agent.Request, _ agent.TextSin
 
 func runner(t *testing.T, model agent.Provider, j Journal) *Runner {
 	t.Helper()
-	crew, err := delegate.NewCrew(delegate.Team{Provider: model, Workers: []delegate.Worker{{Name: "w", Description: "w"}}})
+	crew, err := delegate.NewCrew(delegate.Team{Config: agent.Config{Provider: model}, Workers: []delegate.Worker{{Name: "w", Description: "w"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

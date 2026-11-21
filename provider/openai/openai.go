@@ -65,6 +65,18 @@ type Config struct {
 	// Client is the HTTP client to use. It is copied and its copy never
 	// follows redirects, so a redirect cannot carry the key elsewhere.
 	Client *http.Client
+	// MaxCompletionTokens sends the output limit as max_completion_tokens,
+	// which OpenAI's reasoning models want in place of max_tokens (most
+	// other servers take either). New sets it for api.openai.com.
+	MaxCompletionTokens bool
+	// ReasoningEffort is sent as reasoning_effort (minimal, low, medium,
+	// high) for the models that take it; empty sends none.
+	ReasoningEffort string
+	// Extra are fields added to every request body as they are (vLLM's
+	// top_k, OpenRouter's provider routing, Ollama's options...). Those the
+	// provider writes itself (model, messages, tools, stream, the output
+	// limit) cannot be set this way.
+	Extra map[string]any
 	// StallTimeout cuts a response body that stays silent for this long.
 	// Zero means DefaultStallTimeout; negative disables the check.
 	StallTimeout time.Duration
@@ -90,6 +102,9 @@ func New(cfg Config) (agent.Provider, error) {
 		return nil, err
 	}
 	cfg.Headers = cloneHeaders(cfg.Headers)
+	if u, err := url.Parse(endpoint); err == nil && strings.EqualFold(u.Hostname(), "api.openai.com") {
+		cfg.MaxCompletionTokens = true
+	}
 	return &provider{cfg: cfg, endpoint: endpoint, client: noRedirectClient(cfg.Client), stall: stallTimeout(cfg.StallTimeout)}, nil
 }
 

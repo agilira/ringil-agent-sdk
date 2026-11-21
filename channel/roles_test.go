@@ -61,7 +61,7 @@ func newProfiled(t *testing.T) *profiled {
 		if err != nil {
 			t.Fatal(err)
 		}
-		a, err := agent.New(agent.Config{Provider: echo{name}, Tools: reg, Approve: func(ctx context.Context, c agent.ToolCall, sp agent.ToolSpec) (bool, error) {
+		a, err := agent.New(agent.Config{Provider: echo{name}, Tools: reg, Approve: func(ctx context.Context, c agent.ToolCall, sp agent.ToolSpec) (agent.Decision, error) {
 			return p.srv.Approve(ctx, c, sp)
 		}})
 		if err != nil {
@@ -269,4 +269,57 @@ func TestGroupCommands(t *testing.T) {
 	if got := group(outsider, "/text"); !strings.Contains(got, "many messages") {
 		t.Fatalf("commands past the bound: %q", got)
 	}
+}
+
+// The host can say who everyone is (its directory, an SSO) in place of
+// the lists (21/11: the people model was the Bridge's own). Its roles get
+// their profiles; an error is a stranger.
+func TestAuthorize(t *testing.T) {
+	p, app, events := newProfiled(t), newApp(), make(chan Event, 16)
+	asked := 0
+	cfg := Config{Channel: app, Server: p.srv, MemberProfile: "team", OnEvent: func(e Event) { events <- e },
+		Authorize: func(_ context.Context, from string) (Role, error) {
+			asked++
+			switch from {
+			case me:
+				return Owner, nil
+			case worker:
+				return Member, nil
+			}
+			return Stranger, errors.New("directory down")
+		}}
+	b, err := NewBridge(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(b.wg.Wait)
+	eachHostRole(t, b, app)
+	if asked != 2 {
+		t.Fatalf("asked %d times: the answers are not kept", asked)
+	}
+	say(b, outsider, outsider, "hi")
+	for e := range events {
+		if e.Kind == Refused {
+			break
+		}
+	}
+	if _, err := NewBridge(Config{Channel: app, Server: p.srv, Owners: []string{me}, Authorize: cfg.Authorize}); err == nil {
+		t.Fatal("Authorize and Owners together")
+	}
+}
+
+// eachHostRole: the owner and the member Authorize names talk with their
+// profiles; the member's second message asks no one again.
+func eachHostRole(t *testing.T, b *Bridge, app *chatApp) {
+	t.Helper()
+	say(b, me, me, "hi")
+	if got := app.nextIn(t, me).Text; got != "default" {
+		t.Fatalf("owner: %q", got)
+	}
+	say(b, worker, worker, "hi")
+	if got := app.nextIn(t, worker).Text; got != "team" {
+		t.Fatalf("member: %q", got)
+	}
+	say(b, worker, worker, "again")
+	app.nextIn(t, worker)
 }

@@ -18,9 +18,14 @@ import (
 type LoopAction int
 
 const (
+	// LoopReport runs the calls and reports the loop to the host only (the
+	// tool events say "repeated"): the model's results are its tools' own.
+	// The default.
+	LoopReport LoopAction = iota
 	// LoopWarn runs the calls and tells the model, in each repeated
-	// result, that it is going round in circles. The default.
-	LoopWarn LoopAction = iota
+	// result, that it is going round in circles (Loop.Warning): small
+	// models need it.
+	LoopWarn
 	// LoopBlock warns, then refuses to run the next call that would
 	// continue the pattern; the model is told why.
 	LoopBlock
@@ -39,8 +44,12 @@ type Loop struct {
 	// Repeats is how many times a pattern must occur to count as a loop;
 	// zero means 3, the least is 2.
 	Repeats int
-	// Action is what happens then; the zero value warns.
+	// Action is what happens then; the zero value reports it to the host.
 	Action LoopAction
+	// Warning is the text put before a repeated result (LoopWarn and the
+	// others), from how many times the pattern repeated and its length in
+	// calls; nil is the agent's own.
+	Warning func(times, period int) string
 	// Exempt names tools that may repeat freely (a status poll): their
 	// calls are not counted and do not break a pattern.
 	Exempt []string
@@ -49,8 +58,8 @@ type Loop struct {
 func (l Loop) validate() error {
 	// A cycle of three repeated more than this does not fit the window:
 	// a larger value would silently turn detection off.
-	if l.Repeats < 0 || l.Repeats == 1 || l.Repeats > maxRepeats || l.Action < LoopWarn || l.Action > LoopStop {
-		return errors.New(ErrAgentConfig, "loop repeats must be 0 (default 3) or 2.."+strconv.Itoa(maxRepeats)+", and the action one of LoopWarn, LoopBlock, LoopStop")
+	if l.Repeats < 0 || l.Repeats == 1 || l.Repeats > maxRepeats || l.Action < LoopReport || l.Action > LoopStop {
+		return errors.New(ErrAgentConfig, "loop repeats must be 0 (default 3) or 2.."+strconv.Itoa(maxRepeats)+", and the action one of LoopReport, LoopWarn, LoopBlock, LoopStop")
 	}
 	return nil
 }

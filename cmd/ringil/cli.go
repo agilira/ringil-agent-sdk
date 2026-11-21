@@ -293,14 +293,18 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		Provider:      model,
 		Tools:         tools,
 		Memory:        mem,
-		Approve:       c.approve,
+		Approve:       c.decide,
 		System:        system,
 		Instructions:  instructions,
 		Context:       c.runContext(nb, !c.restricted()),
 		MaxTurns:      c.maxTurns(ctx),
 		ContextWindow: c.flagInt(ctx, "context-window"),
 		Compaction:    agent.Compaction{Summarize: c.flagBool(ctx, "summarize")},
-		Observers:     c.events,
+		KeepImages:    c.keepImages(ctx),
+		// The model is told when it goes round in circles: small models
+		// need it, and the CLI runs them.
+		Loop:      agent.Loop{Action: agent.LoopWarn},
+		Observers: c.events,
 	})
 }
 
@@ -342,7 +346,8 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 	if err != nil {
 		return nil, err
 	}
-	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected, Exclude: ownStateExcluded, ProtectedFiles: c.protectedFiles(ctx)})
+	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected, Exclude: ownStateExcluded,
+		Protected: protectedPatterns, ProtectedFiles: c.protectedFiles(ctx)})
 	if err != nil {
 		return nil, err
 	}
@@ -351,8 +356,12 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 	if err != nil {
 		return nil, err
 	}
-	return reg.With(append(append(c.readTools, ws.WriteTools()...), sh)...)
+	return reg.With(append(append(c.readTools, ws.WriteTools()...), sh...)...)
 }
+
+// protectedPatterns are the SDK's protected paths and ringil's own
+// configuration, wherever a project keeps one.
+var protectedPatterns = append(append([]string(nil), files.DefaultProtected...), "ringil.yaml")
 
 // workspaceDirs are the directories granted to the file tools: those of
 // --workspace, or the default ones, and under serve the documents of the
@@ -548,6 +557,12 @@ func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
 	return c.confirm("\n  ? " + asker(ctx) + " wants to access " + clean(dir) + " — allow? [y/N] ")
 }
 
+// decide is approve as the agent's approval hook.
+func (c *cli) decide(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (agent.Decision, error) {
+	ok, err := c.approve(ctx, call, spec)
+	return agent.Decision{Allow: ok}, err
+}
+
 // approve asks before destructive tools (forget, MCP tools from servers
 // whose hints are not trusted, file writes later); everything else runs
 // without interrupting the user. "a" allows that tool for the rest of
@@ -640,7 +655,7 @@ func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return c.server.Approve(ctx, agent.ToolCall{ID: "protected-" + rand.Text()[:8], Name: "write_protected_file", Input: input}, agent.ToolSpec{})
+		return c.server.Ask(ctx, agent.ToolCall{ID: "protected-" + rand.Text()[:8], Name: "write_protected_file", Input: input})
 	}
 	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
@@ -673,7 +688,7 @@ func (c *cli) serveApprove(ctx context.Context, call agent.ToolCall, spec agent.
 	if !c.mustAsk(ctx, call, spec) {
 		return true, nil
 	}
-	return c.server.Approve(ctx, call, spec)
+	return c.server.Ask(ctx, call)
 }
 
 func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) bool {

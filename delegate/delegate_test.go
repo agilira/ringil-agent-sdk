@@ -70,12 +70,12 @@ func TestWorkerReportsBack(t *testing.T) {
 	}
 	worker := fake.New(fake.Call("lookup", `{}`), fake.Reply("Found: 42."))
 	var events atomic.Int32
-	team := Team{Instructions: "We are Acme.", Workers: []Worker{{Name: "research", Description: "Finds facts", Role: "You research.", Tools: tools, Provider: worker}},
-		Observers: []agent.Observer{func(ev agent.Event) {
+	team := Team{Workers: []Worker{{Name: "research", Description: "Finds facts", Role: "You research.", Tools: tools, Provider: worker}},
+		Config: agent.Config{Instructions: "We are Acme.", Observers: []agent.Observer{func(ev agent.Event) {
 			if ev.Worker == "research" && ev.Task == 1 {
 				events.Add(1)
 			}
-		}}}
+		}}}}
 	res, p := parent(t, team, fake.Call(ToolName, `{"worker":"research","task":"Find the answer"}`), fake.Reply("It is 42."))
 	report := p.Requests()[1].Messages[2].Result.Content
 	if !strings.HasPrefix(report, "Task 1 (research):\nFound: 42.") || !strings.Contains(report, "[worker: 2 model calls") || calls.Load() != 1 || events.Load() == 0 {
@@ -132,13 +132,13 @@ func TestPrepareApproveAndLimits(t *testing.T) {
 			Prepare: func(context.Context, string) (Setup, error) {
 				return Setup{Done: func() error { done.Add(1); return nil }}, nil
 			}}},
-		Approve: func(_ context.Context, _ agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+		Config: agent.Config{Approve: func(_ context.Context, _ agent.ToolCall, spec agent.ToolSpec) (agent.Decision, error) {
 			if spec.Annotations.Destructive {
 				asked.Add(1)
-				return false, nil
+				return agent.Decision{}, nil
 			}
-			return true, nil
-		},
+			return agent.Allow(), nil
+		}},
 	}
 	_, p := parent(t, team, fake.Call(ToolName, `{"worker":"w","task":"clean up"}`), fake.Reply("ok"))
 	if asked.Load() != 1 || done.Load() != 1 || !strings.Contains(p.Requests()[1].Messages[2].Result.Content, "refused") {
@@ -174,17 +174,19 @@ func TestCleanupAfterPanicAndCurrent(t *testing.T) {
 			Prepare: func(context.Context, string) (Setup, error) {
 				return Setup{Done: func() error { done.Add(1); return nil }}, nil
 			}}},
-		Approve: func(ctx context.Context, _ agent.ToolCall, _ agent.ToolSpec) (bool, error) {
-			if i, ok := Current(ctx); ok {
-				who.Store(i.Worker)
-			}
-			return true, nil
+		Config: agent.Config{
+			Approve: func(ctx context.Context, _ agent.ToolCall, _ agent.ToolSpec) (agent.Decision, error) {
+				if i, ok := Current(ctx); ok {
+					who.Store(i.Worker)
+				}
+				return agent.Allow(), nil
+			},
+			Observers: []agent.Observer{func(ev agent.Event) {
+				if ev.Kind == agent.EventDone {
+					panic("host bug")
+				}
+			}},
 		},
-		Observers: []agent.Observer{func(ev agent.Event) {
-			if ev.Kind == agent.EventDone {
-				panic("host bug")
-			}
-		}},
 	}
 	parent(t, team, fake.Call(ToolName, `{"worker":"w","task":"x"}`), fake.Reply("ok"))
 	if done.Load() != 1 || who.Load() != "w" {
@@ -204,7 +206,7 @@ func TestWorkerEventsNameTheParentRun(t *testing.T) {
 		runs[ev.Run] = ev.Parent
 		tagged[ev.Run] = ev.Worker == "w" && ev.Task == 1
 	}
-	crew, err := NewCrew(Team{Workers: []Worker{{Name: "w", Description: "w", Provider: fake.New(fake.Reply("done"))}}, Observers: []agent.Observer{obs}})
+	crew, err := NewCrew(Team{Workers: []Worker{{Name: "w", Description: "w", Provider: fake.New(fake.Reply("done"))}}, Config: agent.Config{Observers: []agent.Observer{obs}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,5 +236,19 @@ func checkParents(t *testing.T, runs map[string]string, tagged map[string]bool) 
 		if tagged[run] && runs[parentRun] != "" || tagged[run] == (parentRun == "") {
 			t.Fatalf("run %s parent %q tagged %v; all %v", run, parentRun, tagged[run], runs)
 		}
+	}
+}
+
+// A worker can be another kind of agent: its own whole system prompt, and
+// the team's settings for the rest (21/11: the base prompt was forced, and
+// compaction and the loop detector were not passed on).
+func TestWorkerSystemAndTeamConfig(t *testing.T) {
+	worker := fake.New(fake.Reply("done"))
+	team := Team{Workers: []Worker{{Name: "w", Description: "w", System: "You are a translator.", Provider: worker}},
+		Config: agent.Config{MaxTokens: 777}}
+	parent(t, team, fake.Call(ToolName, `{"worker":"w","task":"x"}`), fake.Reply("ok"))
+	req := worker.Requests()[0]
+	if req.System != "You are a translator." || req.MaxTokens != 777 {
+		t.Fatalf("system %q, max tokens %d", req.System, req.MaxTokens)
 	}
 }

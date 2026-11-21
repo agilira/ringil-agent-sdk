@@ -41,10 +41,10 @@ var DefaultFiles = []string{
 // rootOnly are read only at the repository root, as their agents do.
 var rootOnly = map[string]bool{".github/copilot-instructions.md": true}
 
-// Bounds: rules are read into every turn.
+// Default bounds: rules are read into every turn.
 const (
-	maxFile  = 32 << 10
-	maxTotal = 96 << 10
+	DefaultMaxFile  = 32 << 10
+	DefaultMaxTotal = 96 << 10
 )
 
 // Config says where to look.
@@ -55,6 +55,9 @@ type Config struct {
 	Global string
 	// Files overrides DefaultFiles.
 	Files []string
+	// MaxFile and MaxTotal bound what is read of one file and of them all
+	// (DefaultMaxFile, DefaultMaxTotal): rules go into every turn.
+	MaxFile, MaxTotal int
 	// Stop is where the walk up from Dir ends; default the nearest
 	// directory holding .git, or Dir alone when there is none.
 	Stop string
@@ -70,6 +73,12 @@ type File struct {
 // bound, the closest files are kept and the broadest cut: a folder's own
 // rules are the most specific.
 func Load(cfg Config) []File {
+	if cfg.MaxFile <= 0 {
+		cfg.MaxFile = DefaultMaxFile
+	}
+	if cfg.MaxTotal <= 0 {
+		cfg.MaxTotal = DefaultMaxTotal
+	}
 	l := &loader{cfg: cfg, seen: map[string]bool{}}
 	if cfg.Global != "" {
 		l.read(cfg.Global, "")
@@ -81,7 +90,7 @@ func Load(cfg Config) []File {
 	for _, dir := range chain(stop, cfg.Dir) {
 		l.dir(dir, stop)
 	}
-	return budget(l.out)
+	return budget(l.out, cfg.MaxTotal)
 }
 
 // trustedRoot is the repository root, unless that root is the home or
@@ -160,7 +169,7 @@ func (l *loader) read(p, within string) {
 		return
 	}
 	l.seen[real] = true
-	text, ok := readRegular(real)
+	text, ok := readRegular(real, l.cfg.MaxFile)
 	if text = strings.TrimSpace(text); ok && text != "" && !l.seen["text:"+text] {
 		l.seen["text:"+text] = true
 		l.out = append(l.out, File{Path: p, Text: text})
@@ -187,11 +196,11 @@ func mustAbs(p string) string {
 	return p
 }
 
-// budget keeps the total within maxTotal, filling from the closest file
-// back to the broadest; a file that does not fit is cut or left out with
-// a mark, so the model knows something is missing.
-func budget(fs []File) []File {
-	left := maxTotal
+// budget keeps the total within total, filling from the closest file back
+// to the broadest; a file that does not fit is cut or left out with a
+// mark, so the model knows something is missing.
+func budget(fs []File, total int) []File {
+	left := total
 	for i := len(fs) - 1; i >= 0; i-- {
 		switch {
 		case len(fs[i].Text) <= left:
@@ -206,7 +215,7 @@ func budget(fs []File) []File {
 	return fs
 }
 
-func readRegular(p string) (string, bool) {
+func readRegular(p string, max int) (string, bool) {
 	f, err := os.OpenFile(p, os.O_RDONLY|nonBlock, 0) // #nosec G304 -- a rules file of the user's project, checked by the caller
 	if err != nil {
 		return "", false
@@ -220,7 +229,7 @@ func readRegular(p string) (string, bool) {
 	if err != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxFile))
+	data, err := io.ReadAll(io.LimitReader(f, int64(max)))
 	if err != nil {
 		return "", false
 	}
@@ -228,7 +237,7 @@ func readRegular(p string) (string, bool) {
 		return "", false // a hard link could bring any file in under a rules name
 	}
 	text := strings.Map(dropNUL, strings.ToValidUTF8(string(data), ""))
-	if info.Size() > maxFile {
+	if info.Size() > int64(max) {
 		text += "\n[...]"
 	}
 	return text, true

@@ -41,6 +41,9 @@ type Worker struct {
 	// (agent.DefaultSystem), which it does not replace: a worker reads
 	// what the parent would not, and keeps the base's rules for it.
 	Role string
+	// System, when set, is the worker's whole system prompt instead of
+	// the base and Role: for a worker that is another kind of agent.
+	System string
 	// Tools the worker may use; nil means none.
 	Tools agent.Registry
 	// Provider overrides the team's model for this worker.
@@ -63,26 +66,20 @@ type Setup struct {
 // share with the parent.
 type Team struct {
 	Workers []Worker
-	// Provider is the model workers use; normally the parent's, budget
-	// included, so delegated work counts against the same limits.
-	Provider agent.Provider
-	// Approve is the parent's approval hook: a worker's risky calls are
-	// confirmed like the parent's.
-	Approve func(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error)
-	// MaxTurns bounds a worker's model calls; default 30.
-	MaxTurns int
+	// Config is what every worker's agent starts from, normally the
+	// parent's: its Provider (budget included, so delegated work counts
+	// against the same limits), Approve (a worker's risky calls are
+	// confirmed like the parent's), Instructions (a company's rules hold
+	// for the work it delegates too), Compaction, Loop, ContextWindow,
+	// AfterTool and the rest. The crew sets each worker's Tools, System
+	// and Context; MaxTurns is the worker's, else this one's, else 30;
+	// Provider the worker's when it has one. Observers receive every event
+	// of every worker, with Event.Worker, Event.Task and Event.Parent set:
+	// workers run in parallel and in the background, so observers must be
+	// safe for concurrent use (see agent.Observer).
+	Config agent.Config
 	// MaxReport is how much of a report the parent sees; default 32 KiB.
 	MaxReport int
-	// Instructions are the operator's (agent.Config.Instructions), given
-	// to every worker as to the parent: a company's rules hold for the
-	// work it delegates too.
-	Instructions string
-	// Observers receive every event of every worker, with Event.Worker,
-	// Event.Task and Event.Parent (the run that delegated) set: give the
-	// parent's observers, and delegated work is logged and shown like the
-	// parent's. Workers run in parallel and in the background: observers
-	// must be safe for concurrent use (see agent.Observer).
-	Observers []agent.Observer
 }
 
 type taskIn struct {
@@ -270,15 +267,19 @@ func (c *Crew) agentFor(w Worker, setup Setup, task int) (agent.Agent, error) {
 			return nil, errors.Wrap(err, ErrConfig, "the worker's tools clash")
 		}
 	}
-	p := w.Provider
-	if p == nil {
-		p = c.Provider
+	cfg := c.Config
+	if w.Provider != nil {
+		cfg.Provider = w.Provider
 	}
-	return agent.New(agent.Config{
-		Provider: p, Tools: tools, System: agent.DefaultSystem + "\n\n" + w.Role, Instructions: c.Instructions, Context: setup.Context,
-		Approve: c.Approve, MaxTurns: firstPositive(w.MaxTurns, c.MaxTurns, 30),
-		Observers: tagged(c.Observers, w.Name, task),
-	})
+	cfg.Tools, cfg.Context = tools, setup.Context
+	cfg.System = w.System
+	if cfg.System == "" {
+		cfg.System = agent.DefaultSystem + "\n\n" + w.Role
+	}
+	cfg.MaxTurns = firstPositive(w.MaxTurns, c.Config.MaxTurns, 30)
+	cfg.Observers = tagged(c.Config.Observers, w.Name, task)
+	cfg.Memory = nil // the parent's memory is the parent's: a worker recalls none
+	return agent.New(cfg)
 }
 
 // tagged marks a worker's events with who ran them.

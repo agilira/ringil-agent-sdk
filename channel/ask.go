@@ -33,6 +33,7 @@ type ask struct {
 // group, so is a call an owner allowed "always" in the conversation.
 func (b *Bridge) ask(ctx context.Context, chatID, run string, p serve.Approval) {
 	a := &ask{token: rand.Text()[:16], chat: chatID, run: run, approval: p.ID, key: alwaysKey(p)}
+	refusal := b.tr(chatID, mOwnerApproves)
 	b.mu.Lock()
 	c := b.chats[chatID]
 	a.conv = c.conv
@@ -42,9 +43,9 @@ func (b *Bridge) ask(ctx context.Context, chatID, run string, p serve.Approval) 
 		_ = b.cfg.Server.Decide(run, p.ID, true)
 		return
 	case c.role != owner && !c.group:
+		_ = b.cfg.Server.Decide(run, p.ID, false) // under b.mu: its note goes out before the run's reply
+		b.queue(ctx, chatID, outgoing{out: Out{Text: refusal}})
 		b.mu.Unlock()
-		_ = b.cfg.Server.Decide(run, p.ID, false)
-		b.say(ctx, chatID, b.tr(chatID, mOwnerApproves))
 		return
 	}
 	b.asks[a.token] = a
@@ -198,15 +199,20 @@ func (b *Bridge) answered(ctx context.Context, chatID, text string) bool {
 
 func (b *Bridge) decide(ctx context.Context, a *ask, allow bool) {
 	b.stamp(a.chat)
-	if err := b.cfg.Server.Decide(a.run, a.approval, allow); err != nil {
-		b.say(ctx, a.chat, b.tr(a.chat, mClosed))
-		return
-	}
+	reply := b.tr(a.chat, mRefused)
 	if allow {
-		b.say(ctx, a.chat, b.tr(a.chat, mAllowed))
-	} else {
-		b.say(ctx, a.chat, b.tr(a.chat, mRefused))
+		reply = b.tr(a.chat, mAllowed)
 	}
+	closed := b.tr(a.chat, mClosed)
+	// The answer is queued with the decision, under the outbox's lock: the
+	// run it wakes posts after it, never before (found 21/11: "Refused."
+	// came after the run's reply under load). Decide only signals the run.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := b.cfg.Server.Decide(a.run, a.approval, allow); err != nil {
+		reply = closed
+	}
+	b.queue(ctx, a.chat, outgoing{out: Out{Text: reply}})
 }
 
 // close forgets an asked approval; b.mu held.

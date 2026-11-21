@@ -128,7 +128,19 @@ func (c *cli) onlyTools(tools agent.Registry) (agent.Registry, error) {
 			return nil, errors.New(ErrUsage, "the profile lists a tool it does not have: "+name)
 		}
 	}
-	return tools.Select(*c.role.Tools...)
+	return tools.Select(withCompanions(*c.role.Tools)...)
+}
+
+// companions come with a tool listed: bash's background commands are read
+// and stopped by two tools of their own.
+var companions = map[string][]string{"bash": {"bash_output", "bash_kill"}}
+
+func withCompanions(names []string) []string {
+	out := append([]string(nil), names...)
+	for _, n := range names {
+		out = append(out, companions[n]...)
+	}
+	return out
 }
 
 // checkChatProfile accepts a profile for a chat's members or the public:

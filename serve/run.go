@@ -280,11 +280,17 @@ func (j *job) since(id int) (out []entry, changed <-chan struct{}, missed int, o
 	return out, j.changed, missed, !j.ended.IsZero()
 }
 
-// Approve is an approval hook for agent.Config.Approve: the call waits
-// until the API caller decides (POST /v1/runs/{id}/approvals/{call}),
-// the run ends, or ApprovalTimeout passes, which refuses it. Outside a
-// run of this server it refuses.
-func (s *Server) Approve(ctx context.Context, call agent.ToolCall, _ agent.ToolSpec) (bool, error) {
+// Approve is an approval hook for agent.Config.Approve: Ask decides.
+func (s *Server) Approve(ctx context.Context, call agent.ToolCall, _ agent.ToolSpec) (agent.Decision, error) {
+	ok, err := s.Ask(ctx, call)
+	return agent.Decision{Allow: ok}, err
+}
+
+// Ask asks the API caller about call: it waits until the caller decides
+// (POST /v1/runs/{id}/approvals/{call}), the run ends, or ApprovalTimeout
+// passes, which refuses it. Outside a run of this server it refuses. The
+// host asks it also what a tool asks (a command outside the sandbox).
+func (s *Server) Ask(ctx context.Context, call agent.ToolCall) (bool, error) {
 	j, ok := ctx.Value(jobKey{}).(*job)
 	if !ok || j.srv != s {
 		return false, fail(ErrInput, "not a run of this server")

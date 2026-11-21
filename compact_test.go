@@ -272,3 +272,40 @@ func TestParallelResultsAreClippedNotStubbed(t *testing.T) {
 		t.Fatalf("results %v", seen)
 	}
 }
+
+// 21/11: once over the threshold, each call stubbed one result more, so
+// the view changed at every call and the provider's cache never kept it.
+// Results become stubs in batches: the view stays the same between them.
+func TestStubsComeInBatches(t *testing.T) {
+	const n = 30
+	p := fake.New(fetches(n, "done")...)
+	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, big(3000)), ContextWindow: 16000})
+	compactedEvents(t, a, agent.NewConversation(), "read everything")
+	changes, last := 0, -1
+	for _, req := range p.Requests() {
+		if s, _ := stubs(req.Messages); s != last {
+			changes, last = changes+1, s
+		}
+	}
+	if last == 0 || changes > n/8+2 {
+		t.Fatalf("the stubs changed %d times in %d calls (last %d)", changes, n, last)
+	}
+}
+
+// The host says what a summary keeps (SummaryTask); the transcript stays
+// data.
+func TestSummaryTask(t *testing.T) {
+	var history []agent.Message
+	for range 10 {
+		history = append(history, agent.UserText(strings.Repeat("domanda ", 200)), agent.AssistantText(strings.Repeat("risposta ", 200)))
+	}
+	p := fake.New(fake.Reply("RIASSUNTO"), fake.Reply("ok"))
+	a := newAgent(t, agent.Config{Provider: p, ContextWindow: 2000, Compaction: agent.Compaction{Summarize: true, SummaryTask: "Keep only the customer's orders."}})
+	if _, err := a.Run(context.Background(), agent.NewConversation(history...), agent.UserText("ultima")); err != nil {
+		t.Fatal(err)
+	}
+	req := p.Requests()[0]
+	if text := req.Messages[0].Text(); !strings.Contains(text, "Keep only the customer's orders.") || strings.Contains(text, "Write the updated summary") || !strings.Contains(req.System, "data") {
+		t.Fatalf("%q", text)
+	}
+}

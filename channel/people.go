@@ -43,16 +43,30 @@ func peopleOf(cfg Config, p People) (*people, error) {
 		return nil, err
 	}
 	members := idSet(p.Members)
-	if _, ok := cfg.Channel.(PhoneAsker); len(phones) > 0 && !ok {
-		return nil, errors.New(ErrConfig, "this channel cannot ask for phone numbers: no MemberPhones")
-	}
-	if (len(members) > 0 || len(phones) > 0 || cfg.IsMember != nil) && p.MemberProfile == "" {
-		return nil, errors.New(ErrConfig, "members need a MemberProfile: the tools they may use")
+	if err := checkPeople(cfg, p, len(members)+len(phones) > 0); err != nil {
+		return nil, err
 	}
 	return &people{owners: idSet(p.Owners), members: members, phones: phones,
 		memberProfile: p.MemberProfile, publicProfile: p.PublicProfile, maxPerHour: p.MaxPerHour,
 		noApprovals: p.NoApprovals}, nil
 }
+
+// checkPeople: phones need a channel that asks for them, members a
+// profile, and Authorize no lists beside it.
+func checkPeople(cfg Config, p People, listed bool) error {
+	if _, ok := cfg.Channel.(PhoneAsker); len(p.MemberPhones) > 0 && !ok {
+		return errors.New(ErrConfig, "this channel cannot ask for phone numbers: no MemberPhones")
+	}
+	if needsMemberProfile(cfg, listed) && p.MemberProfile == "" {
+		return errors.New(ErrConfig, "members need a MemberProfile: the tools they may use")
+	}
+	if cfg.Authorize != nil && (len(p.Owners) > 0 || listed || cfg.IsMember != nil) {
+		return errAuthorizeAlone
+	}
+	return nil
+}
+
+var errAuthorizeAlone = errors.New(ErrConfig, "Authorize says who everyone is: no Owners, Members, MemberPhones or IsMember with it")
 
 // SetPeople changes who the Bridge talks with, from the next message: a
 // run going keeps the role it started with. A sender whose phone is taken
@@ -80,3 +94,6 @@ func (b *Bridge) SetPeople(p People) error {
 }
 
 func (b *Bridge) people() *people { return b.who.Load() }
+
+// needsMemberProfile: there are members, listed or by IsMember.
+func needsMemberProfile(cfg Config, listed bool) bool { return listed || cfg.IsMember != nil }

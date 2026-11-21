@@ -465,9 +465,9 @@ func TestInvalidUTF8ToolOutputIsRepaired(t *testing.T) {
 func TestApproveHook(t *testing.T) {
 	calls := 0
 	var asked []string
-	approve := func(_ context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+	approve := func(_ context.Context, call agent.ToolCall, spec agent.ToolSpec) (agent.Decision, error) {
 		asked = append(asked, call.Name+":"+map[bool]string{true: "ro", false: "rw"}[spec.Annotations.ReadOnly])
-		return false, nil
+		return agent.Decision{}, nil
 	}
 	p := fake.New(fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
 	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), Approve: approve}).Run(context.Background(), nil, agent.UserText("x"))
@@ -482,8 +482,8 @@ func TestApproveHook(t *testing.T) {
 
 func TestApproveErrorRefuses(t *testing.T) {
 	calls := 0
-	approve := func(context.Context, agent.ToolCall, agent.ToolSpec) (bool, error) {
-		return true, stderrors.New("dialog closed")
+	approve := func(context.Context, agent.ToolCall, agent.ToolSpec) (agent.Decision, error) {
+		return agent.Allow(), stderrors.New("dialog closed")
 	}
 	p := fake.New(fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
 	var denied error
@@ -584,7 +584,8 @@ func TestCancelMidBatchKeepsFinishedResults(t *testing.T) {
 }
 
 // An empty answer (often a tool call the provider dropped for an unknown
-// name) is asked again once, saying so; it is not recorded.
+// name) is asked again once, saying so in a system message after it (the
+// system prompt stays as it was); the empty answer is not recorded.
 func TestEmptyAnswerIsAskedAgain(t *testing.T) {
 	calls := 0
 	p := fake.New(fake.Reply(""), fake.Reply("ok"))
@@ -594,7 +595,93 @@ func TestEmptyAnswerIsAskedAgain(t *testing.T) {
 		t.Fatalf("result %q %v", res.Text, err)
 	}
 	reqs := p.Requests()
-	if len(reqs) != 2 || !strings.Contains(reqs[1].System, "Your last reply was empty") || len(conv.Messages()) != 2 {
-		t.Fatalf("%d requests, %d messages", len(reqs), len(conv.Messages()))
+	msgs := conv.Messages()
+	last := reqs[len(reqs)-1].Messages
+	if len(reqs) != 2 || reqs[1].System != reqs[0].System || len(msgs) != 3 || msgs[1].Role != agent.RoleSystem ||
+		!strings.Contains(last[len(last)-1].Text(), "Your last reply was empty") {
+		t.Fatalf("%d requests, %d messages", len(reqs), len(msgs))
+	}
+}
+
+func TestNoEmptyRetry(t *testing.T) {
+	calls := 0
+	p := fake.New(fake.Reply(""), fake.Reply("ok"))
+	_, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), NoEmptyRetry: true}).Run(context.Background(), nil, agent.UserText("x"))
+	if err != nil || len(p.Requests()) != 1 {
+		t.Fatalf("NoEmptyRetry asked again: %v", err)
+	}
+}
+
+// An approval can run the call with other arguments, refuse it with its
+// own message, or end the run after the turn's calls (21/11: it could
+// only say yes or no, with a fixed refusal).
+func TestApprovalDecisions(t *testing.T) {
+	calls := 0
+	run := func(d agent.Decision, steps ...fake.Step) (*agent.Result, fake.Script) {
+		t.Helper()
+		p := fake.New(steps...)
+		approve := func(context.Context, agent.ToolCall, agent.ToolSpec) (agent.Decision, error) { return d, nil }
+		res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), Approve: approve}).Run(context.Background(), nil, agent.UserText("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res, p
+	}
+	res, p := run(agent.Decision{Allow: true, Input: json.RawMessage(`{"a":40,"b":2}`)}, fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
+	if got := res.Messages[2].Result.Content; got != "42" {
+		t.Fatalf("with the host's input: %q", got)
+	}
+	// The model's message keeps its own input, in the result and in what
+	// the model is sent next (audit 21/11: the history was rewritten).
+	if in := string(res.Messages[1].Calls[0].Input); in != `{"a":1,"b":1}` {
+		t.Fatalf("history rewritten: %s", in)
+	}
+	if in := string(p.Requests()[1].Messages[1].Calls[0].Input); in != `{"a":1,"b":1}` {
+		t.Fatalf("the model was sent %s", in)
+	}
+	_, p = run(agent.Deny("Not on weekends."), fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
+	if last := p.Requests()[1].Messages; last[len(last)-1].Result.Content != "Not on weekends." {
+		t.Fatalf("message %+v", last[len(last)-1].Result)
+	}
+	res, p = run(agent.Decision{Stop: true}, fake.Call("add", `{"a":1,"b":1}`), fake.Reply("never"))
+	if res.Stop != agent.StopDenied || len(p.Requests()) != 1 {
+		t.Fatalf("stop %s after %d requests", res.Stop, len(p.Requests()))
+	}
+}
+
+// AfterTool sees each result first and gives the model its own.
+func TestAfterTool(t *testing.T) {
+	calls := 0
+	p := fake.New(fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
+	after := func(_ context.Context, call agent.ToolCall, res agent.ToolResult) agent.ToolResult {
+		return agent.ToolResult{CallID: "forged", Content: "[redacted " + call.Name + "=" + res.Content + "]"}
+	}
+	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), AfterTool: after}).Run(context.Background(), nil, agent.UserText("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Messages[2].Result; got.Content != "[redacted add=2]" || got.CallID != res.Messages[1].Calls[0].ID {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// A panicking AfterTool withholds the result instead of ending the run,
+// and its images pass the tools' check (audit 21/11).
+func TestAfterToolPanicsAndImages(t *testing.T) {
+	calls := 0
+	p := fake.New(fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
+	after := func(context.Context, agent.ToolCall, agent.ToolResult) agent.ToolResult { panic("host bug") }
+	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), AfterTool: after}).Run(context.Background(), nil, agent.UserText("x"))
+	if err != nil || !res.Messages[2].Result.IsError || strings.Contains(res.Messages[2].Result.Content, "2") {
+		t.Fatalf("%v %+v", err, res)
+	}
+	p = fake.New(fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
+	bad := func(_ context.Context, _ agent.ToolCall, r agent.ToolResult) agent.ToolResult {
+		r.Images = []agent.Part{{Type: agent.PartImage, MIME: "image/png", Data: []byte("not an image")}}
+		return r
+	}
+	res, err = newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), AfterTool: bad}).Run(context.Background(), nil, agent.UserText("x"))
+	if err != nil || len(res.Messages[2].Result.Images) != 0 {
+		t.Fatalf("an unchecked image went through: %v", err)
 	}
 }

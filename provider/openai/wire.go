@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	agent "github.com/agilira/ringil-agent-sdk"
@@ -20,6 +21,8 @@ type wireRequest struct {
 	Tools         []wireTool     `json:"tools,omitempty"`
 	ToolChoice    string         `json:"tool_choice,omitempty"`
 	MaxTokens     int            `json:"max_tokens,omitempty"`
+	MaxCompletion int            `json:"max_completion_tokens,omitempty"`
+	Effort        string         `json:"reasoning_effort,omitempty"`
 	Temperature   *float64       `json:"temperature,omitempty"`
 	Stream        bool           `json:"stream,omitempty"`
 	StreamOptions *streamOptions `json:"stream_options,omitempty"`
@@ -34,6 +37,7 @@ type wireMessage struct {
 	Content    any            `json:"content"` // *string, or []wirePart for a user message with images
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+	Reasoning  string         `json:"reasoning_content,omitempty"`
 }
 
 type wireToolCall struct {
@@ -72,7 +76,7 @@ var emptySchema = json.RawMessage(`{"type":"object","properties":{}}`)
 func (p *provider) encode(req *agent.Request, stream bool) ([]byte, error) {
 	wire := wireRequest{
 		Model:       p.cfg.Model,
-		Messages:    encodeMessages(req, p.cfg.Images),
+		Messages:    p.encodeMessages(req),
 		Tools:       encodeTools(req.Tools),
 		ToolChoice:  string(req.ToolChoice),
 		MaxTokens:   req.MaxTokens,
@@ -82,21 +86,106 @@ func (p *provider) encode(req *agent.Request, stream bool) ([]byte, error) {
 	if wire.MaxTokens == 0 {
 		wire.MaxTokens = p.cfg.MaxTokens
 	}
+	if p.cfg.MaxCompletionTokens {
+		wire.MaxCompletion, wire.MaxTokens = wire.MaxTokens, 0
+	}
+	wire.Effort = p.cfg.ReasoningEffort
 	if stream {
 		wire.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
-	return json.Marshal(wire)
+	body, err := json.Marshal(wire)
+	if err != nil || len(p.cfg.Extra) == 0 {
+		return body, err
+	}
+	return withExtra(body, p.cfg.Extra)
 }
 
-func encodeMessages(req *agent.Request, images bool) []wireMessage {
+// withExtra adds the host's own fields to the request body; a field the
+// provider sets itself is never replaced.
+func withExtra(body []byte, extra map[string]any) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, err
+	}
+	for k, v := range extra {
+		if _, set := fields[k]; set || ownFields[k] {
+			continue
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		fields[k] = raw
+	}
+	return json.Marshal(fields)
+}
+
+// ownFields are the body's fields only the provider writes, set or not.
+var ownFields = map[string]bool{"model": true, "messages": true, "tools": true, "tool_choice": true, "stream": true,
+	"stream_options": true, "max_tokens": true, "max_completion_tokens": true}
+
+// encodeMessages is the conversation in the API's messages. The model's
+// reasoning goes back to it only within the current round of tool calls,
+// and only to the model that made it: that is what servers that send it
+// want (DeepSeek's thinking mode with tools), and others refuse it after.
+func (p *provider) encodeMessages(req *agent.Request) []wireMessage {
 	out := make([]wireMessage, 0, len(req.Messages)+1)
 	if req.System != "" {
 		out = append(out, wireMessage{Role: "system", Content: text(req.System)})
 	}
-	for _, msg := range req.Messages {
-		out = append(out, encodeMessage(msg, images))
+	round := currentRound(req.Messages)
+	var pending []agent.Part // images of the tool results just sent
+	for i, msg := range req.Messages {
+		if msg.Role != agent.RoleTool && len(pending) > 0 {
+			out, pending = append(out, p.toolImages(pending)), nil
+		}
+		out = append(out, p.encodeTurn(msg, i >= round))
+		if msg.Role == agent.RoleTool && msg.Result != nil {
+			pending = append(pending, msg.Result.Images...)
+		}
+	}
+	if len(pending) > 0 {
+		out = append(out, p.toolImages(pending))
 	}
 	return out
+}
+
+// encodeTurn is msg; in the current round, an assistant message carries
+// its reasoning back.
+func (p *provider) encodeTurn(msg agent.Message, inRound bool) wireMessage {
+	wire := encodeMessage(msg, p.cfg.Images)
+	if inRound && msg.Role == agent.RoleAssistant {
+		wire.Reasoning = joinReasoning(msg.Reasoning(p.source()))
+	}
+	return wire
+}
+
+// toolImages is the images tool results returned, as a user message after
+// them: the API's tool messages carry text only.
+func (p *provider) toolImages(images []agent.Part) wireMessage {
+	if !p.cfg.Images { // the tools sent them, not the user (audit 21/11)
+		return wireMessage{Role: "user", Content: text("[The tool results above returned " + strconv.Itoa(len(images)) + " images, which this model cannot see.]")}
+	}
+	return encodeUser(agent.UserMessage("[The images the tool results above returned.]", images...), p.cfg.Images)
+}
+
+// currentRound is where the current round of tool calls starts: after the
+// last message the user wrote.
+func currentRound(msgs []agent.Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == agent.RoleUser {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func joinReasoning(parts []agent.Part) string {
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(p.Text)
+	}
+	return b.String()
 }
 
 func text(s string) *string { return &s }
@@ -109,8 +198,13 @@ func encodeMessage(msg agent.Message, images bool) wireMessage {
 		return encodeAssistant(msg)
 	case agent.RoleUser:
 		return encodeUser(msg, images)
+	case agent.RoleSystem:
+		// Many servers' chat templates take a system message only first:
+		// the host's note goes as a marked user message, which every one
+		// takes.
+		return wireMessage{Role: "user", Content: text("<system-reminder>\n" + msg.ModelText() + "\n</system-reminder>")}
 	default:
-		return wireMessage{Role: string(msg.Role), Content: text(msg.Text())}
+		return wireMessage{Role: string(msg.Role), Content: text(msg.ModelText())}
 	}
 }
 
@@ -132,15 +226,15 @@ const noImages = "[The user sent images here, which this model cannot see: tell 
 // data URLs; to a model configured without images, a note in their place.
 func encodeUser(msg agent.Message, images bool) wireMessage {
 	if msg.Images() == 0 {
-		return wireMessage{Role: "user", Content: text(msg.Text())}
+		return wireMessage{Role: "user", Content: text(msg.ModelText())}
 	}
 	if !images {
-		return wireMessage{Role: "user", Content: text(strings.TrimSpace(msg.Text() + "\n" + noImages))}
+		return wireMessage{Role: "user", Content: text(strings.TrimSpace(msg.ModelText() + "\n" + noImages))}
 	}
 	parts := make([]wirePart, 0, len(msg.Parts))
 	for _, p := range msg.Parts {
 		switch p.Type {
-		case agent.PartText:
+		case agent.PartText, agent.PartContext:
 			parts = append(parts, wirePart{Type: "text", Text: p.Text})
 		case agent.PartImage:
 			url := "data:" + p.MIME + ";base64," + base64.StdEncoding.EncodeToString(p.Data)
@@ -229,10 +323,27 @@ func decodeStop(finish string, calls int) agent.StopReason {
 	}
 }
 
-func assistant(body string, calls []agent.ToolCall) agent.Message {
+// assistant is the model's message: its reasoning (reasoning_content, as
+// DeepSeek and others send it) first, then its text.
+func assistant(reasoning, body string, calls []agent.ToolCall) agent.Message {
 	msg := agent.Message{Role: agent.RoleAssistant, Calls: calls}
+	if reasoning != "" {
+		msg.Parts = append(msg.Parts, agent.Part{Type: agent.PartReasoning, Text: reasoning})
+	}
 	if body != "" {
-		msg.Parts = []agent.Part{{Type: agent.PartText, Text: body}}
+		msg.Parts = append(msg.Parts, agent.Part{Type: agent.PartText, Text: body})
 	}
 	return msg
+}
+
+// source marks the reasoning this provider's model made.
+func (p *provider) source() string { return "openai:" + p.cfg.Model }
+
+// stamp marks m's reasoning as this model's.
+func (p *provider) stamp(m *agent.Message) {
+	for i := range m.Parts {
+		if m.Parts[i].Type == agent.PartReasoning {
+			m.Parts[i].Source = p.source()
+		}
+	}
 }

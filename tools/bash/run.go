@@ -101,27 +101,81 @@ func within(p, dir string) bool {
 // mounted by path, so nothing may change it in between; and the
 // repository checks after a run must see that run's changes alone.
 func (t *tool) runSandboxed(ctx context.Context, command string, out *capture) error {
+	p, repos, stop, err := t.startSandboxed(ctx, command, out)
+	if err != nil {
+		return err
+	}
+	defer stop()
+	t.track(out, repos)
+	err = p.Wait()
+	t.untrack(out)
+	quiet := context.WithoutCancel(ctx)
+	out.notes = guardRepos(quiet, t.cfg.Dir, repos, t.workFind)
+	out.notes = append(out.notes, t.guardLive(quiet)...)
+	return err
+}
+
+// track and untrack keep the sandboxed commands running, for guardLive.
+func (t *tool) track(out *capture, repos repoState) {
+	t.liveMu.Lock()
+	defer t.liveMu.Unlock()
+	if t.live == nil {
+		t.live = map[*capture]liveRun{}
+	}
+	t.live[out] = liveRun{at: time.Now(), repos: repos}
+}
+
+func (t *tool) untrack(out *capture) {
+	t.liveMu.Lock()
+	defer t.liveMu.Unlock()
+	delete(t.live, out)
+}
+
+// guardLive undoes what the sandboxed commands still running (in the
+// background) did to the repositories so far, against the oldest one's
+// start: before git can run on the host (a command outside the sandbox),
+// and after each command, not only when they end (audit 21/11: a job's
+// planted hook waited for the job's end, which could never come).
+func (t *tool) guardLive(ctx context.Context) []string {
+	t.liveMu.Lock()
+	var oldest *liveRun
+	for _, l := range t.live {
+		if oldest == nil || l.at.Before(oldest.at) {
+			oldest = &l
+		}
+	}
+	t.liveMu.Unlock()
+	if oldest == nil {
+		return nil
+	}
+	return guardRepos(ctx, t.cfg.Dir, oldest.repos, t.workFind)
+}
+
+// startSandboxed starts command; one starts at a time (the mounts are
+// built from the directory as it is then), and runs alongside the others
+// (a background server, a build).
+func (t *tool) startSandboxed(ctx context.Context, command string, out *capture) (sandbox.Process, repoState, func(), error) {
 	t.runMu.Lock()
 	defer t.runMu.Unlock()
 	spec, repos, err := t.spec(ctx, command, out)
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
+	stop := func() {}
 	if t.proxy != nil {
-		sock, stop, err := t.proxy.Listen(ctx, out.refused)
+		sock, listening, err := t.proxy.Listen(ctx, out.refused)
 		if err != nil {
-			return err
+			return nil, nil, nil, err
 		}
-		defer stop()
+		stop = listening
 		spec.Network, spec.Proxy = sandbox.ProxiedNetwork, sock
 	}
 	p, err := t.box.Start(ctx, spec)
 	if err != nil {
-		return err
+		stop()
+		return nil, nil, nil, err
 	}
-	err = p.Wait()
-	out.notes = guardRepos(context.WithoutCancel(ctx), t.cfg.Dir, repos, t.workFind)
-	return err
+	return p, repos, stop, nil
 }
 
 func (t *tool) spec(ctx context.Context, command string, out *capture) (sandbox.Spec, repoState, error) {
@@ -305,6 +359,9 @@ func (t *tool) readHidden(dir string) ([]string, error) {
 // neverIn is the protected paths inside dir, relative: hidden there, the
 // sandbox grants dir.
 func (t *tool) neverIn(dir string) []string {
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real // both sides resolved (macOS: /var is /private/var)
+	}
 	var out []string
 	for _, p := range t.cfg.Never {
 		real := p
@@ -322,6 +379,7 @@ func (t *tool) neverIn(dir string) []string {
 // working directory. Variables that look like credentials are not passed:
 // the user allowed a command, not the agent's keys.
 func (t *tool) runHost(ctx context.Context, command string, out *capture) error {
+	out.notes = t.guardLive(context.WithoutCancel(ctx)) // git here must not find what a sandboxed job planted
 	shell, err := exec.LookPath("bash")
 	if err != nil {
 		return agent.ToolError(ErrRun, "There is no bash on this machine.")

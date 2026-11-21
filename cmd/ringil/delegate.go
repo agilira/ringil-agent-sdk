@@ -42,11 +42,15 @@ func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools a
 		return nil, err
 	}
 	crew, err := delegate.NewCrew(delegate.Team{
-		Instructions: instructions,
-		Provider:     p,
-		Approve:      c.approve,
-		MaxTurns:     c.maxTurns(ctx),
-		Observers:    append([]agent.Observer{c.showWorker}, c.events...),
+		Config: agent.Config{
+			Instructions: instructions,
+			Provider:     p,
+			Approve:      c.decide,
+			MaxTurns:     c.maxTurns(ctx),
+			Observers:    append([]agent.Observer{c.showWorker}, c.events...),
+			KeepImages:   c.keepImages(ctx),
+			Loop:         agent.Loop{Action: agent.LoopWarn},
+		},
 		Workers: []delegate.Worker{
 			{Name: "explore", Description: "searches and reads files, read-only; for questions like where is X, how does Y work", Role: exploreRole, Tools: explore, Prepare: c.prepareWorker},
 			{Name: "general", Description: "does a self-contained task with the same tools as you, except delegating and your own notes, task list and memory", Role: generalRole, Tools: general, Prepare: c.prepareWorker},

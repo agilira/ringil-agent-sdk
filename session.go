@@ -10,6 +10,7 @@ import (
 	"maps"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,14 +141,26 @@ func checkMessage(msg Message, open, seen map[string]bool) error {
 			return err
 		}
 		return openCalls(msg.Calls, open, seen)
+	case RoleSystem:
+		return checkClosed(open, plainText(msg))
 	case RoleTool:
-		if msg.Result == nil || !open[msg.Result.CallID] || len(msg.Calls) != 0 {
-			return errors.New(ErrSessionCorrupt, "tool result without a matching call")
-		}
-		delete(open, msg.Result.CallID)
-		return nil
+		return closeCall(msg, open)
 	}
 	return errors.New(ErrSessionCorrupt, "unknown role")
+}
+
+// closeCall takes a tool result: it answers a call still open.
+func closeCall(msg Message, open map[string]bool) error {
+	if msg.Result == nil || !open[msg.Result.CallID] || len(msg.Calls) != 0 {
+		return errors.New(ErrSessionCorrupt, "tool result without a matching call")
+	}
+	delete(open, msg.Result.CallID)
+	return nil
+}
+
+// plainText: msg holds text and neither calls nor a result.
+func plainText(msg Message) bool {
+	return len(msg.Calls) == 0 && msg.Result == nil && strings.TrimSpace(msg.ModelText()) != ""
 }
 
 // checkClosed refuses a new turn while calls are still unanswered: only the

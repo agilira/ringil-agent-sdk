@@ -182,7 +182,19 @@ func (r *registry) Execute(ctx context.Context, call ToolCall) (ToolResult, erro
 	}
 	// Stored conversations are JSON, which cannot carry invalid UTF-8:
 	// fix it here so the model sees exactly what is recorded.
-	return ToolResult{CallID: call.ID, Content: strings.ToValidUTF8(out.Content, "\uFFFD")}, nil
+	return ToolResult{CallID: call.ID, Content: strings.ToValidUTF8(out.Content, "\uFFFD"), Images: checkedImages(out.Images)}, nil
+}
+
+// checkedImages keeps the images a model API takes (CheckImage); a tool's
+// other output is not the model's to see.
+func checkedImages(parts []Part) []Part {
+	var out []Part
+	for _, p := range parts {
+		if p.Type == PartImage && CheckImage(p.MIME, p.Data) == nil {
+			out = append(out, Part{Type: PartImage, MIME: p.MIME, Data: p.Data})
+		}
+	}
+	return out
 }
 
 func failed(call ToolCall, err error) (ToolResult, error) {

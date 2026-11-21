@@ -39,6 +39,9 @@ func (p *provider) Generate(ctx context.Context, req *agent.Request, sink agent.
 		return finish(ctx, nil, err)
 	}
 	out, err := p.read(resp, sink, cancel)
+	if out != nil {
+		p.stamp(&out.Message)
+	}
 	return finish(ctx, out, err)
 }
 
@@ -131,6 +134,7 @@ type wireResponse struct {
 	Choices []struct {
 		Message struct {
 			Content   *string        `json:"content"`
+			Reasoning *string        `json:"reasoning_content"`
 			ToolCalls []wireToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
@@ -169,8 +173,12 @@ func parseBody(data []byte) (*agent.Response, error) {
 	if len(calls) == 0 {
 		calls = nil
 	}
+	reasoning := ""
+	if choice.Message.Reasoning != nil {
+		reasoning = *choice.Message.Reasoning
+	}
 	return &agent.Response{
-		Message: assistant(body, calls),
+		Message: assistant(reasoning, body, calls),
 		Usage:   decodeUsage(wire.Usage),
 		Stop:    decodeStop(choice.FinishReason, len(calls)),
 	}, nil

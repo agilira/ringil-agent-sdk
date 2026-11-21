@@ -95,7 +95,7 @@ func TestSameCallIDTwice(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ok, _ := s.Approve(ctx, agent.ToolCall{ID: "call_0", Name: "rm", Input: json.RawMessage(`{}`)}, agent.ToolSpec{})
+				ok, _ := s.Ask(ctx, agent.ToolCall{ID: "call_0", Name: "rm", Input: json.RawMessage(`{}`)})
 				done <- ok
 			}()
 		}

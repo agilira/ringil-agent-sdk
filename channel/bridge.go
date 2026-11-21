@@ -59,6 +59,13 @@ type Config struct {
 	// Refused with its sender, for the host to add if wanted (which is how
 	// a user learns their own ID).
 	PublicProfile string
+	// Authorize, when set, says who a sender is, in place of Owners,
+	// Members, IsMember and MemberPhones: the host's own directory (a
+	// company's, an SSO). Profile, MemberProfile, PublicProfile and
+	// MaxPerHour still apply to the roles it gives. Its answers are kept
+	// for MemberCheck; an error, or a role it does not define, is a
+	// Stranger.
+	Authorize func(ctx context.Context, from string) (Role, error)
 	// MaxPerHour bounds the messages a member or public sender has
 	// answered in an hour; default 30, negative no bound. Owners have none.
 	MaxPerHour int

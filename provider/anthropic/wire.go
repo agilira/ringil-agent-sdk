@@ -149,58 +149,121 @@ func extras(fields map[string]json.RawMessage) map[string]any {
 // that follows them in the same turn, as the API asks); the thinking of
 // the current round of tool calls goes back with the turn that made it.
 func (p *provider) encodeMessages(msgs []agent.Message) []anthropic.BetaMessageParam {
-	type turn struct {
-		assistant bool
-		blocks    []anthropic.BetaContentBlockParamUnion
-	}
+	msgs = fitImages(msgs)
 	var turns []turn
-	round := currentRound(msgs)
-	for i, msg := range msgs {
-		assistant := msg.Role == agent.RoleAssistant
-		blocks := p.encodeMessage(msg, i >= round)
+	for _, msg := range msgs {
+		if msg.Role == agent.RoleSystem {
+			turns = appendSystem(turns, msg)
+			continue
+		}
+		role := roleUser
+		if msg.Role == agent.RoleAssistant {
+			role = roleAssistant
+		}
+		blocks := p.encodeMessage(msg)
 		if len(blocks) == 0 {
 			continue
 		}
-		if n := len(turns); n > 0 && turns[n-1].assistant == assistant {
+		if n := len(turns); n > 0 && turns[n-1].role == role {
 			turns[n-1].blocks = append(turns[n-1].blocks, blocks...)
 			continue
 		}
-		turns = append(turns, turn{assistant, blocks})
+		turns = append(turns, turn{role: role, blocks: blocks})
 	}
+	turns = placeSystem(turns)
 	out := make([]anthropic.BetaMessageParam, len(turns))
 	for i, t := range turns {
-		if t.assistant {
-			out[i] = anthropic.BetaMessageParam{OfAssistant: &anthropic.BetaAssistantMessageParam{Content: t.blocks}}
-		} else {
-			out[i] = anthropic.NewBetaUserMessage(t.blocks...)
-		}
+		out[i] = t.param()
 	}
 	return out
 }
 
-// currentRound is where the current round of tool calls starts: after the
-// last message the user wrote.
-func currentRound(msgs []agent.Message) int {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == agent.RoleUser {
-			return i + 1
+// placeSystem keeps a system message where the API takes it (last, or
+// before the model's turn); any other becomes a marked note at the start
+// of the user turn after it.
+func placeSystem(turns []turn) []turn {
+	out := make([]turn, 0, len(turns))
+	for i, t := range turns {
+		if t.role == roleSystem && i+1 < len(turns) && turns[i+1].role != roleAssistant {
+			note := anthropic.NewBetaTextBlock("<system-reminder>\n" + t.system + "\n</system-reminder>")
+			turns[i+1].blocks = append([]anthropic.BetaContentBlockParamUnion{note}, turns[i+1].blocks...)
+			continue
 		}
+		if n := len(out); n > 0 && t.role == roleUser && out[n-1].role == roleUser {
+			// A note moved into the turn after a tool result: one user
+			// turn, the results first, as the API wants (audit 21/11).
+			out[n-1].blocks = append(out[n-1].blocks, t.blocks...)
+			continue
+		}
+		out = append(out, t)
 	}
-	return 0
+	return out
 }
 
-func (p *provider) encodeMessage(msg agent.Message, inRound bool) []anthropic.BetaContentBlockParamUnion {
+type turnRole int
+
+const (
+	roleUser turnRole = iota
+	roleAssistant
+	roleSystem
+)
+
+type turn struct {
+	role   turnRole
+	blocks []anthropic.BetaContentBlockParamUnion
+	system string
+}
+
+func (t turn) param() anthropic.BetaMessageParam {
+	switch t.role {
+	case roleAssistant:
+		return anthropic.BetaMessageParam{OfAssistant: &anthropic.BetaAssistantMessageParam{Content: t.blocks}}
+	case roleSystem:
+		return anthropic.BetaMessageParam{OfSystem: &anthropic.BetaSystemMessageParam{
+			Content: []anthropic.BetaSystemMessageParamContentUnion{{OfText: &anthropic.BetaTextBlockParam{Text: t.system}}},
+		}}
+	}
+	return anthropic.NewBetaUserMessage(t.blocks...)
+}
+
+// appendSystem adds a host's mid-conversation message: a system message
+// where the API takes one (after a user turn: a message, or tool
+// results), else, first or after the model's turn, a marked note in a user
+// turn.
+func appendSystem(turns []turn, msg agent.Message) []turn {
+	text := msg.ModelText()
+	if n := len(turns); n > 0 && turns[n-1].role == roleUser {
+		return append(turns, turn{role: roleSystem, system: text})
+	}
+	note := anthropic.NewBetaTextBlock("<system-reminder>\n" + text + "\n</system-reminder>")
+	return append(turns, turn{role: roleUser, blocks: []anthropic.BetaContentBlockParamUnion{note}})
+}
+
+func (p *provider) encodeMessage(msg agent.Message) []anthropic.BetaContentBlockParamUnion {
 	switch msg.Role {
 	case agent.RoleTool:
 		if msg.Result == nil {
 			return nil
 		}
-		return []anthropic.BetaContentBlockParamUnion{anthropic.NewBetaToolResultBlock(msg.Result.CallID, msg.Result.Content, msg.Result.IsError)}
+		return []anthropic.BetaContentBlockParamUnion{toolResult(*msg.Result)}
 	case agent.RoleAssistant:
-		return p.encodeAssistant(msg, inRound)
+		return p.encodeAssistant(msg)
 	default:
 		return encodeUser(msg)
 	}
+}
+
+// toolResult is a tool's result: its text, and its images after it.
+func toolResult(res agent.ToolResult) anthropic.BetaContentBlockParamUnion {
+	block := anthropic.NewBetaToolResultBlock(res.CallID, res.Content, res.IsError)
+	for _, img := range res.Images {
+		block.OfToolResult.Content = append(block.OfToolResult.Content, anthropic.BetaToolResultBlockParamContentUnion{
+			OfImage: &anthropic.BetaImageBlockParam{Source: anthropic.BetaImageBlockParamSourceUnion{OfBase64: &anthropic.BetaBase64ImageSourceParam{
+				Data: base64.StdEncoding.EncodeToString(img.Data), MediaType: anthropic.BetaBase64ImageSourceMediaType(img.MIME),
+			}}},
+		})
+	}
+	return block
 }
 
 // encodeUser sends text and images in their order.
@@ -208,7 +271,7 @@ func encodeUser(msg agent.Message) []anthropic.BetaContentBlockParamUnion {
 	out := make([]anthropic.BetaContentBlockParamUnion, 0, len(msg.Parts))
 	for _, part := range msg.Parts {
 		switch {
-		case part.Type == agent.PartText && part.Text != "":
+		case (part.Type == agent.PartText || part.Type == agent.PartContext) && part.Text != "":
 			out = append(out, anthropic.NewBetaTextBlock(part.Text))
 		case part.Type == agent.PartImage:
 			out = append(out, anthropic.NewBetaImageBlock(anthropic.BetaBase64ImageSourceParam{
@@ -219,16 +282,24 @@ func encodeUser(msg agent.Message) []anthropic.BetaContentBlockParamUnion {
 	return out
 }
 
-// encodeAssistant is the turn: in the current round, exactly as the model
-// made it (its thinking, text and calls in their order), when it is the
-// turn kept; else its text and calls, without thinking.
-func (p *provider) encodeAssistant(msg agent.Message, inRound bool) []anthropic.BetaContentBlockParamUnion {
-	if inRound && len(msg.Calls) > 0 {
+// encodeAssistant is the turn as the model made it: its thinking, text and
+// calls in their order when this provider kept the turn (a round of tool
+// calls), else its thinking (Claude's, from the message) before its text
+// and calls. The thinking goes back at every turn, as the API keeps it:
+// the agent's history only grows at its end, so it stays valid, and a
+// block the API finds otherwise is dropped by it (block_binding). With
+// NoThinking none goes back: without block_binding a changed history
+// would be refused instead.
+func (p *provider) encodeAssistant(msg agent.Message) []anthropic.BetaContentBlockParamUnion {
+	if !p.cfg.NoThinking && len(msg.Calls) > 0 {
 		if turn := p.rounds.turn(msg.Calls[0].ID); sameCalls(turn, msg.Calls) {
 			return turn
 		}
 	}
 	var out []anthropic.BetaContentBlockParamUnion
+	if !p.cfg.NoThinking {
+		out = append(out, encodeReasoning(msg.Reasoning(reasoningSource))...)
+	}
 	if text := msg.Text(); text != "" {
 		out = append(out, anthropic.NewBetaTextBlock(text))
 	}
@@ -238,6 +309,21 @@ func (p *provider) encodeAssistant(msg agent.Message, inRound bool) []anthropic.
 			input = json.RawMessage("{}")
 		}
 		out = append(out, anthropic.NewBetaToolUseBlock(call.ID, input, call.Name))
+	}
+	return out
+}
+
+// reasoningSource marks the reasoning parts Claude made.
+const reasoningSource = "anthropic"
+
+func encodeReasoning(parts []agent.Part) []anthropic.BetaContentBlockParamUnion {
+	out := make([]anthropic.BetaContentBlockParamUnion, 0, len(parts))
+	for _, p := range parts {
+		if p.Redacted {
+			out = append(out, anthropic.BetaContentBlockParamUnion{OfRedactedThinking: &anthropic.BetaRedactedThinkingBlockParam{Data: p.Signature}})
+			continue
+		}
+		out = append(out, anthropic.BetaContentBlockParamUnion{OfThinking: &anthropic.BetaThinkingBlockParam{Thinking: p.Text, Signature: p.Signature}})
 	}
 	return out
 }
@@ -261,13 +347,15 @@ func sameCalls(turn []anthropic.BetaContentBlockParamUnion, calls []agent.ToolCa
 	return i == len(calls)
 }
 
-// decode turns a finished message into the agent's response, keeping the
-// whole turn, as the model made it, for the round its calls open (the API
-// wants thinking back with the results, unchanged and in its place).
+// decode turns a finished message into the agent's response: its thinking
+// as reasoning parts (so a saved conversation keeps it), and the whole turn,
+// as the model made it, kept for the round its calls open (the API wants
+// thinking back unchanged and in its place, which a message's parts do not
+// keep when it is interleaved with the calls).
 func (p *provider) decode(msg *anthropic.BetaMessage) *agent.Response {
 	var text string
 	var calls []agent.ToolCall
-	thinks := false
+	var reasoning []agent.Part
 	turn := make([]anthropic.BetaContentBlockParamUnion, 0, len(msg.Content))
 	for _, block := range msg.Content {
 		switch b := block.AsAny().(type) {
@@ -275,19 +363,19 @@ func (p *provider) decode(msg *anthropic.BetaMessage) *agent.Response {
 			text += b.Text
 		case anthropic.BetaToolUseBlock:
 			calls = append(calls, decodeCall(b.ID, b.Name, json.RawMessage(b.JSON.Input.Raw())))
-		case anthropic.BetaThinkingBlock, anthropic.BetaRedactedThinkingBlock:
-			thinks = true
+		case anthropic.BetaThinkingBlock:
+			reasoning = append(reasoning, agent.Part{Type: agent.PartReasoning, Text: b.Thinking, Signature: b.Signature, Source: reasoningSource})
+		case anthropic.BetaRedactedThinkingBlock:
+			reasoning = append(reasoning, agent.Part{Type: agent.PartReasoning, Signature: b.Data, Redacted: true, Source: reasoningSource})
 		}
 		turn = append(turn, block.ToParam())
 	}
-	// Without block_binding a changed round would be refused, not its
-	// thinking dropped: with NoThinking, none goes back.
-	if len(calls) > 0 && thinks && !p.cfg.NoThinking {
+	if len(calls) > 0 && len(reasoning) > 0 {
 		p.rounds.keep(calls[0].ID, turn)
 	}
-	out := agent.Message{Role: agent.RoleAssistant, Calls: calls}
+	out := agent.Message{Role: agent.RoleAssistant, Calls: calls, Parts: reasoning}
 	if text != "" {
-		out.Parts = []agent.Part{{Type: agent.PartText, Text: text}}
+		out.Parts = append(out.Parts, agent.Part{Type: agent.PartText, Text: text})
 	}
 	return &agent.Response{Message: out, Usage: decodeUsage(msg.Usage), Stop: decodeStop(msg.StopReason, len(calls))}
 }
