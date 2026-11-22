@@ -194,7 +194,7 @@ func (c *cli) synthesizer(ctx *orpheus.Context, res secrets.Resolver) (agent.Syn
 // envOr is the variable name in the environment (or --env-file), else
 // the file's value.
 func envOr(ctx *orpheus.Context, res secrets.Resolver, name, file string) (string, error) {
-	v, found, err := secrets.Lookup(ctx.Context(), res, name)
+	v, found, err := secrets.Lookup(ctx.Context(), settingsOf(res), name)
 	if err != nil || found {
 		return v, err
 	}

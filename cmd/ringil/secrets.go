@@ -6,29 +6,26 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
 	"golang.org/x/term"
 
 	"github.com/agilira/ringil-agent-sdk/secrets"
-	"github.com/agilira/ringil-agent-sdk/secrets/encfile"
-	"github.com/agilira/ringil-agent-sdk/secrets/keyring"
-	"github.com/agilira/ringil-agent-sdk/secrets/vault"
+	"github.com/agilira/ringil-agent-sdk/secrets/store"
 )
 
 // secretsConfig is ringil.yaml's secrets section: the store the keys are
-// kept in, read after the environment and the --env-file (which win, so a
-// key can be overridden for one run). Every part of ringil reads its keys
-// through it: the CLI, serve and its channels (a Telegram bot's token
-// too), the remote agents and MCP servers.
+// kept in (the SDK's secrets/store, as the TUI and the app read it), after
+// the environment and the --env-file (which win, so a key can be
+// overridden for one run). Every part of ringil reads its keys through
+// it: the CLI, serve and its channels (a Telegram bot's token too), the
+// remote agents and MCP servers.
 type secretsConfig struct {
 	// Store is keyring (the system's), vault, or file (encrypted); empty,
 	// the environment and the --env-file alone.
@@ -53,80 +50,47 @@ type vaultConfig struct {
 }
 
 func (s secretsConfig) check() error {
-	switch s.Store {
-	case "", "keyring", "file":
-	case "vault":
-		if s.Vault.URL == "" || s.Vault.Path == "" {
-			return errors.New(ErrUsage, "secrets: the vault store needs vault.url and vault.path")
-		}
-	default:
-		return errors.New(ErrUsage, "secrets.store is keyring, vault or file")
-	}
-	for _, name := range []string{s.PassphraseEnv, s.Vault.TokenEnv} {
-		if err := validKeyName(name); err != nil {
-			return errors.Wrap(err, ErrUsage, "secrets: "+err.Error())
-		}
-	}
-	if s.File != "" && !filepath.IsAbs(s.File) {
+	if s.Store == store.File && s.File != "" && !filepath.IsAbs(s.File) {
 		return errors.New(ErrUsage, "secrets.file is an absolute path")
+	}
+	here, _ := filepath.Abs(".") // stands for the config directory: absolute on every system
+	if err := s.store(here).Check(); err != nil {
+		return errors.Wrap(err, ErrUsage, "secrets: "+err.Error())
 	}
 	return nil
 }
 
-// secretStore is the store opened for one secrets section, shared by the
-// runs of serve: an encrypted file costs its key derivation once.
-type secretStore struct {
-	mu    sync.Mutex
-	conf  secretsConfig
-	store secrets.Store
+// store is the section as the SDK's store.Config, with ringil's defaults
+// for its kind: the keyring service "ringil"; the file in the config
+// directory, its passphrase in RINGIL_SECRETS_PASSPHRASE.
+func (s secretsConfig) store(configDir string) store.Config {
+	c := store.Config{Kind: s.Store}
+	switch s.Store {
+	case store.Keyring:
+		c.Service = cmpOr(s.Service, "ringil")
+	case store.Vault:
+		c.VaultURL, c.VaultMount, c.VaultPath, c.TokenEnv = s.Vault.URL, s.Vault.Mount, s.Vault.Path, s.Vault.TokenEnv
+		c.Namespace, c.AllowHTTP = s.Vault.Namespace, s.Vault.AllowHTTP
+	case store.File:
+		c.File = cmpOr(s.File, filepath.Join(configDir, "ringil", "secrets.enc"))
+		c.PassphraseEnv = cmpOr(s.PassphraseEnv, "RINGIL_SECRETS_PASSPHRASE")
+	}
+	return c
 }
 
-// keyStore is the configured store, opened once per configuration; nil when
-// none is configured. base resolves what opens it (the Vault token, the
-// file's passphrase), never the store itself.
+// keyStore is the configured store, opened once per configuration (and
+// shared with serve's runs); nil when none is configured. base resolves
+// what opens it, never the store itself.
 func (c *cli) keyStore(ctx context.Context, base secrets.Resolver) (secrets.Store, error) {
 	conf := c.conf().Secrets
 	if conf.Store == "" {
 		return nil, nil
 	}
-	s := c.secrets
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.store != nil && s.conf == conf {
-		return s.store, nil
-	}
-	store, err := c.openStore(ctx, conf, base)
+	dir, err := c.configDir()
 	if err != nil {
 		return nil, err
 	}
-	s.store, s.conf = store, conf
-	return store, nil
-}
-
-func (c *cli) openStore(ctx context.Context, conf secretsConfig, base secrets.Resolver) (secrets.Store, error) {
-	switch conf.Store {
-	case "keyring":
-		return keyring.New(cmpOr(conf.Service, "ringil"))
-	case "vault":
-		return vault.New(vault.Config{URL: conf.Vault.URL, Mount: conf.Vault.Mount, Path: conf.Vault.Path, Namespace: conf.Vault.Namespace,
-			AllowHTTP: conf.Vault.AllowHTTP, Token: secrets.KeyFunc(base, cmpOr(conf.Vault.TokenEnv, "VAULT_TOKEN"))})
-	}
-	path := conf.File
-	if path == "" {
-		dir, err := c.configDir()
-		if err != nil {
-			return nil, err
-		}
-		path = filepath.Join(dir, "ringil", "secrets.enc")
-	}
-	name := cmpOr(conf.PassphraseEnv, "RINGIL_SECRETS_PASSPHRASE")
-	return encfile.New(ctx, encfile.Config{Path: path, Passphrase: func(ctx context.Context) (string, error) {
-		v, found, err := secrets.Lookup(ctx, base, name)
-		if err == nil && (!found || v == "") {
-			err = errors.New(secrets.ErrMissing, "the secrets file needs its passphrase in "+name)
-		}
-		return v, err
-	}})
+	return c.secrets.Store(ctx, conf.store(dir), base)
 }
 
 func cmpOr(a, b string) string {
@@ -188,22 +152,30 @@ func (c *cli) namedStore(ctx *orpheus.Context) (secrets.Store, string, error) {
 	return store, args[0], nil
 }
 
-// readSecret is one line of standard input: without echo at a terminal.
+// readSecret is the value on standard input, up to 64 KiB: at a
+// terminal one line typed without echo; from a pipe all of it (a PEM key
+// spans lines), less one final line break. Nothing else is trimmed, the
+// same either way; an empty value is refused.
 func (c *cli) readSecret(name string) (string, error) {
+	var v string
 	if f, ok := c.in.(*os.File); ok && term.IsTerminal(int(f.Fd())) { // #nosec G115 -- a file descriptor
 		if err := c.line("value of " + name + " (not shown):"); err != nil {
 			return "", err
 		}
-		v, err := term.ReadPassword(int(f.Fd())) // #nosec G115 -- a file descriptor
-		return strings.TrimSpace(string(v)), err
+		typed, err := term.ReadPassword(int(f.Fd())) // #nosec G115 -- a file descriptor
+		if err != nil {
+			return "", err
+		}
+		v = string(typed)
+	} else {
+		data, err := io.ReadAll(io.LimitReader(c.in, 64<<10+3))
+		if err != nil {
+			return "", err
+		}
+		v = strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
 	}
-	line, err := bufio.NewReader(io.LimitReader(c.in, 64<<10+2)).ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	v := strings.TrimRight(line, "\r\n")
 	if v == "" {
-		return "", errors.New(ErrUsage, "no value on standard input")
+		return "", errors.New(ErrUsage, "no value given for "+name)
 	}
 	return v, nil
 }

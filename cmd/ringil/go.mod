@@ -11,7 +11,7 @@ require (
 	github.com/agilira/ringil-agent-sdk/mcp v0.0.0
 	github.com/agilira/ringil-agent-sdk/memory/sqlite v0.0.0
 	github.com/agilira/ringil-agent-sdk/provider/anthropic v0.0.0
-	github.com/agilira/ringil-agent-sdk/secrets/keyring v0.0.0
+	github.com/agilira/ringil-agent-sdk/secrets/store v0.0.0
 	golang.org/x/term v0.48.0
 )
 
@@ -19,6 +19,7 @@ require (
 	github.com/a2aproject/a2a-go/v2 v2.8.0 // indirect
 	github.com/agilira/flash-flags v1.3.2 // indirect
 	github.com/agilira/go-timecache v1.0.4 // indirect
+	github.com/agilira/ringil-agent-sdk/secrets/keyring v0.0.0 // indirect
 	github.com/anthropics/anthropic-sdk-go/v2 v2.13.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
@@ -75,3 +76,5 @@ replace github.com/agilira/ringil-agent-sdk/memory/sqlite => ../../memory/sqlite
 replace github.com/agilira/ringil-agent-sdk/provider/anthropic => ../../provider/anthropic
 
 replace github.com/agilira/ringil-agent-sdk/secrets/keyring => ../../secrets/keyring
+
+replace github.com/agilira/ringil-agent-sdk/secrets/store => ../../secrets/store
