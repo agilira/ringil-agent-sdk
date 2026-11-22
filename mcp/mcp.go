@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,6 +34,9 @@ const (
 	ErrConfig  errors.ErrorCode = "MCP_CONFIG"
 	ErrConnect errors.ErrorCode = "MCP_CONNECT"
 	ErrCall    errors.ErrorCode = "MCP_CALL"
+	// ErrRefused: a remote server answered 401 or 403 while connecting, so
+	// the credentials it was given (a key in Headers) are wrong.
+	ErrRefused errors.ErrorCode = "MCP_REFUSED"
 )
 
 // Client is a connection to one MCP server.
@@ -66,11 +70,18 @@ func Connect(ctx context.Context, srv Server) (*Client, error) {
 	if err := srv.validate(); err != nil {
 		return nil, err
 	}
-	transport, stop, err := srv.transport(ctx)
+	w := &refusals{}
+	transport, stop, err := srv.transport(ctx, w)
 	if err != nil {
 		return nil, err
 	}
-	return connect(ctx, srv, transport, stop)
+	c, err := connect(ctx, srv, transport, stop)
+	// With OAuth a first 401 is how sign-in starts, and a sign-in not
+	// finished in time is not a refusal (audit 22/11).
+	if err != nil && w.status.Load() != 0 && srv.OAuth == nil && ctx.Err() == nil {
+		return nil, errors.Wrap(err, ErrRefused, fmt.Sprintf("MCP server %s refused the credentials (HTTP %d)", srv.Name, w.status.Load()))
+	}
+	return c, err
 }
 
 func connect(ctx context.Context, srv Server, transport sdk.Transport, stop func() error) (*Client, error) {

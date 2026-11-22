@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sync/atomic"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -107,10 +108,12 @@ func (s Server) validateURL() error {
 	return nil
 }
 
-func (s Server) transport(ctx context.Context) (sdk.Transport, func() error, error) {
+func (s Server) transport(ctx context.Context, w *refusals) (sdk.Transport, func() error, error) {
 	switch {
 	case s.URL != "":
-		return &sdk.StreamableClientTransport{Endpoint: s.URL, HTTPClient: s.httpClient(), OAuthHandler: s.OAuth}, nil, nil
+		client := s.httpClient()
+		client.Transport = w.watch(client.Transport)
+		return &sdk.StreamableClientTransport{Endpoint: s.URL, HTTPClient: client, OAuthHandler: s.OAuth}, nil, nil
 	case s.Sandbox != nil:
 		return s.sandboxed(ctx)
 	}
@@ -187,6 +190,35 @@ func errOrEOF(err error) error {
 // so credentials never follow one elsewhere, and bounds responses.
 func (s Server) httpClient() *http.Client {
 	return safehttp.Client(s.HTTPClient, s.Headers, s.maxResponse(), true) // MCP streams events
+}
+
+// refusals remembers a remote server's 401 or 403, so that a refused key
+// is told apart from a server that cannot be reached: the SDK reports
+// both as a failed initialize. A later success clears it (audit 22/11: a
+// 401 followed by a 500 was told as refused).
+type refusals struct {
+	next   http.RoundTripper
+	status atomic.Int32
+}
+
+func (w *refusals) watch(next http.RoundTripper) http.RoundTripper {
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	w.next = next
+	return w
+}
+
+func (w *refusals) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := w.next.RoundTrip(req)
+	switch {
+	case err != nil:
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		w.status.Store(int32(resp.StatusCode)) // #nosec G115 -- 401 or 403
+	case resp.StatusCode < 300: // the last answer counts: accepted since
+		w.status.Store(0)
+	}
+	return resp, err
 }
 
 func (s Server) maxResponse() int64 {

@@ -40,6 +40,7 @@ type setup struct {
 	embedModel string         // at the chat model's server (embed_model)
 	embedder   embedderConfig // at Ollama
 	owners     []string
+	composio   bool // Composio's key was kept
 }
 
 // cmdSetup asks the questions a first start needs, in order: where the
@@ -56,7 +57,8 @@ func (c *cli) cmdSetup(ctx *orpheus.Context) error {
 	}
 	s := &setup{c: c, ctx: ctx.Context(), p: c.prompter(), path: path, base: secrets.Map{}}
 	steps := []func() error{s.intro, s.chooseStore, s.chooseProvider, s.askKey, s.chooseModel,
-		s.askPrompt, s.chooseEmbedder, s.chooseMemory, s.askTelegram, s.write, s.tryModel}
+		s.askPrompt, s.chooseEmbedder, s.chooseMemory, s.askTelegram,
+		s.askComposio, s.write, s.tryModel}
 	defer s.closeStore()
 	for _, step := range steps {
 		if err := step(); err != nil {
