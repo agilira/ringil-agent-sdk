@@ -500,7 +500,8 @@ func (s *Server) prune() {
 
 // Mount adds h under pattern (an http.ServeMux pattern) to what Serve
 // answers, behind the same guard: for an A2A endpoint next to the API.
-// Call it before Serve.
+// Call it before Serve. /health is the server's own: a mount there is
+// never reached.
 func (s *Server) Mount(pattern string, h http.Handler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

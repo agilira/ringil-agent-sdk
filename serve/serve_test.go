@@ -140,6 +140,9 @@ func (a *api) events(id string, headers ...string) (kinds []string, ids []string
 			kinds = append(kinds, w.Kind)
 		}
 	}
+	if err := sc.Err(); err != nil {
+		a.t.Fatal(err)
+	}
 	return kinds, ids
 }
 

@@ -134,9 +134,12 @@ func (ownErr) Generate(_ context.Context, _ *agent.Request, sink agent.TextSink)
 	return nil, nil
 }
 
+// After the consumer stops nothing more is streamed, nor observed but
+// the run's end (audit 22/11: without it, metrics kept the run going).
 func TestNothingAfterTheConsumerStops(t *testing.T) {
 	var kinds []agent.EventKind
-	cfg := agent.Config{Provider: ownErr{}, Observers: []agent.Observer{func(ev agent.Event) { kinds = append(kinds, ev.Kind) }}}
+	var last agent.Event
+	cfg := agent.Config{Provider: ownErr{}, Observers: []agent.Observer{func(ev agent.Event) { kinds = append(kinds, ev.Kind); last = ev }}}
 	for ev, err := range newAgent(t, cfg).Stream(context.Background(), nil, agent.UserText("x")) {
 		if err != nil {
 			t.Fatal(err)
@@ -145,8 +148,32 @@ func TestNothingAfterTheConsumerStops(t *testing.T) {
 			break
 		}
 	}
-	if fmt.Sprint(kinds) != "[started text]" {
-		t.Fatalf("observer saw %v", kinds)
+	if fmt.Sprint(kinds) != "[started text failed]" || !errors.HasCode(last.Err, agent.ErrAgentStopped) {
+		t.Fatalf("observer saw %v (%v)", kinds, last.Err)
+	}
+}
+
+type panicking struct{}
+
+func (panicking) Info() agent.ModelInfo { return agent.ModelInfo{Name: "p"} }
+func (panicking) Generate(context.Context, *agent.Request, agent.TextSink) (*agent.Response, error) {
+	panic("provider bug")
+}
+
+// A panic in the loop still ends the run for the observers, and goes on.
+func TestAPanicEndsTheRunForObservers(t *testing.T) {
+	var last agent.Event
+	cfg := agent.Config{Provider: panicking{}, Observers: []agent.Observer{func(ev agent.Event) { last = ev }}}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the panic was swallowed")
+			}
+		}()
+		_, _ = newAgent(t, cfg).Run(context.Background(), nil, agent.UserText("x"))
+	}()
+	if last.Kind != agent.EventFailed || !errors.HasCode(last.Err, agent.ErrAgentPanic) {
+		t.Fatalf("last event %v %v", last.Kind, last.Err)
 	}
 }
 

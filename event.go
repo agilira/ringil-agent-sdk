@@ -17,6 +17,11 @@ import "time"
 // or in the background) is called from several goroutines: it must be
 // safe for concurrent use, and tell runs apart by Event.Run. An observer
 // that panics is recovered and given no more events of that run.
+//
+// Every run ends, for observers, with EventDone or EventFailed: also one
+// whose reader stopped early (ErrAgentStopped) or whose loop panicked
+// (ErrAgentPanic, then the panic goes on), so that counts of runs going
+// on stay right.
 type Observer func(Event)
 
 // EventKind identifies an [Event].
