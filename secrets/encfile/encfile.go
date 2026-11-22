@@ -269,6 +269,7 @@ func (f *File) load(ctx context.Context) (map[string]string, header, error) {
 	if err := json.Unmarshal(plain, &bag); err != nil || bag == nil {
 		return nil, header{}, errors.New(ErrDecrypt, "encfile: the decrypted contents are not a set of secrets")
 	}
+	f.rememberKey(key, h)
 	f.sawFile()
 	return bag, h, nil
 }
@@ -320,8 +321,9 @@ func parse(data []byte) (header, []byte, []byte, error) {
 	return header{iters: iters, salt: salt}, nonce, data[headerLen:], nil
 }
 
-// keyFor is the key for h, derived once per salt and iterations; the
-// passphrase is asked outside f.mu, so a slow prompt holds up no reader.
+// keyFor derives (or reuses) the key for h; callers only cache it once
+// verified against GCM or written out. The passphrase is asked outside
+// f.mu, so a slow prompt holds up no reader.
 func (f *File) keyFor(ctx context.Context, h header) ([]byte, error) {
 	f.mu.Lock()
 	if f.key != nil && f.iters == h.iters && string(f.salt) == string(h.salt) {
@@ -341,10 +343,13 @@ func (f *File) keyFor(ctx context.Context, h header) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New(ErrDecrypt, "encfile: cannot derive the key")
 	}
+	return key, nil
+}
+
+func (f *File) rememberKey(key []byte, h header) {
 	f.mu.Lock()
 	f.key, f.salt, f.iters = key, append([]byte(nil), h.salt...), h.iters
 	f.mu.Unlock()
-	return key, nil
 }
 
 // write encrypts bag with a fresh nonce: under the file's salt, or a new
@@ -379,6 +384,7 @@ func (f *File) write(ctx context.Context, bag map[string]string, h header) error
 	if err := atomicfile.Write(f.root, f.name, append(head, sealed...)); err != nil {
 		return errors.New(ErrFile, "encfile: cannot write "+f.cfg.Path)
 	}
+	f.rememberKey(key, h)
 	f.sawFile()
 	return nil
 }

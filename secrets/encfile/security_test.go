@@ -224,3 +224,29 @@ func TestSecurityOddPaths(t *testing.T) {
 		t.Errorf("a linked directory: %v", err)
 	}
 }
+
+func TestSecurityWrongPassphraseIsNotCached(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.enc")
+	current := "wrong"
+	f, err := New(context.Background(), Config{
+		Path:       path,
+		Passphrase: func(context.Context) (string, error) { return current, nil },
+		Iterations: fast,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	other := openStore(t, path, "right")
+	if err := other.Set(context.Background(), "OPENAI_API_KEY", "sk-ok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.Lookup(context.Background(), "OPENAI_API_KEY"); !errors.HasCode(err, ErrDecrypt) {
+		t.Fatalf("first lookup: %v", err)
+	}
+	current = "right"
+	if v, found, err := f.Lookup(context.Background(), "OPENAI_API_KEY"); err != nil || !found || v != "sk-ok" {
+		t.Fatalf("second lookup: %q %v %v", v, found, err)
+	}
+}

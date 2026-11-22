@@ -70,11 +70,25 @@ type Login struct {
 	Port int
 }
 
-func (l Login) issuer() string {
-	if l.Issuer != "" {
-		return strings.TrimRight(l.Issuer, "/")
+func (l Login) issuerURL() (string, error) {
+	if l.Issuer == "" {
+		return DefaultIssuer, nil
 	}
-	return DefaultIssuer
+	u, err := url.Parse(l.Issuer)
+	if err != nil {
+		return "", errors.Wrap(err, ErrSignIn, "the issuer URL does not parse")
+	}
+	if err := checkBase(u); err != nil {
+		return "", errors.Wrap(err, ErrSignIn, err.Error())
+	}
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
+func (l Login) prepare() (string, error) {
+	if l.Show == nil {
+		return "", errors.New(ErrSignIn, "Login.Show is required")
+	}
+	return l.issuerURL()
 }
 
 func (l Login) client() *http.Client {
@@ -91,8 +105,9 @@ func (l Login) client() *http.Client {
 // on this machine's loopback, so it needs a browser here. On a server use
 // Device.
 func (l Login) Browser(ctx context.Context) (Tokens, error) {
-	if l.Show == nil {
-		return Tokens{}, errors.New(ErrSignIn, "Login.Show is required")
+	issuer, err := l.prepare()
+	if err != nil {
+		return Tokens{}, err
 	}
 	p, err := newPKCE()
 	if err != nil {
@@ -108,7 +123,7 @@ func (l Login) Browser(ctx context.Context) (Tokens, error) {
 		return Tokens{}, err
 	}
 	defer cb.close()
-	page := l.issuer() + "/oauth/authorize?" + url.Values{
+	page := issuer + "/oauth/authorize?" + url.Values{
 		"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirect}, "scope": {scopes},
 		"code_challenge": {p.challenge}, "code_challenge_method": {"S256"}, "state": {p.state},
 		"id_token_add_organizations": {"true"}, "codex_cli_simplified_flow": {"true"}, "originator": {originator},
@@ -248,8 +263,9 @@ func safeCode(s string) string {
 // Device signs in by code, for a machine without a browser: the user
 // opens the page shown on any device and types the code there.
 func (l Login) Device(ctx context.Context) (Tokens, error) {
-	if l.Show == nil {
-		return Tokens{}, errors.New(ErrSignIn, "Login.Show is required")
+	issuer, err := l.prepare()
+	if err != nil {
+		return Tokens{}, err
 	}
 	var uc struct {
 		ID       string          `json:"device_auth_id"`
@@ -269,16 +285,16 @@ func (l Login) Device(ctx context.Context) (Tokens, error) {
 	if uc.Code == "" {
 		uc.Code = uc.Usercode
 	}
-	if err := l.Show(Prompt{URL: l.issuer() + "/codex/device", Code: uc.Code}); err != nil {
+	if err := l.Show(Prompt{URL: issuer + "/codex/device", Code: uc.Code}); err != nil {
 		return Tokens{}, err
 	}
 	interval, _ := strconv.Atoi(strings.Trim(strings.TrimSpace(string(uc.Interval)), `"`))
-	return l.pollDevice(ctx, uc.ID, uc.Code, time.Duration(min(max(interval, 1), 30))*time.Second)
+	return l.pollDevice(ctx, issuer, uc.ID, uc.Code, time.Duration(min(max(interval, 1), 30))*time.Second)
 }
 
 // pollDevice waits for the user to type the code: OpenAI answers 403 or
 // 404 until then.
-func (l Login) pollDevice(ctx context.Context, id, code string, every time.Duration) (Tokens, error) {
+func (l Login) pollDevice(ctx context.Context, issuer, id, code string, every time.Duration) (Tokens, error) {
 	ctx, cancel := context.WithTimeout(ctx, deviceWait)
 	defer cancel()
 	for {
@@ -291,7 +307,7 @@ func (l Login) pollDevice(ctx context.Context, id, code string, every time.Durat
 			return Tokens{}, err
 		}
 		if status/100 == 2 && got.Code != "" && got.Verifier != "" {
-			return l.exchange(ctx, got.Code, got.Verifier, l.issuer()+"/deviceauth/callback")
+			return l.exchange(ctx, got.Code, got.Verifier, issuer+"/deviceauth/callback")
 		}
 		if every, err = nextPoll(status, every); err != nil {
 			return Tokens{}, err
@@ -330,11 +346,15 @@ func pause(ctx context.Context, d time.Duration) error {
 // postJSON posts body and decodes a 2xx answer into out; the status is
 // returned whatever it is. Bodies of other answers are not read.
 func (l Login) postJSON(ctx context.Context, path string, body, out any) (int, error) {
+	issuer, err := l.issuerURL()
+	if err != nil {
+		return 0, err
+	}
 	data, err := json.Marshal(body)
 	if err != nil {
 		return 0, errors.Wrap(err, ErrSignIn, "the request does not encode")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.issuer()+path, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer+path, bytes.NewReader(data))
 	if err != nil {
 		return 0, errors.Wrap(err, ErrSignIn, "the request cannot be built")
 	}
@@ -362,8 +382,12 @@ func (l Login) do(ctx context.Context, req *http.Request, out any) (int, error) 
 
 // exchange trades the sign-in's code for tokens.
 func (l Login) exchange(ctx context.Context, code, verifier, redirect string) (Tokens, error) {
+	issuer, err := l.issuerURL()
+	if err != nil {
+		return Tokens{}, err
+	}
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {redirect}, "client_id": {clientID}, "code_verifier": {verifier}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.issuer()+"/oauth/token", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer+"/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return Tokens{}, errors.Wrap(err, ErrSignIn, "the request cannot be built")
 	}

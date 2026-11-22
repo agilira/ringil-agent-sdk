@@ -43,3 +43,22 @@ func TestSecurityOpenChecksFirst(t *testing.T) {
 		t.Fatalf("%v %v", s, err)
 	}
 }
+
+func TestSecurityCacheNilBaseDoesNotPanic(t *testing.T) {
+	ctx := context.Background()
+	var cache Cache
+	t.Cleanup(func() { _ = cache.Close() })
+	c := Config{Kind: File, File: filepath.Join(t.TempDir(), "s.enc"), PassphraseEnv: "PASS"}
+	s, err := cache.Store(ctx, c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(ctx, "KEY", "v"); !errors.HasCode(err, secrets.ErrMissing) {
+		t.Fatalf("nil base Set: %v", err)
+	}
+	_, _ = cache.Store(ctx, Config{}, secrets.Map{"PASS": "ok"})
+	_, _ = cache.Store(ctx, Config{}, nil)
+	if v, _, err := (latest{&cache}).Lookup(ctx, "PASS"); err != nil || v != "ok" {
+		t.Fatalf("base clobbered by nil: %q %v", v, err)
+	}
+}
