@@ -331,6 +331,9 @@ func (f *File) keyFor(ctx context.Context, h header) ([]byte, error) {
 	}
 	f.mu.Unlock()
 	pass, err := f.cfg.Passphrase(ctx)
+	if errors.HasCode(err, secrets.ErrMissing) {
+		return nil, err // it names what is missing, never a value
+	}
 	if err != nil || pass == "" {
 		return nil, errors.New(ErrDecrypt, "encfile: no passphrase")
 	}

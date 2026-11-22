@@ -143,6 +143,7 @@ type cli struct {
 	// settings is ringil.yaml in force (shared by serve's runs);
 	// configEvery how soon an edit is seen (zero: 2s; tests shorten it).
 	settings    *settings
+	secrets     *secretStore // the configured store, shared with serve's runs
 	configEvery time.Duration
 	// log is serve's log; each run's lines name its configuration.
 	log *slog.Logger
@@ -157,6 +158,7 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
 		configDir:  os.UserConfigDir,
+		secrets:    &secretStore{},
 		triggers:   &atomic.Pointer[trigger.Runner]{},
 		bridge:     &atomic.Pointer[channel.Bridge]{},
 		newSandbox: sandbox.New,
@@ -198,6 +200,9 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.withConfig(c.cmdSessions)).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.withConfig(c.cmdSessionRemove)).
 			SetUsage("sessions rm <name...>")))
+	app.AddCommand(orpheus.NewCommand("secrets", "Keep keys in the store of ringil.yaml's secrets section (keyring, vault or file)").
+		AddSubcommand(orpheus.NewCommand("set", "Save a secret; its value is read from standard input, without echo at a terminal").SetHandler(c.withConfig(c.cmdSecretsSet)).SetUsage("secrets set <NAME>")).
+		AddSubcommand(orpheus.NewCommand("rm", "Delete a secret").SetHandler(c.withConfig(c.cmdSecretsRemove)).SetUsage("secrets rm <NAME>")))
 	app.AddCommand(orpheus.NewCommand("memory", "List what the agent remembers").SetHandler(c.withConfig(c.cmdMemory)).
 		AddSubcommand(orpheus.NewCommand("search", "Search what the agent remembers").SetHandler(c.withConfig(c.cmdMemory)).SetUsage("memory search <words...>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.withConfig(c.cmdMemoryRemove)).SetUsage("memory rm <id...>")))
@@ -863,9 +868,23 @@ func validKeyName(name string) error {
 }
 
 // resolver is where settings and secrets come from: the environment first,
-// then the --env-file if given. The key is never taken from a flag, which
-// would leave it in the shell history and the process list.
+// then the --env-file if given, then the store of ringil.yaml's secrets
+// section. The key is never taken from a flag, which would leave it in
+// the shell history and the process list.
 func (c *cli) resolver(ctx *orpheus.Context) (secrets.Resolver, error) {
+	base, err := c.baseResolver(ctx)
+	if err != nil {
+		return nil, err
+	}
+	store, err := c.keyStore(ctx.Context(), base)
+	if err != nil || store == nil {
+		return base, err
+	}
+	return secrets.Chain(base, store), nil
+}
+
+// baseResolver is the environment, then the --env-file.
+func (c *cli) baseResolver(ctx *orpheus.Context) (secrets.Resolver, error) {
 	env := secrets.Resolver(lookupEnv{c.getenv})
 	path := ctx.GetGlobalFlagString("env-file")
 	if path == "" {

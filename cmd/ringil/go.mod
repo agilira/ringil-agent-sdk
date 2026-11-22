@@ -11,6 +11,8 @@ require (
 	github.com/agilira/ringil-agent-sdk/mcp v0.0.0
 	github.com/agilira/ringil-agent-sdk/memory/sqlite v0.0.0
 	github.com/agilira/ringil-agent-sdk/provider/anthropic v0.0.0
+	github.com/agilira/ringil-agent-sdk/secrets/keyring v0.0.0
+	golang.org/x/term v0.48.0
 )
 
 require (
@@ -20,9 +22,11 @@ require (
 	github.com/anthropics/anthropic-sdk-go/v2 v2.13.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
+	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
@@ -50,7 +54,6 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	modernc.org/libc v1.79.0 // indirect
@@ -70,3 +73,5 @@ replace github.com/agilira/ringil-agent-sdk/a2a => ../../a2a
 replace github.com/agilira/ringil-agent-sdk/memory/sqlite => ../../memory/sqlite
 
 replace github.com/agilira/ringil-agent-sdk/provider/anthropic => ../../provider/anthropic
+
+replace github.com/agilira/ringil-agent-sdk/secrets/keyring => ../../secrets/keyring
