@@ -161,6 +161,9 @@ func TestSecretsSetValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c, ok := f.(interface{ Close() error }); ok {
+		t.Cleanup(func() { _ = c.Close() }) // on Windows an open file keeps its directory
+	}
 	if v, _, err := f.Lookup(context.Background(), "MY_KEY"); err != nil || v != pem {
 		t.Fatalf("%q %v", v, err)
 	}

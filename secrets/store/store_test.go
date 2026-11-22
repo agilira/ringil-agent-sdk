@@ -59,6 +59,7 @@ func TestOpenEachKind(t *testing.T) {
 	if _, ok := f.(*encfile.File); !ok || err != nil {
 		t.Fatalf("file: %T %v", f, err)
 	}
+	closeLater(t, f)
 	if err := f.Set(ctx, "KEY", "v"); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +90,15 @@ func TestCacheReopensOnAChange(t *testing.T) {
 	}
 	if s, err := cache.Store(ctx, Config{}, secrets.Map{}); s != nil || err != nil {
 		t.Fatalf("no store: %v %v", s, err)
+	}
+}
+
+// closeLater closes s at the end of the test: on Windows an open file
+// keeps its directory from being removed.
+func closeLater(t *testing.T, s secrets.Store) {
+	t.Helper()
+	if c, ok := s.(interface{ Close() error }); ok {
+		t.Cleanup(func() { _ = c.Close() })
 	}
 }
 

@@ -32,6 +32,7 @@ func TestThePassphraseComesFromTheBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err) // no file yet: nothing to open
 	}
+	closeLater(t, f)
 	if err := f.Set(ctx, "KEY", "v"); !errors.HasCode(err, secrets.ErrMissing) {
 		t.Fatalf("no passphrase: %v", err)
 	}
