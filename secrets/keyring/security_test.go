@@ -94,20 +94,38 @@ func FuzzNames(f *testing.F) {
 	})
 }
 
+// state waits until the keyring has a call running and queued waiting:
+// the tests wait for the queue, not for a time (a loaded runner, 22/11).
+func state(t *testing.T, k *Keyring, queued int) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		k.mu.Lock()
+		ok := k.running && len(k.queue) == queued
+		k.mu.Unlock()
+		if ok {
+			return
+		}
+	}
+	t.Fatalf("the queue never reached %d waiting", queued)
+}
+
 // Audit 21/11: a save that timed out could land after a later one, once
 // the user unlocked the keyring. Calls run in order: the late one first.
 func TestSecurityCallsKeepTheirOrder(t *testing.T) {
 	m := newMemory()
 	m.hang = make(chan struct{})
 	k := withBackend(m)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := k.Set(ctx, "KEY", "old"); !errors.HasCode(err, ErrUnavailable) || !strings.Contains(err.Error(), "may still be applied") {
+	ctx, cancel := context.WithCancel(context.Background())
+	late := make(chan error, 1)
+	go func() { late <- k.Set(ctx, "KEY", "old") }()
+	state(t, k, 0) // running, waiting for the unlock
+	cancel()
+	if err := <-late; !errors.HasCode(err, ErrUnavailable) || !strings.Contains(err.Error(), "may still be applied") {
 		t.Fatalf("a save left running: %v", err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- k.Set(context.Background(), "KEY", "new") }()
-	time.Sleep(20 * time.Millisecond)
+	state(t, k, 1)
 	close(m.hang)
 	if err := <-done; err != nil {
 		t.Fatal(err)
@@ -123,10 +141,13 @@ func TestSecurityAGivenUpCallNeverRuns(t *testing.T) {
 	m.hang = make(chan struct{})
 	k := withBackend(m)
 	go func() { _, _, _ = k.Lookup(context.Background(), "FIRST") }()
-	time.Sleep(20 * time.Millisecond)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	if err := k.Delete(ctx, "KEY"); err != context.DeadlineExceeded {
+	state(t, k, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	gave := make(chan error, 1)
+	go func() { gave <- k.Delete(ctx, "KEY") }()
+	state(t, k, 1)
+	cancel()
+	if err := <-gave; err != context.Canceled {
 		t.Fatalf("%v", err)
 	}
 	close(m.hang)
@@ -147,13 +168,13 @@ func TestSecurityTheQueueIsBounded(t *testing.T) {
 	k := withBackend(m)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	for range maxQueued + 1 { // one running, the rest waiting
+	go func() { _, _, _ = k.Lookup(ctx, "KEY") }()
+	state(t, k, 0) // one running, then the queue filled behind it
+	for range maxQueued {
 		go func() { _, _, _ = k.Lookup(ctx, "KEY") }()
 	}
-	time.Sleep(50 * time.Millisecond)
-	short, stop := context.WithTimeout(context.Background(), time.Second)
-	defer stop()
-	if _, _, err := k.Lookup(short, "KEY"); !errors.HasCode(err, ErrUnavailable) || !strings.Contains(err.Error(), "busy") {
+	state(t, k, maxQueued)
+	if _, _, err := k.Lookup(context.Background(), "KEY"); !errors.HasCode(err, ErrUnavailable) || !strings.Contains(err.Error(), "busy") {
 		t.Fatalf("%v", err)
 	}
 }
