@@ -510,6 +510,27 @@ Conta come distruttivo: l'hook `Approve` vede ogni chiamata.
 CLI: `agents` in `ringil.yaml` (`url`, `headers`, `allow_other_origin`, `disabled`).
 Il lato server (esporre il nostro agente via A2A) arriva con `serve`.
 
+## Metriche e health
+
+`metrics` conta quello che fanno gli agenti, dai loro eventi: run (avviate, in corso,
+finite con il motivo o il codice d'errore), task delegati, chiamate al modello e quanto
+durano, token (input, output, letti e scritti in cache), compattazioni, ripetizioni
+fermate, chiamate ai tool per nome ed esito e quanto durano. Solo metadati, mai testo,
+input o output dei tool; le etichette sono limitate (i primi 256 nomi di tool per
+profilo, poi `(other)`; un nome inventato dal modello è `(unknown)`). I prezzi restano
+dell'host: si calcolano dai token. Formato di testo di Prometheus, solo libreria standard.
+
+```go
+m := metrics.New()
+a, err := agent.New(agent.Config{Provider: p, Observers: []agent.Observer{m.Observer("assistente")}})
+http.Handle("/metrics", auth(m.Handler())) // dietro l'autenticazione dell'host
+```
+
+`serve` risponde a `GET /health` senza token, solo con `{"status":"ok"}` (503 e
+`closing` mentre chiude), sempre solo al nome loopback e mai a pagine web: per systemd,
+Docker o un bilanciatore. `ringil serve` conta ogni profilo e monta `GET /metrics` dietro
+il suo token (in Prometheus: `authorization: {credentials_file: ...}` con il file del token).
+
 ## Decoratori
 
 Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,

@@ -43,6 +43,12 @@ var writeTimeout = 30 * time.Second
 //	POST   /v1/runs/{id}/cancel                  stop it
 //	POST   /v1/runs/{id}/approvals/{approval}    {"allow": true|false} decide a waiting tool call
 //	DELETE /v1/runs/{id}                         forget a finished run
+//	GET    /health                               {"status":"ok"}, or 503 {"status":"closing"}; no token needed
+//
+// /health tells a supervisor (systemd, Docker, a load balancer on this
+// machine) whether the server answers, and nothing else: it is the one
+// path served without the token, still to the loopback name only and
+// not to web pages.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/profiles", func(w http.ResponseWriter, _ *http.Request) { respond(w, http.StatusOK, s.Profiles()) })
@@ -58,7 +64,33 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle(pattern, h)
 	}
 	s.mu.Unlock()
-	return s.Guard(mux)
+	guarded := s.Guard(mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			guarded.ServeHTTP(w, r)
+			return
+		}
+		s.health(w, r)
+	})
+}
+
+// health answers whether the server takes runs.
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case !loopbackHost(r.Host):
+		failure(w, http.StatusForbidden, fail("SERVE_HOST", "requests must name the loopback host"))
+	case r.Header.Get("Origin") != "":
+		failure(w, http.StatusForbidden, fail("SERVE_ORIGIN", "requests from web pages are refused"))
+	case r.Method != http.MethodGet && r.Method != http.MethodHead:
+		w.Header().Set("Allow", "GET, HEAD")
+		failure(w, http.StatusMethodNotAllowed, fail("SERVE_METHOD", "health is read with GET"))
+	case s.ctx.Err() != nil:
+		w.Header().Set("Cache-Control", "no-store")
+		respond(w, http.StatusServiceUnavailable, map[string]string{"status": "closing"})
+	default:
+		w.Header().Set("Cache-Control", "no-store")
+		respond(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
 }
 
 // Guard admits to next only the token's holder, by loopback name, not
@@ -218,10 +250,14 @@ func wait(ctx context.Context, w io.Writer, rc *http.ResponseController, changed
 func send(w io.Writer, rc *http.ResponseController, entries []entry, missed int) bool {
 	var b bytes.Buffer
 	if missed > 0 {
-		b.WriteString("event: dropped\ndata: {\"missed\":" + strconv.Itoa(missed) + "}\n\n")
+		b.WriteString("event: dropped\ndata: {\"missed\":")
+		b.WriteString(strconv.Itoa(missed))
+		b.WriteString("}\n\n")
 	}
 	for _, e := range entries {
-		b.WriteString("id: " + strconv.Itoa(e.id) + "\ndata: ")
+		b.WriteString("id: ")
+		b.WriteString(strconv.Itoa(e.id))
+		b.WriteString("\ndata: ")
 		b.Write(e.data) // one line: JSON without raw newlines
 		b.WriteString("\n\n")
 	}

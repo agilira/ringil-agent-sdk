@@ -34,6 +34,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/delegate"
 	"github.com/agilira/ringil-agent-sdk/later"
 	"github.com/agilira/ringil-agent-sdk/memory"
+	"github.com/agilira/ringil-agent-sdk/metrics"
 	"github.com/agilira/ringil-agent-sdk/notes"
 	"github.com/agilira/ringil-agent-sdk/provider/anthropic"
 	"github.com/agilira/ringil-agent-sdk/provider/chatgpt"
@@ -120,6 +121,8 @@ type cli struct {
 	shared bool
 	// events observe every run (serve logs their metadata).
 	events []agent.Observer
+	// metrics counts the served runs, for GET /metrics.
+	metrics *metrics.Metrics
 	// acceptEdits lets file writes and edits go without asking
 	// (--accept-edits); protected files are still confirmed.
 	acceptEdits bool

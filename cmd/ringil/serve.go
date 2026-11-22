@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/eventlog"
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
+	"github.com/agilira/ringil-agent-sdk/metrics"
 	"github.com/agilira/ringil-agent-sdk/serve"
 )
 
@@ -108,12 +110,17 @@ func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
 	}
 	c.log = slog.New(slog.NewTextHandler(c.errOut, nil))
 	c.events = []agent.Observer{eventlog.Slog(c.log)}
+	c.metrics = metrics.New()
 	profiles, err := c.servedProfiles(ctx)
 	if err != nil {
 		return nil, "", err
 	}
 	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: c.conf().Serve.maxRuns(), Profiles: profiles})
-	return srv, where, err
+	if err != nil {
+		return nil, "", err
+	}
+	srv.Mount("GET /metrics", c.metrics.Handler()) // behind the token: the counts tell what the agents do
+	return srv, where, nil
 }
 
 // servedProfiles are "default" (the flags and environment) and every
@@ -172,6 +179,9 @@ func (c *cli) runInstance(ctx *orpheus.Context, name string) func(context.Contex
 		}
 		if c.log != nil {
 			r.events = []agent.Observer{eventlog.Slog(c.log.With("config", r.conf().shortDigest()))}
+		}
+		if c.metrics != nil { // a slice of its own: c.events is every run's
+			r.events = slices.Concat(r.events, []agent.Observer{c.metrics.Observer(name)})
 		}
 		r.runConversation = serve.ConversationOf(run)
 		r.setUpTrigger(serve.SourceOf(run))
