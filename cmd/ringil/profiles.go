@@ -263,7 +263,7 @@ func (c *cli) embedModel(ctx *orpheus.Context, res secrets.Resolver) (string, er
 // role's own. They follow the base prompt and do not replace it. They
 // come from the revision in force, so that serve's runs take an edit at
 // once, and a run's are those of one revision.
-func (c *cli) instructions(ctx *orpheus.Context) (string, error) {
+func (c *cli) instructions() (string, error) {
 	f := c.conf()
 	global := f.Instructions
 	if c.settings != nil && c.settings.instructions != "" {

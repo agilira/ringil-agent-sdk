@@ -28,7 +28,7 @@ const (
 // chatgptSession is the sign-in, kept in the secrets store and shared by
 // every ringil process of the user: the lock in the config directory
 // makes them refresh it one at a time.
-func (c *cli) chatgptSession(ctx context.Context, base secrets.Resolver) (*chatgpt.Session, error) {
+func (c *cli) chatgptSession(base secrets.Resolver) (*chatgpt.Session, error) {
 	c.signIns.mu.Lock()
 	defer c.signIns.mu.Unlock()
 	if c.signIns.chatgpt != nil {
@@ -106,7 +106,7 @@ func (c *cli) newChatGPT(ctx *orpheus.Context, model, base string) (agent.Provid
 	if err != nil {
 		return nil, err
 	}
-	s, err := c.chatgptSession(ctx.Context(), res)
+	s, err := c.chatgptSession(res)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (c *cli) cmdLogin(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
-	s, err := c.chatgptSession(ctx.Context(), base)
+	s, err := c.chatgptSession(base)
 	if err != nil {
 		return err
 	}
@@ -160,7 +160,7 @@ func (c *cli) cmdLogout(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
-	s, err := c.chatgptSession(ctx.Context(), base)
+	s, err := c.chatgptSession(base)
 	if err != nil {
 		return err
 	}

@@ -48,6 +48,7 @@ func (s *setup) write() error {
 	if err := w.WriteConfig(); err != nil {
 		return errors.Wrap(err, ErrUsage, "cannot write "+s.path+" ("+describe(err)+")")
 	}
+	s.dropOAuthToken()
 	return nil
 }
 

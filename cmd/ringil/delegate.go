@@ -37,7 +37,7 @@ func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools a
 	if err != nil {
 		return nil, err
 	}
-	instructions, err := c.instructions(ctx) // the company's rules hold for delegated work too
+	instructions, err := c.instructions() // the company's rules hold for delegated work too
 	if err != nil {
 		return nil, err
 	}

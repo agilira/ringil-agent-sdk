@@ -602,8 +602,8 @@ func TestTheInstructionsFlag(t *testing.T) {
 	}
 	h = newHarness(t, "")
 	h.c.configDir = func() (string, error) { return "", os.ErrNotExist }
-	loaded(t, h.c, []string{"--instructions", plain}, func(ctx *orpheus.Context) error {
-		if got, err := h.c.instructions(ctx); err != nil || got != "Be brief." {
+	loaded(t, h.c, []string{"--instructions", plain}, func(*orpheus.Context) error {
+		if got, err := h.c.instructions(); err != nil || got != "Be brief." {
 			t.Errorf("without a config directory: %q %v", got, err)
 		}
 		return nil

@@ -42,6 +42,7 @@ type setup struct {
 	embedder   embedderConfig // at Ollama
 	owners     []string
 	composio   bool             // Composio's key was kept
+	dropOAuth  string           // server whose OAuth token is dropped once ringil.yaml writes
 	session    *chatgpt.Session // the ChatGPT sign-in, for that provider
 }
 
