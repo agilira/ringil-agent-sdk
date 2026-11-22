@@ -23,11 +23,11 @@ const (
 	anthropicKey = "ANTHROPIC_API_KEY"
 )
 
-var providers = map[string]bool{"": true, providerOpenAI: true, providerAnthropic: true}
+var providers = map[string]bool{"": true, providerOpenAI: true, providerAnthropic: true, providerChatGPT: true}
 
 func (f *config) checkProvider() error {
 	if !providers[f.Provider] {
-		return errors.New(ErrUsage, "provider is openai or anthropic")
+		return errors.New(ErrUsage, "provider is openai, anthropic or chatgpt")
 	}
 	return nil
 }
@@ -36,9 +36,9 @@ func (f *config) checkProvider() error {
 func (p profile) checkProvider(name string) error {
 	switch {
 	case !providers[p.Provider]:
-		return errors.New(ErrUsage, "profile "+name+": provider is openai or anthropic")
-	case p.Provider == providerAnthropic && p.EmbedModel != "":
-		return errors.New(ErrUsage, "profile "+name+": Anthropic has no embedding models (use embedder kind ollama)")
+		return errors.New(ErrUsage, "profile "+name+": provider is openai, anthropic or chatgpt")
+	case (p.Provider == providerAnthropic || p.Provider == providerChatGPT) && p.EmbedModel != "":
+		return errors.New(ErrUsage, "profile "+name+": "+p.Provider+" has no embedding models (use embedder kind ollama)")
 	}
 	return nil
 }
@@ -51,7 +51,7 @@ func (c *cli) mainProvider(ctx *orpheus.Context, res secrets.Resolver) (string, 
 		return "", err
 	}
 	if !providers[v] {
-		return "", errors.New(ErrUsage, "provider is openai or anthropic, not "+v)
+		return "", errors.New(ErrUsage, "provider is openai, anthropic or chatgpt, not "+v)
 	}
 	return cmp.Or(v, providerOpenAI), nil
 }
@@ -77,13 +77,13 @@ func (c *cli) baseFor(ctx *orpheus.Context, res secrets.Resolver, kind string) (
 		return "", err
 	case own:
 		return c.role.Base, nil
-	case kind != providerAnthropic:
+	case kind != providerAnthropic && kind != providerChatGPT:
 		return c.roleSetting(ctx, res, "base", "RINGIL_BASE_URL")
 	}
 	if ctx.GlobalFlagChanged("base") {
 		return ctx.GetGlobalFlagString("base"), nil
 	}
-	if f := c.conf(); f.Provider == providerAnthropic {
+	if f := c.conf(); f.Provider == kind {
 		return f.Base, nil
 	}
 	return "", nil

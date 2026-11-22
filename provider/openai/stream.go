@@ -6,7 +6,6 @@
 package openai
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/internal/httpcall"
 )
 
 // Bounds on a streamed response. They protect memory against a hostile or
@@ -57,51 +57,16 @@ type streamState struct {
 
 func decodeStream(r io.Reader, sink agent.TextSink) (*agent.Response, error) {
 	s := &streamState{sink: sink, byIndex: map[int]*partialCall{}}
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64<<10), maxLine)
-	var data []byte
-	for !s.done && scanner.Scan() {
-		var err error
-		if data, err = s.line(scanner.Bytes(), data); err != nil {
-			return nil, err
+	err := httpcall.Events(r, maxLine, func(data []byte) (bool, error) {
+		if err := s.dispatch(data); err != nil {
+			return true, err
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, scanError(err)
-	}
-	if err := s.dispatch(data); err != nil {
+		return s.done, nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return s.result()
-}
-
-func scanError(err error) error {
-	if err == bufio.ErrTooLong {
-		return errors.New(agent.ErrProviderResponse, "stream line exceeds the size bound")
-	}
-	return interrupted(err)
-}
-
-// line handles one SSE line. Data lines accumulate until a blank line ends
-// the event, as the SSE format specifies; comments and other fields are
-// ignored.
-func (s *streamState) line(line, data []byte) ([]byte, error) {
-	line = bytes.TrimSuffix(line, []byte("\r"))
-	if len(line) == 0 {
-		return nil, s.dispatch(data)
-	}
-	field, value, _ := bytes.Cut(line, []byte(":"))
-	if string(field) != "data" {
-		return data, nil
-	}
-	value = bytes.TrimPrefix(value, []byte(" "))
-	if data != nil {
-		data = append(data, '\n')
-	}
-	if len(data)+len(value) > maxLine {
-		return nil, errors.New(agent.ErrProviderResponse, "stream event exceeds the size bound")
-	}
-	return append(data, value...), nil
 }
 
 func (s *streamState) dispatch(data []byte) error {

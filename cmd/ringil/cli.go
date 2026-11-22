@@ -36,6 +36,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/memory"
 	"github.com/agilira/ringil-agent-sdk/notes"
 	"github.com/agilira/ringil-agent-sdk/provider/anthropic"
+	"github.com/agilira/ringil-agent-sdk/provider/chatgpt"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 	"github.com/agilira/ringil-agent-sdk/provider/retry"
 	"github.com/agilira/ringil-agent-sdk/rules"
@@ -61,6 +62,13 @@ type cli struct {
 	getenv      func(string) string
 	// newProvider builds the model client; tests swap in a fake.
 	newProvider func(openai.Config) (agent.Provider, error)
+	// signIns holds the ChatGPT sign-in, made once and shared with the
+	// server's runs; chatgptIssuer, chatgptPort and chatgptBase point it
+	// elsewhere (tests).
+	signIns       *signIns
+	chatgptIssuer string
+	chatgptPort   int
+	chatgptBase   string
 	// newAnthropic builds a Claude client; tests swap in a fake.
 	newAnthropic func(anthropic.Config) (agent.Provider, error)
 	// turnContext scopes one user turn, so Ctrl-C stops the answer, not the
@@ -166,6 +174,7 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		in: in, out: out, errOut: errOut, getenv: os.Getenv, newEmbedder: func(cfg openai.Config) (agent.Embedder, error) { return openai.NewEmbedder(cfg) },
 		newProvider:  openai.New,
 		newAnthropic: anthropic.New,
+		signIns:      &signIns{},
 		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
@@ -220,6 +229,9 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.withConfig(c.cmdSessions)).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.withConfig(c.cmdSessionRemove)).
 			SetUsage("sessions rm <name...>")))
+	app.AddCommand(orpheus.NewCommand("login", "Sign in with a ChatGPT subscription (Plus, Pro, Business): ringil login chatgpt").SetHandler(c.withConfig(c.cmdLogin)).
+		SetUsage("login chatgpt").AddBoolFlag("device", "", false, "sign in by a code typed on any device (no browser here: a server, SSH)"))
+	app.AddCommand(orpheus.NewCommand("logout", "Sign out of ChatGPT: revoke the sign-in and forget it").SetHandler(c.withConfig(c.cmdLogout)).SetUsage("logout chatgpt"))
 	app.AddCommand(orpheus.NewCommand("setup", "Set ringil up, with a few questions: where keys are kept, the model, your system prompt, the memory, a Telegram bot").SetHandler(c.cmdSetup))
 	app.AddCommand(orpheus.NewCommand("secrets", "Keep keys in the store of ringil.yaml's secrets section (keyring, vault or file)").
 		AddSubcommand(orpheus.NewCommand("set", "Save a secret; its value is read from standard input, without echo at a terminal").SetHandler(c.withConfig(c.cmdSecretsSet)).SetUsage("secrets set <NAME>")).
@@ -838,14 +850,26 @@ func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	if model == "" || base == "" && kind != providerAnthropic {
-		return nil, errors.New(ErrUsage, "set --base and --model, or RINGIL_BASE_URL and RINGIL_MODEL")
+	if err := needModel(kind, base, model); err != nil {
+		return nil, err
 	}
 	keyName, err := c.keyName(ctx, res)
 	if err != nil {
 		return nil, err
 	}
 	return c.newModel(ctx, res, kind, base, model, keyName)
+}
+
+// needModel: a model, and an endpoint for an OpenAI-compatible one (the
+// other providers have theirs).
+func needModel(kind, base, model string) error {
+	switch {
+	case model == "" && kind != providerOpenAI:
+		return errors.New(ErrUsage, "set --model, or model in ringil.yaml (ringil setup offers the list)")
+	case model == "" || base == "" && kind == providerOpenAI:
+		return errors.New(ErrUsage, "set --base and --model, or RINGIL_BASE_URL and RINGIL_MODEL")
+	}
+	return nil
 }
 
 // keyName is keyEnv, checked to be a variable's name.
@@ -860,6 +884,9 @@ func (c *cli) keyName(ctx *orpheus.Context, res secrets.Resolver) (string, error
 // newModel is the provider for model at base: Anthropic's API, or an
 // OpenAI-compatible one.
 func (c *cli) newModel(ctx *orpheus.Context, res secrets.Resolver, kind, base, model, keyName string) (agent.Provider, error) {
+	if kind == providerChatGPT {
+		return c.newChatGPT(ctx, model, base)
+	}
 	if kind == providerAnthropic {
 		return c.newAnthropic(anthropic.Config{BaseURL: base, Model: model, KeyFunc: keyFunc(res, keyName), AllowHTTP: c.flagBool(ctx, "allow-http")})
 	}
@@ -965,6 +992,8 @@ func describe(err error) string {
 	switch {
 	case stderrors.Is(err, context.Canceled):
 		return "interrupted"
+	case errors.HasCode(err, chatgpt.ErrSignedOut):
+		return "not signed in to ChatGPT, or the sign-in ended: run `ringil login chatgpt`"
 	case errors.HasCode(err, agent.ErrProviderAuth):
 		return "the API key was refused or is missing"
 	case errors.HasCode(err, secrets.ErrMissing), errors.HasCode(err, secrets.ErrSource), errors.HasCode(err, secrets.ErrValue):

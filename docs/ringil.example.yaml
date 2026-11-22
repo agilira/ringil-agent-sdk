@@ -8,9 +8,11 @@
 # ringil does not know is an error.
 
 # The model: an OpenAI-compatible endpoint (provider: openai, the
-# default), or Claude (provider: anthropic: no base needed, the key in
+# default), Claude (provider: anthropic: no base needed, the key in
 # ANTHROPIC_API_KEY unless key_env names another; RINGIL_BASE_URL does not
-# apply to it).
+# apply to it), or a ChatGPT subscription (provider: chatgpt: no base and
+# no key, `ringil login chatgpt` signs in and keeps the sign-in in the
+# secrets store).
 provider: openai
 base: https://api.example.com/v1
 model: example-model

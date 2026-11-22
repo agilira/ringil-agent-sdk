@@ -120,9 +120,10 @@ func TestRoleOnTheMainProvider(t *testing.T) {
 
 func TestProvidersChecked(t *testing.T) {
 	for body, want := range map[string]string{
-		`{"provider":"gemini"}`:                                         "provider is openai or anthropic",
-		`{"profiles":{"x":{"provider":"cohere"}}}`:                      "provider is openai or anthropic",
+		`{"provider":"gemini"}`:                                         "provider is openai, anthropic or chatgpt",
+		`{"profiles":{"x":{"provider":"cohere"}}}`:                      "provider is openai, anthropic or chatgpt",
 		`{"profiles":{"x":{"provider":"anthropic","embed_model":"e"}}}`: "no embedding models",
+		`{"profiles":{"x":{"provider":"chatgpt","embed_model":"e"}}}`:   "chatgpt has no embedding models",
 	} {
 		h := newHarness(t, "", fake.Reply("ok"))
 		writeProfiles(t, h.dir, body)

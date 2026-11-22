@@ -19,6 +19,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/internal/httpcall"
 )
 
 // Bounds of speech: the text the main APIs take, and the audio read back.
@@ -86,10 +87,10 @@ func (s *synthesizer) Synthesize(ctx context.Context, text string) ([]byte, stri
 	req.Header.Set("Accept", speechAcceptHdr)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, "", networkError(ctx, err)
+		return nil, "", httpcall.NetworkError(ctx, err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, "", withSecondary(statusError(resp), closeError(resp))
+		return nil, "", httpcall.WithSecondary(httpcall.StatusError(resp), httpcall.CloseError(resp))
 	}
 	return readSpeech(resp)
 }

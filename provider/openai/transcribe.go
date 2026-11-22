@@ -20,6 +20,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/internal/httpcall"
 )
 
 // Bounds of a transcription: the audio sent (the main APIs take 25 MB)
@@ -121,10 +122,10 @@ func (t *transcriber) post(ctx context.Context, body io.Reader, contentType stri
 	req.Header.Set("Accept", "application/json")
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return "", networkError(ctx, err)
+		return "", httpcall.NetworkError(ctx, err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", withSecondary(statusError(resp), closeError(resp))
+		return "", httpcall.WithSecondary(httpcall.StatusError(resp), httpcall.CloseError(resp))
 	}
 	return readTranscript(resp)
 }

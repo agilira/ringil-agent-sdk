@@ -15,6 +15,7 @@ import (
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
 
+	"github.com/agilira/ringil-agent-sdk/provider/chatgpt"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 	"github.com/agilira/ringil-agent-sdk/secrets/store"
 )
@@ -40,7 +41,8 @@ type setup struct {
 	embedModel string         // at the chat model's server (embed_model)
 	embedder   embedderConfig // at Ollama
 	owners     []string
-	composio   bool // Composio's key was kept
+	composio   bool             // Composio's key was kept
+	session    *chatgpt.Session // the ChatGPT sign-in, for that provider
 }
 
 // cmdSetup asks the questions a first start needs, in order: where the
@@ -56,7 +58,7 @@ func (c *cli) cmdSetup(ctx *orpheus.Context) error {
 		return errors.New(ErrUsage, "not a path ringil writes its configuration to: "+describe(err))
 	}
 	s := &setup{c: c, ctx: ctx.Context(), p: c.prompter(), path: path, base: secrets.Map{}}
-	steps := []func() error{s.intro, s.chooseStore, s.chooseProvider, s.askKey, s.chooseModel,
+	steps := []func() error{s.intro, s.chooseStore, s.chooseProvider, s.askCredential, s.chooseModel,
 		s.askPrompt, s.chooseEmbedder, s.chooseMemory, s.askTelegram,
 		s.askComposio, s.write, s.tryModel}
 	defer s.closeStore()
