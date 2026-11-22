@@ -92,9 +92,10 @@ speech:
 
 # Every revision of this file, of its instructions and of the skills is
 # recorded here, by name and hash, never their text; each run of serve
-# logs the digest of the revision it ran on. A .db file is SQLite (needs
-# a build with cgo).
-# audit_file: /var/log/ringil/audit.jsonl   # default <config>/ringil/audit.jsonl
+# logs the digest of the revision it ran on. SQLite with a hash chain
+# (argus): a record altered or removed is found; a .jsonl file is plain
+# lines, without the chain.
+# audit_file: /var/log/ringil/audit.db   # default <config>/ringil/audit.db
 no_audit: false
 
 # Profiles: roles with their own model, endpoint, key, instructions,

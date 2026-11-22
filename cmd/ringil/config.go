@@ -54,8 +54,8 @@ type config struct {
 	Transcribe     audioConfig    `argus:"transcribe"`
 	Speech         audioConfig    `argus:"speech"`
 	// AuditFile is where every revision of the configuration is recorded
-	// (default <config>/ringil/audit.jsonl; a .db file is SQLite, in a
-	// build with cgo); NoAudit records none.
+	// (default <config>/ringil/audit.db, SQLite with a hash chain; a .jsonl
+	// file is plain lines, without it); NoAudit records none.
 	AuditFile string `argus:"audit_file"`
 	NoAudit   bool   `argus:"no_audit"`
 

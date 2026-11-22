@@ -7,15 +7,16 @@ package main
 
 import (
 	"context"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/agilira/go-errors"
-	"go.yaml.in/yaml/v3"
 
 	"github.com/agilira/ringil-agent-sdk/mcp"
 	"github.com/agilira/ringil-agent-sdk/mcp/composio"
@@ -90,29 +91,49 @@ func connectComposio(ctx context.Context, key string) (int, error) {
 // at Composio Connect, whatever its name, or a new "composio". What the
 // key replaces goes (audit 22/11): a browser sign-in and its token, a
 // local command, the same header in another case (Go would send either).
-func (s *setup) composioSection(servers *yaml.Node) {
-	name := "composio"
-	for i := 0; i+1 < len(servers.Content); i += 2 {
-		if e := servers.Content[i+1]; e.Kind == yaml.MappingNode && isComposio(scalarAt(e, "url")) {
-			name = servers.Content[i].Value
-			break
+func (s *setup) composioSection(e *edit) {
+	servers, _ := e.w.GetValue("mcp_servers").(map[string]interface{})
+	name := composioEntry(servers)
+	for n, entry := range servers {
+		if m, ok := entry.(map[string]interface{}); ok && strings.Contains(n, ".") && isComposio(stringOf(m["url"])) {
+			s.c.note("MCP server " + n + " also reaches Composio, but a name with a dot cannot be edited: remove it by hand, the key is under \"composio\"")
 		}
 	}
-	srv := mapAt(servers, name)
-	if base, err := s.c.configDir(); err == nil && mapHas(srv, "oauth") { // where withOAuth keeps it
-		_ = os.Remove(filepath.Join(base, "ringil", "oauth", name+".json")) // #nosec G104 -- none is fine
+	at := "mcp_servers." + name
+	entry, _ := servers[name].(map[string]interface{})
+	if _, signedIn := entry["oauth"]; signedIn {
+		s.dropOAuthToken(name)
 	}
 	for _, k := range []string{"oauth", "disabled", "command", "args", "env", "sandbox", "network", "mounts"} {
-		removeKey(srv, k)
+		e.set(at+"."+k, nil)
 	}
-	merge(srv, "type", "http", "url", composio.ConnectURL)
-	headers := mapAt(srv, "headers")
-	for i := len(headers.Content) - 2; i >= 0; i -= 2 {
-		if strings.EqualFold(headers.Content[i].Value, "x-consumer-api-key") {
-			headers.Content = append(headers.Content[:i], headers.Content[i+2:]...)
+	e.merge(at, "type", "http", "url", composio.ConnectURL)
+	headers, _ := e.w.GetValue(at + ".headers").(map[string]interface{})
+	for h := range headers {
+		if strings.EqualFold(h, "x-consumer-api-key") {
+			e.set(at+".headers."+h, nil)
 		}
 	}
-	setKey(headers, "x-consumer-api-key", scalar("${"+composioKey+"}"))
+	e.set(at+".headers.x-consumer-api-key", "${"+composioKey+"}")
+}
+
+// dropOAuthToken removes the browser sign-in's token the key replaces,
+// where withOAuth keeps it.
+func (s *setup) dropOAuthToken(name string) {
+	if base, err := s.c.configDir(); err == nil {
+		_ = os.Remove(filepath.Join(base, "ringil", "oauth", name+".json")) // #nosec G104 -- none is fine
+	}
+}
+
+// composioEntry is the name of the server already at Composio Connect,
+// else "composio" (a name with a dot cannot be addressed: a new one).
+func composioEntry(servers map[string]interface{}) string {
+	for _, n := range slices.Sorted(maps.Keys(servers)) {
+		if entry, ok := servers[n].(map[string]interface{}); ok && !strings.Contains(n, ".") && isComposio(stringOf(entry["url"])) {
+			return n
+		}
+	}
+	return "composio"
 }
 
 func isComposio(raw string) bool {
@@ -120,21 +141,7 @@ func isComposio(raw string) bool {
 	return err == nil && strings.EqualFold(u.Hostname(), "connect.composio.dev")
 }
 
-// scalarAt is the scalar under key, or "".
-func scalarAt(m *yaml.Node, key string) string {
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key && m.Content[i+1].Kind == yaml.ScalarNode {
-			return m.Content[i+1].Value
-		}
-	}
-	return ""
-}
-
-func mapHas(m *yaml.Node, key string) bool {
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
-			return true
-		}
-	}
-	return false
+func stringOf(v interface{}) string {
+	s, _ := v.(string)
+	return s
 }

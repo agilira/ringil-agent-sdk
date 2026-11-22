@@ -57,8 +57,9 @@ istruzioni che nomina e le skill installate si leggono insieme, come una revisio
 vale dalla prossima run (profili, istruzioni, impostazioni, chi parla con il bot), una
 che non li passa è segnalata e resta la revisione precedente. Ogni run di `serve` usa
 una sola revisione dall'inizio alla fine e il suo log ne riporta l'impronta
-(`config=...`); ogni revisione finisce in `audit.jsonl` (`audit_file`, `no_audit`) per
-nome e hash, mai il testo. Un percorso di istruzioni non può contenere `*`, `?` o `[`. Server MCP, agenti remoti e il resto di `serve` valgono al
+(`config=...`); ogni revisione finisce in `audit.db` (`audit_file`, `no_audit`) per
+nome e hash, mai il testo: SQLite con la catena di hash di Argus, che scopre un record
+cambiato o tolto (un file `.jsonl` è a righe, senza catena). Un percorso di istruzioni non può contenere `*`, `?` o `[`. Server MCP, agenti remoti e il resto di `serve` valgono al
 prossimo avvio, e il log lo dice. Gli strumenti sui file dell'agente non toccano
 `ringil.yaml` né i file di istruzioni senza chiedere.
 

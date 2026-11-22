@@ -127,7 +127,7 @@ func checkWritten(t *testing.T, dir, base, prompt string) {
 func TestSetupKeepsTheRest(t *testing.T) {
 	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "n"}, map[string]string{})
 	h.c.ollama = "http://127.0.0.1:1/v1" // no Ollama there: the list fails, the name is asked
-	old := "# my settings\nmodel: old-model\nprofiles:\n  writer: {model: big}  # the writer\n"
+	old := "# my settings\nmodel: old-model\nprofiles:\n  writer: {model: big}  # the writer\nnotes: https://example.com/a/very/long/address/of/the/team/notes/that/goes/past/eighty/columns\n"
 	writeProfiles(t, h.dir, old)
 	if code := h.run("setup"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
@@ -138,7 +138,7 @@ func TestSetupKeepsTheRest(t *testing.T) {
 	if len(baks) == 1 {
 		bak, _ = os.ReadFile(baks[0])
 	}
-	for _, want := range []string{"# my settings", "writer:", "# the writer", "base: http://127.0.0.1:1/v1", "model: llama3"} {
+	for _, want := range []string{"# my settings", "writer:", "# the writer", "base: http://127.0.0.1:1/v1", "model: llama3", "notes: https://example.com/a/very/long/address/of/the/team/notes/that/goes/past/eighty/columns\n"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("lost %q:\n%s", want, data)
 		}
@@ -255,8 +255,8 @@ func TestSetupMergesAndKeepsEveryBackup(t *testing.T) {
 	if strings.Contains(string(data), "url: http://m:8888") {
 		t.Errorf("the Mem0 url stayed with SQLite:\n%s", data)
 	}
-	time.Sleep(1100 * time.Millisecond) // a second run, a second apart
-	h2, _ := setupHarness(t, answers, map[string]string{})
+	time.Sleep(1100 * time.Millisecond)                                                                                                         // a second run, a second apart
+	h2, _ := setupHarness(t, append(append([]string(nil), answers[:5]...), append([]string{"llama4"}, answers[6:]...)...), map[string]string{}) // another model: a change, so a write and a backup
 	h2.c.configDir, h2.dir, h2.c.ollama = h.c.configDir, h.dir, "http://127.0.0.1:1/v1"
 	if code := h2.run("setup"); code != exitOK {
 		t.Fatalf("second run: %s", h2.err)
@@ -383,5 +383,31 @@ func TestSetupComposioSkipped(t *testing.T) {
 			t.Fatalf("%s: exit %d: %s", name, code, h.err)
 		}
 		yamlHas(t, h.dir, []string{"model: llama3"}, []string{"mcp_servers", "COMPOSIO"})
+	}
+}
+
+// Audit 22/11 (setup on argus's writer): owners written as numbers, as the
+// loader accepts them, were dropped; a key to remove that is an alias
+// stayed, the run then using the old value: it is refused, the file left
+// as it was.
+func TestSetupKeepsNumericOwnersAndRefusesAliases(t *testing.T) {
+	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "y", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+	h, _ := setupHarness(t, answers, map[string]string{})
+	h.c.ollama = "http://127.0.0.1:1/v1"
+	writeProfiles(t, h.dir, "serve:\n  telegram:\n    owners: [111, 222]\n")
+	if code := h.run("setup"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	yamlHas(t, h.dir, []string{"111", "222", "\"42\""}, nil)
+
+	h2, _ := setupHarness(t, append(append([]string(nil), answers[:9]...), "n"), map[string]string{})
+	h2.c.ollama = "http://127.0.0.1:1/v1"
+	const aliased = "x: &b http://old.example/v1\nbase: *b\n"
+	writeProfiles(t, h2.dir, aliased)
+	if code := h2.run("setup"); code == exitOK || !strings.Contains(h2.err.String(), "alias") {
+		t.Fatalf("an alias left: exit %d: %s", code, h2.err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(h2.dir, "ringil", "ringil.yaml")); string(data) != aliased {
+		t.Fatalf("the file changed: %q", data)
 	}
 }

@@ -186,8 +186,9 @@ func (s *settings) start(c *cli) error {
 	return errors.New(ErrUsage, s.path+" kept changing while it was read")
 }
 
-// startAudit opens the audit file f names (JSONL by default; .db is
-// SQLite, in a build with cgo); false when there is none to open.
+// startAudit opens the audit file f names: by default SQLite with argus's
+// hash chain, which proves no record was altered or removed (a .jsonl
+// file is plain lines, without it); false when there is none to open.
 func (s *settings) startAudit(c *cli, f *config) bool {
 	file := f.AuditFile
 	if file == "" {
@@ -195,7 +196,7 @@ func (s *settings) startAudit(c *cli, f *config) bool {
 		if err != nil {
 			return false // nowhere to keep it
 		}
-		file = filepath.Join(base, "ringil", "audit.jsonl")
+		file = filepath.Join(base, "ringil", "audit.db")
 	}
 	err := os.MkdirAll(filepath.Dir(file), 0o700)
 	var logger *argus.AuditLogger
