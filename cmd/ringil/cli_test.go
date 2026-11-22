@@ -38,6 +38,7 @@ func newHarness(t *testing.T, input string, steps ...fake.Step) *harness {
 	t.Helper()
 	h := &harness{out: &bytes.Buffer{}, err: &bytes.Buffer{}, script: fake.New(steps...), dir: t.TempDir()}
 	h.c = newCLI(strings.NewReader(input), h.out, h.err)
+	t.Cleanup(func() { _ = h.c.secrets.Close() }) // as main does: Windows keeps an open store's directory
 	h.c.getenv = func(k string) string {
 		return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "RINGIL_API_KEY": "k"}[k]
 	}
