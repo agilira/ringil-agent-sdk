@@ -5,18 +5,54 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Systems to test: all, or some of linux windows macos'
+        default: all
 
 permissions:
   contents: read
 
 jobs:
+  # Which systems to test. All three by default; a commit message with
+  # [ci windows], [ci linux] or [ci macos] (combinable) tests only those,
+  # for a fix of one system: macOS minutes cost ten times Linux ones.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.pick.outputs.os }}
+    steps:
+    - id: pick
+      env:
+        MESSAGE: ${{ github.event.head_commit.message }}
+        CHOSEN: ${{ github.event.inputs.os }}
+      run: |
+        want="$CHOSEN"
+        if [ -z "$want" ]; then
+          for os in linux windows macos; do
+            case "$MESSAGE" in *"[ci $os]"*) want="$want $os";; esac
+          done
+        fi
+        list=""
+        for os in $want; do
+          case "$os" in
+            linux) list="$list,\"ubuntu-latest\"";;
+            windows) list="$list,\"windows-latest\"";;
+            macos) list="$list,\"macos-latest\"";;
+          esac
+        done
+        if [ -z "$list" ]; then list=',"ubuntu-latest","macos-latest","windows-latest"'; fi
+        echo "os=[${list#,}]" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test (${{ matrix.os }})
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
         # Three first-class platforms: Harness must run on Windows.
-        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
