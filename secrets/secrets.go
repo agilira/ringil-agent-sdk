@@ -15,6 +15,7 @@ package secrets
 
 import (
 	"context"
+	stderrors "errors"
 	"os"
 	"regexp"
 	"strings"
@@ -115,19 +116,18 @@ func (c chain) Lookup(ctx context.Context, name string) (string, bool, error) {
 
 // Lookup resolves name through r and checks the value. Backend errors are
 // replaced by a code: their text may contain the secret or its location.
+// An error whose code begins with SECRET_ (those of this package and of
+// the stores beside it) is kept as it is: such errors carry no value, by
+// contract, and say what failed (no token, a locked keyring).
 func Lookup(ctx context.Context, r Resolver, name string) (string, bool, error) {
 	if err := ValidateName(name); err != nil {
 		return "", false, err
 	}
 	value, found, err := r.Lookup(ctx, name)
-	switch {
-	case err != nil && ctx.Err() != nil:
-		return "", false, ctx.Err()
-	case errors.HasCode(err, ErrName):
-		return "", false, err
-	case err != nil:
-		return "", false, errors.New(ErrLookup, "secret source failed for "+name)
-	case !found:
+	if err != nil {
+		return "", false, failure(ctx, err, name)
+	}
+	if !found {
 		return "", false, nil
 	}
 	if err := checkValue(name, value); err != nil {
@@ -139,6 +139,24 @@ func Lookup(ctx context.Context, r Resolver, name string) (string, bool, error) 
 // ValidateValue accepts a value a source may hold: valid UTF-8, no NUL,
 // at most 64 KiB. For a Store's Set.
 func ValidateValue(name, value string) error { return checkValue(name, value) }
+
+// failure is the error a lookup returns for err: the context's, ours as
+// it is, any other replaced by a code.
+func failure(ctx context.Context, err error, name string) error {
+	switch {
+	case ctx.Err() != nil:
+		return ctx.Err()
+	case errors.HasCode(err, ErrName), ours(err):
+		return err
+	}
+	return errors.New(ErrLookup, "secret source failed for "+name)
+}
+
+// ours: err has a SECRET_ code, which promises no value in its text.
+func ours(err error) bool {
+	var e *errors.Error
+	return stderrors.As(err, &e) && strings.HasPrefix(string(e.Code), "SECRET_")
+}
 
 func checkValue(name, value string) error {
 	if len(value) > maxValue || !utf8.ValidString(value) || strings.ContainsRune(value, 0) {

@@ -39,8 +39,9 @@ func TestSecurityErrorsHoldNoBackendText(t *testing.T) {
 			t.Errorf("%v", err)
 		}
 	}
-	// Through secrets.Lookup too: a failing source is a lookup error.
-	if _, _, err := secrets.Lookup(ctx, k, "KEY"); !errors.HasCode(err, secrets.ErrLookup) {
+	// Through secrets.Lookup too: the keyring's own error, which says what
+	// failed and holds no value.
+	if _, _, err := secrets.Lookup(ctx, k, "KEY"); !errors.HasCode(err, ErrUnavailable) || strings.Contains(err.Error(), "SECRETVALUE") {
 		t.Fatalf("%v", err)
 	}
 }

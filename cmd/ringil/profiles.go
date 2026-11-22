@@ -319,6 +319,6 @@ func (c *cli) images(ctx context.Context, res secrets.Resolver) bool {
 	if c.role != nil && c.role.Model != "" {
 		return c.role.Images
 	}
-	v, _, err := secrets.Lookup(ctx, res, "RINGIL_IMAGES")
+	v, _, err := secrets.Lookup(ctx, settingsOf(res), "RINGIL_IMAGES")
 	return (err == nil && v == "1") || c.conf().Images
 }

@@ -39,6 +39,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/rules"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
+	"github.com/agilira/ringil-agent-sdk/secrets/store"
 	"github.com/agilira/ringil-agent-sdk/serve"
 	"github.com/agilira/ringil-agent-sdk/skills"
 	"github.com/agilira/ringil-agent-sdk/todo"
@@ -143,7 +144,7 @@ type cli struct {
 	// settings is ringil.yaml in force (shared by serve's runs);
 	// configEvery how soon an edit is seen (zero: 2s; tests shorten it).
 	settings    *settings
-	secrets     *secretStore // the configured store, shared with serve's runs
+	secrets     *store.Cache // the configured store, shared with serve's runs
 	configEvery time.Duration
 	// log is serve's log; each run's lines name its configuration.
 	log *slog.Logger
@@ -158,7 +159,7 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
 		configDir:  os.UserConfigDir,
-		secrets:    &secretStore{},
+		secrets:    &store.Cache{},
 		triggers:   &atomic.Pointer[trigger.Runner]{},
 		bridge:     &atomic.Pointer[channel.Bridge]{},
 		newSandbox: sandbox.New,
@@ -876,11 +877,28 @@ func (c *cli) resolver(ctx *orpheus.Context) (secrets.Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := c.keyStore(ctx.Context(), base)
-	if err != nil || store == nil {
-		return base, err
+	keys, err := c.keyStore(ctx.Context(), base)
+	if err != nil {
+		return nil, err
 	}
-	return secrets.Chain(base, store), nil
+	return keyChain{Resolver: store.Resolver(base, keys), base: base}, nil
+}
+
+// keyChain resolves keys through the store too; settingsOf gives what
+// resolves settings (the provider, the model, RINGIL_IMAGES): the
+// environment and the --env-file alone, so a store that cannot answer
+// stops only what needs a key, and an entry in it never changes a
+// setting of ringil.yaml (audit 22/11).
+type keyChain struct {
+	secrets.Resolver
+	base secrets.Resolver
+}
+
+func settingsOf(res secrets.Resolver) secrets.Resolver {
+	if k, ok := res.(keyChain); ok {
+		return k.base
+	}
+	return res
 }
 
 // baseResolver is the environment, then the --env-file.
@@ -903,7 +921,7 @@ func (c *cli) setting(ctx *orpheus.Context, res secrets.Resolver, flag, name str
 	if v := ctx.GetGlobalFlagString(flag); v != "" {
 		return v, nil
 	}
-	v, found, err := secrets.Lookup(ctx.Context(), res, name)
+	v, found, err := secrets.Lookup(ctx.Context(), settingsOf(res), name)
 	if err != nil || found {
 		return v, err
 	}
