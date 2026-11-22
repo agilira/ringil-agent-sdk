@@ -61,6 +61,20 @@ memory_store:
   # headers: {X-Chroma-Token: "${CHROMA_TOKEN}"}   # Mem0: X-API-Key
   # raw: false                 # mem0 only
 
+# Where the keys are kept, read after the environment and the --env-file
+# (which win, for one run): by the CLI, by serve and its channels (a
+# Telegram bot's token too), the MCP servers and the remote agents.
+# `ringil secrets set NAME` saves one (its value from standard input,
+# without echo), `ringil secrets rm NAME` removes it.
+secrets:
+  store: keyring               # the system's: Keychain, Credential Manager, GNOME Keyring/KWallet
+  # keyring_service: ringil
+  # store: vault               # HashiCorp Vault (or OpenBao), KV version 2
+  # vault: {url: https://vault.example.com:8200, path: ringil, mount: secret, token_env: VAULT_TOKEN}
+  # store: file                # an encrypted file, for a machine with neither
+  # file: /home/me/.config/ringil/secrets.enc
+  # passphrase_env: RINGIL_SECRETS_PASSPHRASE
+
 # Voice in the chats: a model that hears voice messages and one that
 # speaks the answers. RINGIL_TRANSCRIBE_* and RINGIL_SPEECH_* in the
 # environment win. At another endpoint than the chat model's each gets
