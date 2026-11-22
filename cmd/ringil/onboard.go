@@ -57,6 +57,7 @@ func (c *cli) cmdSetup(ctx *orpheus.Context) error {
 	s := &setup{c: c, ctx: ctx.Context(), p: c.prompter(), path: path, base: secrets.Map{}}
 	steps := []func() error{s.intro, s.chooseStore, s.chooseProvider, s.askKey, s.chooseModel,
 		s.askPrompt, s.chooseEmbedder, s.chooseMemory, s.askTelegram, s.write, s.tryModel}
+	defer s.closeStore()
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return err
@@ -261,9 +262,19 @@ func (s *setup) openStore() error {
 	if err != nil {
 		return err
 	}
+	s.keys = keys
 	if _, _, err := secrets.Lookup(s.ctx, keys, "RINGIL_SETUP_PROBE"); err != nil {
+		s.closeStore()
 		return errors.Wrap(err, ErrUsage, "the store does not answer: "+err.Error())
 	}
-	s.keys = keys
 	return nil
+}
+
+// closeStore releases the store this setup opened: an encrypted file holds
+// its directory open, which Windows will not let anyone remove meanwhile.
+func (s *setup) closeStore() {
+	if c, ok := s.keys.(interface{ Close() error }); ok {
+		_ = c.Close() // #nosec G104 -- nothing is written on close
+	}
+	s.keys = nil
 }
