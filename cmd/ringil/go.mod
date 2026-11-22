@@ -3,7 +3,7 @@ module github.com/agilira/ringil-agent-sdk/cmd/ringil
 go 1.27.0
 
 require (
-	github.com/agilira/argus v1.8.1
+	github.com/agilira/argus v1.10.1
 	github.com/agilira/go-errors v1.1.3
 	github.com/agilira/orpheus v1.6.1
 	github.com/agilira/ringil-agent-sdk v0.0.0
@@ -12,7 +12,6 @@ require (
 	github.com/agilira/ringil-agent-sdk/memory/sqlite v0.0.0
 	github.com/agilira/ringil-agent-sdk/provider/anthropic v0.0.0
 	github.com/agilira/ringil-agent-sdk/secrets/store v0.0.0
-	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/term v0.48.0
 )
 
@@ -33,7 +32,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	github.com/mattn/go-sqlite3 v1.14.53 // indirect
 	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
@@ -50,7 +48,7 @@ require (
 	go.opentelemetry.io/otel v1.33.0 // indirect
 	go.opentelemetry.io/otel/metric v1.33.0 // indirect
 	go.opentelemetry.io/otel/trace v1.33.0 // indirect
-	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
+	go.yaml.in/yaml/v4 v4.0.0 // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect

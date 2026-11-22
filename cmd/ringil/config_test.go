@@ -472,7 +472,7 @@ func TestRevisionsAreAudited(t *testing.T) {
 	h := newHarness(t, "")
 	h.c.configEvery = 20 * time.Millisecond
 	path := writeConfig(t, h.dir, fullConfig)
-	audit := filepath.Join(filepath.Dir(path), "audit.jsonl")
+	audit := filepath.Join(filepath.Dir(path), "audit.db")
 	loaded(t, h.c, nil, func(*orpheus.Context) error {
 		if err := os.WriteFile(filepath.Join(filepath.Dir(path), "company.md"), []byte("A secret plan."), 0o600); err != nil {
 			t.Fatal(err)
@@ -482,20 +482,40 @@ func TestRevisionsAreAudited(t *testing.T) {
 		})
 		return nil
 	})
-	data, err := os.ReadFile(audit)
-	if err != nil || !strings.Contains(string(data), "company") {
-		t.Fatalf("audit %q %v", data, err)
+	data := auditRecords(t, audit)
+	if !strings.Contains(data, "company") {
+		t.Fatalf("audit %q", data)
 	}
-	if strings.Contains(string(data), "secret plan") || strings.Contains(string(data), "We are Acme") {
+	if strings.Contains(data, "secret plan") || strings.Contains(data, "We are Acme") {
 		t.Error("the audit holds the instructions' text")
 	}
+}
+
+// auditRecords are the records of the trail at path, its chain checked
+// (22/11: SQLite, pure Go, by default).
+func auditRecords(t *testing.T, path string) string {
+	t.Helper()
+	logger, err := argus.NewAuditLogger(argus.AuditConfig{Enabled: true, OutputFile: path, MinLevel: argus.AuditInfo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = logger.Close() }()
+	if err := logger.VerifyAuditChain(); err != nil {
+		t.Fatalf("the chain: %v", err)
+	}
+	events, err := logger.Query(argus.AuditEventFilter{})
+	if err != nil || len(events) == 0 {
+		t.Fatalf("%d records %v", len(events), err)
+	}
+	data, _ := json.Marshal(events)
+	return string(data)
 }
 
 func TestNoAudit(t *testing.T) {
 	h := newHarness(t, "")
 	path := writeConfig(t, h.dir, "no_audit: true\n")
 	loaded(t, h.c, nil, func(*orpheus.Context) error { return nil })
-	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "audit.jsonl")); err == nil {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "audit.db")); err == nil {
 		t.Error("an audit file with no_audit")
 	}
 }
