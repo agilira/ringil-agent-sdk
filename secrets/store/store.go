@@ -157,7 +157,9 @@ type Cache struct {
 // Store is the store of c, opened on its first use; base is the host's
 // first resolver, as now.
 func (k *Cache) Store(ctx context.Context, c Config, base secrets.Resolver) (secrets.Store, error) {
-	k.base.Store(&base)
+	if base != nil {
+		k.base.Store(&base)
+	}
 	if c.Kind == "" {
 		return nil, nil
 	}
@@ -207,7 +209,7 @@ type latest struct{ k *Cache }
 
 func (l latest) Lookup(ctx context.Context, name string) (string, bool, error) {
 	base := l.k.base.Load()
-	if base == nil {
+	if base == nil || *base == nil {
 		return "", false, nil
 	}
 	return (*base).Lookup(ctx, name)

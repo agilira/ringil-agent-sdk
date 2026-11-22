@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agilira/go-errors"
+
 	agent "github.com/agilira/ringil-agent-sdk"
 )
 
@@ -157,4 +159,18 @@ func FuzzDecodeStream(f *testing.F) {
 			t.Fatal("no response and no error")
 		}
 	})
+}
+
+func TestSecurityIssuerMustBeHTTPS(t *testing.T) {
+	l := Login{Issuer: "http://auth.example.com", Show: func(Prompt) error { return nil }}
+	if _, err := l.Browser(bg); !errors.HasCode(err, ErrSignIn) {
+		t.Fatalf("Browser: %v", err)
+	}
+	if _, err := l.Device(bg); !errors.HasCode(err, ErrSignIn) {
+		t.Fatalf("Device: %v", err)
+	}
+	s := &Session{Store: &memStore{t: Tokens{Access: "a", Refresh: "r", Account: "acct"}, ok: true}, Issuer: "http://auth.example.com"}
+	if _, err := s.Renew(bg, Tokens{Access: "a"}); err == nil {
+		t.Fatal("Session.Renew accepted plain http issuer")
+	}
 }

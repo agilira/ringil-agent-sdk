@@ -66,11 +66,12 @@ func (m *memStore) Delete(context.Context) error {
 // issuer is a fake auth.openai.com: it issues tokens numbered by refresh.
 type issuer struct {
 	*httptest.Server
-	refreshes atomic.Int32
-	revoked   atomic.Int32
-	refuse    atomic.Value // a refresh error code to answer, or ""
-	pending   atomic.Int32 // device polls answered 403 before success
-	lastForm  atomic.Value
+	refreshes   atomic.Int32
+	revoked     atomic.Int32
+	refuse      atomic.Value // a refresh error code to answer, or ""
+	pending     atomic.Int32 // device polls answered 403 before success
+	lastForm    atomic.Value
+	lastRevoked atomic.Value
 }
 
 func newIssuer(t *testing.T) *issuer {
@@ -78,7 +79,12 @@ func newIssuer(t *testing.T) *issuer {
 	is.refuse.Store("")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/token", is.token)
-	mux.HandleFunc("/oauth/revoke", func(w http.ResponseWriter, _ *http.Request) { is.revoked.Add(1) })
+	mux.HandleFunc("/oauth/revoke", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		is.lastRevoked.Store(body["token"])
+		is.revoked.Add(1)
+	})
 	mux.HandleFunc("/api/accounts/deviceauth/usercode", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"device_auth_id":"dev-1","user_code":"ABCD-1234","interval":"1"}`))
 	})

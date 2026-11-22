@@ -77,6 +77,14 @@ func (s *Session) Save(ctx context.Context, t Tokens) error {
 
 func (s *Session) login() Login { return Login{Client: s.Client, Issuer: s.Issuer} }
 
+func (s *Session) issuerURL() (string, error) {
+	u, err := s.login().issuerURL()
+	if err != nil {
+		return "", errors.Wrap(err, ErrTokens, err.Error())
+	}
+	return u, nil
+}
+
 // Token is a usable access token, refreshed when near its end.
 func (s *Session) Token(ctx context.Context) (Tokens, error) {
 	s.mu.Lock()
@@ -123,6 +131,9 @@ func (s *Session) renew(ctx context.Context, refused string) (Tokens, error) {
 		return Tokens{}, err
 	}
 	defer unlock()
+	if s.unsaved {
+		return s.refreshAndKeep(ctx, s.cur)
+	}
 	kept, ok, err := s.Store.Load(ctx)
 	switch {
 	case err != nil:
@@ -143,9 +154,6 @@ func (s *Session) renew(ctx context.Context, refused string) (Tokens, error) {
 // does not drop them: OpenAI rotated the refresh token, so they are the
 // only ones that work; they are used, and kept at the next call.
 func (s *Session) refreshAndKeep(ctx context.Context, kept Tokens) (Tokens, error) {
-	if s.unsaved && s.cur.Refresh != "" {
-		kept = s.cur // the store's refresh token is spent: ours is the valid one
-	}
 	fresh, err := s.refresh(ctx, kept)
 	if err != nil {
 		return Tokens{}, err
@@ -182,8 +190,12 @@ func (s *Session) refresh(ctx context.Context, prev Tokens) (Tokens, error) {
 	if prev.Refresh == "" {
 		return Tokens{}, errors.New(ErrSignedOut, "the sign-in cannot be refreshed: sign in again")
 	}
+	issuer, err := s.issuerURL()
+	if err != nil {
+		return Tokens{}, err
+	}
 	body, _ := json.Marshal(map[string]string{"grant_type": "refresh_token", "client_id": clientID, "refresh_token": prev.Refresh}) // #nosec G117 -- sent to the token endpoint only
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.login().issuer()+"/oauth/token", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer+"/oauth/token", bytes.NewReader(body))
 	if err != nil {
 		return Tokens{}, errors.Wrap(err, ErrTokens, "the refresh cannot be built")
 	}
@@ -241,29 +253,43 @@ func (s *Session) Logout(ctx context.Context) (unrevoked, err error) {
 		return nil, err
 	}
 	defer unlock()
+	unrevoked, err = s.revokeActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.cur, s.unsaved = Tokens{}, false
+	return unrevoked, s.Store.Delete(ctx)
+}
+
+func (s *Session) revokeActive(ctx context.Context) (unrevoked, err error) {
+	if s.unsaved && s.cur.Refresh != "" {
+		return s.revoke(ctx, s.cur.Refresh), nil
+	}
 	kept, ok, err := s.Store.Load(ctx)
 	switch {
 	case errors.HasCode(err, ErrTokens):
-		unrevoked = errors.New(ErrTokens, "the kept sign-in was damaged")
+		return errors.New(ErrTokens, "the kept sign-in was damaged"), nil
 	case err != nil:
 		return nil, err
 	case !ok:
 		return nil, errors.New(ErrSignedOut, "not signed in to ChatGPT")
 	default:
-		unrevoked = s.revoke(ctx, kept.Refresh)
+		return s.revoke(ctx, kept.Refresh), nil
 	}
-	s.cur, s.unsaved = Tokens{}, false
-	return unrevoked, s.Store.Delete(ctx)
 }
 
 func (s *Session) revoke(ctx context.Context, refresh string) error {
 	if refresh == "" {
 		return errors.New(ErrTokens, "the sign-in had nothing to revoke")
 	}
+	issuer, err := s.issuerURL()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	body, _ := json.Marshal(map[string]string{"token": refresh, "token_type_hint": "refresh_token", "client_id": clientID})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.login().issuer()+"/oauth/revoke", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer+"/oauth/revoke", bytes.NewReader(body))
 	if err != nil {
 		return errors.Wrap(err, ErrTokens, "the revocation cannot be built")
 	}

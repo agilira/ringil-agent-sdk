@@ -110,6 +110,45 @@ func TestRenewAfterAFailedSaveUsesTheValidToken(t *testing.T) {
 	}
 }
 
+func TestRenewAfterAFailedSaveWithFreshStoredToken(t *testing.T) {
+	is := newIssuer(t)
+	s, mem := signedIn(t, is)
+	stale := mem.t
+	store := &failingSaves{memStore: mem}
+	store.n.Store(5)
+	s.Store = store
+	tok, err := s.Renew(bg, stale)
+	if err != nil || tok.Refresh != "refresh-1" {
+		t.Fatalf("first renew: %v %v", tok, err)
+	}
+	next, err := s.Renew(bg, tok)
+	if err != nil || next.Refresh != "refresh-2" {
+		t.Fatalf("second renew: %v %v", next, err)
+	}
+	if f := is.form(); f["refresh_token"] != "refresh-1" {
+		t.Fatalf("refreshed with %q", f["refresh_token"])
+	}
+}
+
+func TestLogoutAfterAFailedSaveRevokesActiveToken(t *testing.T) {
+	is := newIssuer(t)
+	s, mem := signedIn(t, is)
+	mem.t.Expires = time.Now().Add(time.Minute)
+	store := &failingSaves{memStore: mem}
+	store.n.Store(5)
+	s.Store = store
+	if _, err := s.Token(bg); err != nil {
+		t.Fatal(err)
+	}
+	unrevoked, err := s.Logout(bg)
+	if unrevoked != nil || err != nil {
+		t.Fatalf("logout: %v %v", unrevoked, err)
+	}
+	if got, _ := is.lastRevoked.Load().(string); got != "refresh-1" || mem.ok {
+		t.Fatalf("revoked %q ok %v", got, mem.ok)
+	}
+}
+
 // Audit 22/11: login and logout did not take the lock, so a refresh of
 // another process could undo them.
 func TestSaveAndLogoutTakeTheLock(t *testing.T) {
