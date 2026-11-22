@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/agilira/argus"
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
 	"github.com/agilira/ringil-agent-sdk/channel"
@@ -224,6 +225,11 @@ func (f *config) checkPaths() error {
 	for _, p := range paths {
 		if strings.ContainsAny(p, "*?[") {
 			return errors.New(ErrUsage, "an instructions file's path cannot hold * ? or [: "+p)
+		}
+		if p != "" {
+			if err := argus.ValidateSecurePath(p); err != nil {
+				return errors.New(ErrUsage, "an instructions file's path is not one ringil reads: "+p)
+			}
 		}
 	}
 	for _, a := range []audioConfig{f.Transcribe, f.Speech} {

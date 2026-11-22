@@ -111,6 +111,9 @@ func New(ctx context.Context, cfg Config) (*Channel, error) {
 // Name is "telegram".
 func (c *Channel) Name() string { return "telegram" }
 
+// Username is the bot's @name, without the @ (from getMe).
+func (c *Channel) Username() string { return c.bot.Username }
+
 // Receive returns the next message or button pressed. The photos of an
 // album, which Telegram sends one by one, come as one message.
 func (c *Channel) Receive(ctx context.Context) (channel.Message, error) {
