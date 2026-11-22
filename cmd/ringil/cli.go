@@ -327,7 +327,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		return nil, err
 	}
 	c.finalTools = tools
-	system, instructions, err := c.prompts(ctx, cat)
+	system, instructions, err := c.prompts(cat)
 	if err != nil {
 		return nil, err
 	}
@@ -352,12 +352,12 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 
 // prompts are the run's system prompt (the base, with what a chat, an
 // /automate run and the skills add) and the operator's instructions.
-func (c *cli) prompts(ctx *orpheus.Context, cat *skills.Catalog) (system, instructions string, err error) {
+func (c *cli) prompts(cat *skills.Catalog) (system, instructions string, err error) {
 	system = c.automateSystem(c.chatSystem(agent.DefaultSystem))
 	if cat != nil {
 		system += cat.Instructions()
 	}
-	instructions, err = c.instructions(ctx)
+	instructions, err = c.instructions()
 	return system, instructions, err
 }
 
@@ -522,11 +522,15 @@ func (c *cli) environment() string {
 	var b strings.Builder
 	b.WriteString("<environment>\n")
 	if cwd, err := c.cwd(); err == nil {
-		b.WriteString("Working directory: " + cwd + "\n")
+		b.WriteString("Working directory: ")
+		b.WriteString(cwd)
+		b.WriteByte('\n')
 	}
-	b.WriteString("Platform: " + runtime.GOOS + "\n")
-	b.WriteString("Today's date: " + time.Now().Format("2006-01-02 (Monday)") + "\n")
-	b.WriteString("</environment>")
+	b.WriteString("Platform: ")
+	b.WriteString(runtime.GOOS)
+	b.WriteString("\nToday's date: ")
+	b.WriteString(time.Now().Format("2006-01-02 (Monday)"))
+	b.WriteString("\n</environment>")
 	return b.String()
 }
 

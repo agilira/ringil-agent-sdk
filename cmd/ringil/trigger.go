@@ -151,7 +151,7 @@ func (c *cli) cmdTriggerAdd(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := c.checkTriggerProfile(ctx, t.Profile); err != nil {
+	if err := c.checkTriggerProfile(t.Profile); err != nil {
 		return err
 	}
 	store, err := c.triggerStore()
@@ -216,7 +216,7 @@ func kindFromFlags(ctx *orpheus.Context) trigger.Kind {
 	return trigger.Time
 }
 
-func (c *cli) checkTriggerProfile(ctx *orpheus.Context, profile string) error {
+func (c *cli) checkTriggerProfile(profile string) error {
 	if profile == "" || profile == "default" {
 		return nil
 	}

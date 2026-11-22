@@ -411,3 +411,25 @@ func TestSetupKeepsNumericOwnersAndRefusesAliases(t *testing.T) {
 		t.Fatalf("the file changed: %q", data)
 	}
 }
+
+func TestSetupFailedWriteKeepsOAuthToken(t *testing.T) {
+	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "n", "y", "ck_right"}
+	h, _ := setupHarness(t, answers, map[string]string{})
+	h.c.ollama = "http://127.0.0.1:1/v1"
+	h.c.checkComposio = func(context.Context, string) (int, error) { return 4, nil }
+	const aliased = "x: &b http://old.example/v1\nbase: *b\nmcp_servers:\n  composio:\n    url: https://connect.composio.dev/mcp\n    oauth: {}\n"
+	writeProfiles(t, h.dir, aliased)
+	token := filepath.Join(h.dir, "ringil", "oauth", "composio.json")
+	if err := os.MkdirAll(filepath.Dir(token), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(token, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.run("setup"); code == exitOK {
+		t.Fatalf("expected setup to fail on alias")
+	}
+	if _, err := os.Stat(token); err != nil {
+		t.Fatalf("oauth token deleted even though ringil.yaml did not write: %v", err)
+	}
+}

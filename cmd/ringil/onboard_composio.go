@@ -102,7 +102,7 @@ func (s *setup) composioSection(e *edit) {
 	at := "mcp_servers." + name
 	entry, _ := servers[name].(map[string]interface{})
 	if _, signedIn := entry["oauth"]; signedIn {
-		s.dropOAuthToken(name)
+		s.dropOAuth = name
 	}
 	for _, k := range []string{"oauth", "disabled", "command", "args", "env", "sandbox", "network", "mounts"} {
 		e.set(at+"."+k, nil)
@@ -118,10 +118,13 @@ func (s *setup) composioSection(e *edit) {
 }
 
 // dropOAuthToken removes the browser sign-in's token the key replaces,
-// where withOAuth keeps it.
-func (s *setup) dropOAuthToken(name string) {
+// where withOAuth keeps it, only after ringil.yaml has been written.
+func (s *setup) dropOAuthToken() {
+	if s.dropOAuth == "" {
+		return
+	}
 	if base, err := s.c.configDir(); err == nil {
-		_ = os.Remove(filepath.Join(base, "ringil", "oauth", name+".json")) // #nosec G104 -- none is fine
+		_ = os.Remove(filepath.Join(base, "ringil", "oauth", s.dropOAuth+".json")) // #nosec G104 -- none is fine
 	}
 }
 
