@@ -16,8 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agilira/go-errors"
+
 	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/channel/telegram"
+	"github.com/agilira/ringil-agent-sdk/mcp"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 	"github.com/agilira/ringil-agent-sdk/secrets/store"
@@ -149,7 +152,7 @@ func TestSetupKeepsTheRest(t *testing.T) {
 // then the chat starts with what it wrote.
 func TestFirstRunOffersTheSetup(t *testing.T) {
 	base := modelServer(t)
-	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", base, "y", "good", "1", "", "1", "1", "n", "/exit"},
+	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", base, "y", "good", "1", "", "1", "1", "n", "n", "/exit"},
 		map[string]string{}) // the passphrase is not in the environment: the chat goes on with the setup's (audit 22/11)
 	h.c.interactive = func() bool { return true }
 	if code := h.run(); code != exitOK {
@@ -272,5 +275,113 @@ func TestModelOrder(t *testing.T) {
 	}
 	if got := chatModels([]string{"gpt-6", "whisper-1", "tts-1", "text-embedding-3-small", "dall-e-3", "gpt-6-mini"}); strings.Join(got, " ") != "gpt-6 gpt-6-mini" {
 		t.Fatalf("%v", got)
+	}
+}
+
+// 22/11: Composio's consumer key is tried, a refused one asked again, and
+// kept in the store; ringil.yaml names it, and a browser sign-in left from
+// before gives way to the key.
+func TestSetupComposio(t *testing.T) {
+	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "4", "llama3", "", "1", "1", "n"}
+	h, _ := setupHarness(t, append(answers, "y", "ck_wrong", "ck_right"), map[string]string{})
+	h.c.ollama = "http://127.0.0.1:1/v1"
+	var tried []string
+	h.c.checkComposio = func(_ context.Context, key string) (int, error) {
+		tried = append(tried, key)
+		if key != "ck_right" {
+			return 0, errors.New(mcp.ErrRefused, "refused")
+		}
+		return 12, nil
+	}
+	writeProfiles(t, h.dir, "mcp_servers:\n  apps:\n    command: npx\n    args: [composio]\n    env: {K: v}\n    url: https://Connect.Composio.dev/mcp\n    oauth: {}\n    headers: {X-Consumer-Api-Key: ck_old, X-Other: keep}\n    tools: [COMPOSIO_SEARCH_TOOLS]\n    disabled: true\n")
+	token := filepath.Join(h.dir, "ringil", "oauth", "apps.json")
+	if err := os.MkdirAll(filepath.Dir(token), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(token, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.run("setup"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	// The entry already at Composio is updated, under its own name.
+	yamlHas(t, h.dir, []string{"apps:", "x-consumer-api-key", "${COMPOSIO_KEY}", "url: https://connect.composio.dev/mcp", "COMPOSIO_SEARCH_TOOLS", "X-Other: keep"},
+		[]string{"oauth", "disabled", "ck_", "X-Consumer-Api-Key", "command", "npx", "env", "composio:"})
+	if _, err := os.Stat(token); !os.IsNotExist(err) {
+		t.Errorf("the old sign-in's token stayed: %v", err)
+	}
+	if len(tried) != 2 || !strings.Contains(h.out.String()+h.err.String(), "12 tools") {
+		t.Fatalf("tried %v, said %s", tried, h.out)
+	}
+	if v := storedSecret(t, h.dir, composioKey); v != "ck_right" {
+		t.Fatalf("the key in the store: %q", v)
+	}
+}
+
+// Composio out of reach: the key is kept when the user says so.
+func TestSetupComposioUnreachable(t *testing.T) {
+	answers := []string{"2", "frase lunga davvero", "frase lunga davvero", "4", "llama3", "", "1", "1", "n"}
+	h2, _ := setupHarness(t, append(answers, "y", "ck_later", "y"), map[string]string{})
+	h2.c.ollama = "http://127.0.0.1:1/v1"
+	h2.c.checkComposio = func(context.Context, string) (int, error) { return 0, errors.New(mcp.ErrConnect, "no network") }
+	if code := h2.run("setup"); code != exitOK {
+		t.Fatalf("unreachable: %s", h2.err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(h2.dir, "ringil", "ringil.yaml")); !strings.Contains(string(data), "${COMPOSIO_KEY}") {
+		t.Fatalf("unreachable, kept:\n%s", data)
+	}
+}
+
+// storedSecret reads a secret back from the setup's encrypted file.
+func storedSecret(t *testing.T, dir, name string) string {
+	t.Helper()
+	keys, err := store.Open(context.Background(), store.Config{Kind: store.File, File: filepath.Join(dir, "ringil", "secrets.enc"), PassphraseEnv: "P"}, secrets.Map{"P": "frase lunga davvero"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = keys.(interface{ Close() error }).Close() }()
+	v, _, err := keys.Lookup(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// yamlHas: ringil.yaml holds every want and none of not.
+func yamlHas(t *testing.T, dir string, want, not []string) {
+	t.Helper()
+	data, _ := os.ReadFile(filepath.Join(dir, "ringil", "ringil.yaml"))
+	for _, w := range want {
+		if !strings.Contains(string(data), w) {
+			t.Errorf("lacks %q:\n%s", w, data)
+		}
+	}
+	for _, n := range not {
+		if strings.Contains(string(data), n) {
+			t.Errorf("holds %q:\n%s", n, data)
+		}
+	}
+}
+
+// Audit 22/11: Composio is optional, so giving up on it does not stop the
+// setup: three refused keys, or a key not kept, skip it.
+func TestSetupComposioSkipped(t *testing.T) {
+	answers := []string{"2", "frase lunga davvero", "frase lunga davvero", "4", "llama3", "", "1", "1", "n"}
+	for name, more := range map[string][]string{
+		"refused thrice": {"y", "ck_a", "ck_b", "ck_c"},
+		"not kept":       {"y", "ck_a", "n"},
+	} {
+		h, _ := setupHarness(t, append(answers, more...), map[string]string{})
+		h.c.ollama = "http://127.0.0.1:1/v1"
+		h.c.checkComposio = func(context.Context, string) (int, error) {
+			if name == "not kept" {
+				return 0, errors.New(mcp.ErrConnect, "no network")
+			}
+			return 0, errors.New(mcp.ErrRefused, "refused")
+		}
+		if code := h.run("setup"); code != exitOK {
+			t.Fatalf("%s: exit %d: %s", name, code, h.err)
+		}
+		yamlHas(t, h.dir, []string{"model: llama3"}, []string{"mcp_servers", "COMPOSIO"})
 	}
 }

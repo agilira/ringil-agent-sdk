@@ -150,6 +150,8 @@ type cli struct {
 	asker    orpheus.Prompter // the setup's questions; see prompter
 	// interactive says a person is at the terminal (tests set it).
 	interactive func() bool
+	// checkComposio tries a Composio key in the setup; tests replace it.
+	checkComposio func(ctx context.Context, key string) (int, error)
 	// ollama replaces Ollama's local address in the setup (tests).
 	ollama string
 	// newTelegram makes the setup's bot; tests replace it.
@@ -167,8 +169,9 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
-		configDir: os.UserConfigDir,
-		secrets:   &store.Cache{},
+		configDir:     os.UserConfigDir,
+		secrets:       &store.Cache{},
+		checkComposio: connectComposio,
 		interactive: func() bool {
 			f, ok := in.(*os.File)
 			return ok && term.IsTerminal(int(f.Fd())) // #nosec G115 -- a file descriptor

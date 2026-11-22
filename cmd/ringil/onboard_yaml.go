@@ -91,6 +91,9 @@ func (s *setup) mergeSections(root *yaml.Node) {
 	} else {
 		merge(mapAt(root, "embedder"), "kind", s.embedder.Kind, "url", s.embedder.URL, "model", s.embedder.Model)
 	}
+	if s.composio {
+		s.composioSection(mapAt(root, "mcp_servers"))
+	}
 	if s.allowHTTP {
 		setKey(root, "allow_http", &yaml.Node{Kind: yaml.ScalarNode, Value: "true", Tag: "!!bool"})
 	}
