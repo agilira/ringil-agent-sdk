@@ -12,6 +12,7 @@ require (
 	github.com/agilira/ringil-agent-sdk/memory/sqlite v0.0.0
 	github.com/agilira/ringil-agent-sdk/provider/anthropic v0.0.0
 	github.com/agilira/ringil-agent-sdk/secrets/store v0.0.0
+	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/term v0.48.0
 )
 
@@ -49,7 +50,6 @@ require (
 	go.opentelemetry.io/otel v1.33.0 // indirect
 	go.opentelemetry.io/otel/metric v1.33.0 // indirect
 	go.opentelemetry.io/otel/trace v1.33.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect

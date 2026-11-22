@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/agilira/argus"
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
 	"golang.org/x/term"
@@ -52,6 +53,11 @@ type vaultConfig struct {
 func (s secretsConfig) check() error {
 	if s.Store == store.File && s.File != "" && !filepath.IsAbs(s.File) {
 		return errors.New(ErrUsage, "secrets.file is an absolute path")
+	}
+	if s.Store == store.File && s.File != "" {
+		if err := argus.ValidateSecurePath(s.File); err != nil {
+			return errors.New(ErrUsage, "secrets.file is not a path ringil keeps keys in: "+s.File)
+		}
 	}
 	here, _ := filepath.Abs(".") // stands for the config directory: absolute on every system
 	if err := s.store(here).Check(); err != nil {

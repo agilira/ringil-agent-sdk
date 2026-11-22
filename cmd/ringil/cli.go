@@ -26,9 +26,11 @@ import (
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
+	"golang.org/x/term"
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/channel"
+	"github.com/agilira/ringil-agent-sdk/channel/telegram"
 	"github.com/agilira/ringil-agent-sdk/delegate"
 	"github.com/agilira/ringil-agent-sdk/later"
 	"github.com/agilira/ringil-agent-sdk/memory"
@@ -143,8 +145,15 @@ type cli struct {
 	role *profile
 	// settings is ringil.yaml in force (shared by serve's runs);
 	// configEvery how soon an edit is seen (zero: 2s; tests shorten it).
-	settings    *settings
-	secrets     *store.Cache // the configured store, shared with serve's runs
+	settings *settings
+	secrets  *store.Cache     // the configured store, shared with serve's runs
+	asker    orpheus.Prompter // the setup's questions; see prompter
+	// interactive says a person is at the terminal (tests set it).
+	interactive func() bool
+	// ollama replaces Ollama's local address in the setup (tests).
+	ollama string
+	// newTelegram makes the setup's bot; tests replace it.
+	newTelegram func(ctx context.Context, cfg telegram.Config) (telegramBot, error)
 	configEvery time.Duration
 	// log is serve's log; each run's lines name its configuration.
 	log *slog.Logger
@@ -158,8 +167,15 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		turnContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(ctx, os.Interrupt)
 		},
-		configDir:  os.UserConfigDir,
-		secrets:    &store.Cache{},
+		configDir: os.UserConfigDir,
+		secrets:   &store.Cache{},
+		interactive: func() bool {
+			f, ok := in.(*os.File)
+			return ok && term.IsTerminal(int(f.Fd())) // #nosec G115 -- a file descriptor
+		},
+		newTelegram: func(ctx context.Context, cfg telegram.Config) (telegramBot, error) {
+			return telegram.New(ctx, cfg)
+		},
 		triggers:   &atomic.Pointer[trigger.Runner]{},
 		bridge:     &atomic.Pointer[channel.Bridge]{},
 		newSandbox: sandbox.New,
@@ -194,13 +210,14 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalBoolFlag("summarize", "", false, "summarize left-out turns with the model instead of dropping them (costs a call)").
 		AddGlobalFlag("session", "S", "", "save the conversation under this name and resume it next time").
 		AddGlobalFlag("sessions-dir", "", "", "where sessions are stored (default: the user config directory)")
-	app.AddCommand(withWorkspace(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.withConfig(c.cmdChat))))
+	app.AddCommand(withWorkspace(orpheus.NewCommand("chat", "Talk to the agent; /reset clears the history, /exit quits").SetHandler(c.firstRun(c.withConfig(c.cmdChat)))))
 	app.AddCommand(withWorkspace(orpheus.NewCommand("serve", "Answer a local HTTP API (loopback only, bearer token) until Ctrl-C; each run gets its own agent; set up in the serve section of ringil.yaml").SetHandler(c.withConfig(c.cmdServe))))
 	app.AddCommand(withWorkspace(orpheus.NewCommand("run", "Send one prompt and print the answer").SetHandler(c.withConfig(c.cmdRun)).
 		SetUsage("run <prompt...>")))
 	app.AddCommand(orpheus.NewCommand("sessions", "List saved sessions").SetHandler(c.withConfig(c.cmdSessions)).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete a saved session").SetHandler(c.withConfig(c.cmdSessionRemove)).
 			SetUsage("sessions rm <name...>")))
+	app.AddCommand(orpheus.NewCommand("setup", "Set ringil up, with a few questions: where keys are kept, the model, your system prompt, the memory, a Telegram bot").SetHandler(c.cmdSetup))
 	app.AddCommand(orpheus.NewCommand("secrets", "Keep keys in the store of ringil.yaml's secrets section (keyring, vault or file)").
 		AddSubcommand(orpheus.NewCommand("set", "Save a secret; its value is read from standard input, without echo at a terminal").SetHandler(c.withConfig(c.cmdSecretsSet)).SetUsage("secrets set <NAME>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete a secret").SetHandler(c.withConfig(c.cmdSecretsRemove)).SetUsage("secrets rm <NAME>")))
