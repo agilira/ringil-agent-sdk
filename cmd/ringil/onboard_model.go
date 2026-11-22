@@ -21,13 +21,14 @@ import (
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/internal/safehttp"
 	"github.com/agilira/ringil-agent-sdk/provider/anthropic"
+	"github.com/agilira/ringil-agent-sdk/provider/chatgpt"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
 )
 
 // providerChoice is one answer to "which models?".
 type providerChoice struct {
 	label   string
-	kind    string // anthropic or openai (compatible)
+	kind    string // anthropic, chatgpt or openai (compatible)
 	base    string // the endpoint; "" asks for it
 	keyName string // where its key is kept; "" for none
 	model   string // suggested when the list cannot be read
@@ -35,6 +36,7 @@ type providerChoice struct {
 
 var providerChoices = []providerChoice{
 	{label: "Anthropic (Claude)", kind: "anthropic", keyName: "ANTHROPIC_API_KEY", model: "claude-sonnet-5-5"},
+	{label: "ChatGPT, with your subscription (Plus, Pro, Business: no API key)", kind: providerChatGPT},
 	{label: "OpenAI", kind: "openai", base: "https://api.openai.com/v1", keyName: "OPENAI_API_KEY"},
 	{label: "OpenRouter (many providers' models)", kind: "openai", base: "https://openrouter.ai/api/v1", keyName: "OPENROUTER_API_KEY"},
 	{label: "Ollama on this machine (no key)", kind: "openai", base: ollamaBase},
@@ -134,6 +136,9 @@ const errKeyRefused errors.ErrorCode = "SETUP_KEY_REFUSED"
 
 // models lists the endpoint's models, newest names first.
 func (s *setup) models() ([]string, error) {
+	if s.provider.kind == providerChatGPT {
+		return s.chatgptModels()
+	}
 	ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 	defer cancel()
 	req, err := s.modelsRequest(ctx)
@@ -274,8 +279,11 @@ func (s *setup) tryModel() error {
 
 func (s *setup) newProvider() (agent.Provider, error) {
 	key := func(context.Context) (string, error) { return s.key, nil }
-	if s.provider.kind == "anthropic" {
+	switch s.provider.kind {
+	case "anthropic":
 		return s.c.newAnthropic(anthropic.Config{Model: s.model, KeyFunc: key})
+	case providerChatGPT:
+		return chatgpt.New(chatgpt.Config{Model: s.model, Session: s.session, BaseURL: s.c.chatgptBase})
 	}
 	return s.c.newProvider(openai.Config{BaseURL: s.baseURL, Model: s.model, KeyFunc: key, AllowHTTP: s.allowHTTP})
 }

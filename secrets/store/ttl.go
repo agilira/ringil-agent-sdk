@@ -78,3 +78,33 @@ func (t *ttlStore) Close() error {
 	}
 	return nil
 }
+
+// Fresh is s read without the cache of a Cache's store: for a secret
+// another process may change, read again under a lock shared with it (a
+// rotated sign-in). What it reads refreshes the cache; writes go through
+// it as usual. A store not from a Cache is returned as it is.
+func Fresh(s secrets.Store) secrets.Store {
+	if t, ok := s.(*ttlStore); ok {
+		return freshStore{t}
+	}
+	return s
+}
+
+type freshStore struct{ t *ttlStore }
+
+func (f freshStore) Lookup(ctx context.Context, name string) (string, bool, error) {
+	value, found, err := f.t.Store.Lookup(ctx, name)
+	if err != nil {
+		return "", false, err
+	}
+	f.t.mu.Lock()
+	f.t.kept[name] = answer{value: value, found: found, at: time.Now()}
+	f.t.mu.Unlock()
+	return value, found, nil
+}
+
+func (f freshStore) Set(ctx context.Context, name, value string) error {
+	return f.t.Set(ctx, name, value)
+}
+
+func (f freshStore) Delete(ctx context.Context, name string) error { return f.t.Delete(ctx, name) }

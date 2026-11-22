@@ -201,15 +201,6 @@ func TestRetryAfterHeader(t *testing.T) {
 	}
 }
 
-func TestRetryAfterIgnoresGarbage(t *testing.T) {
-	for _, value := range []string{"", "soon", "-5", "Mon, 01 Jan 2001 00:00:00 GMT"} {
-		resp := &http.Response{Header: http.Header{"Retry-After": {value}}}
-		if got := retryAfter(resp); got != 0 {
-			t.Errorf("retryAfter(%q) = %v", value, got)
-		}
-	}
-}
-
 func TestRedirectsAreNotFollowed(t *testing.T) {
 	var leaked atomic.Bool
 	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { leaked.Store(true) }))
@@ -297,18 +288,6 @@ func TestNoAnswerIsInterrupted(t *testing.T) {
 	}
 }
 
-func TestStallDisabled(t *testing.T) {
-	s := newStallReader(strings.NewReader("x"), -1, nil)
-	defer s.stop()
-	if s.timer != nil {
-		t.Fatal("negative stall timeout still armed a timer")
-	}
-	buf := make([]byte, 4)
-	if n, err := s.Read(buf); err != nil || n != 1 {
-		t.Fatal("read through the stall reader failed")
-	}
-}
-
 func TestNilRequest(t *testing.T) {
 	p := mustNew(t, Config{BaseURL: "https://x.test", Model: "m"})
 	if _, err := p.Generate(context.Background(), nil, nil); !errors.HasCode(err, agent.ErrProviderInput) {
@@ -362,37 +341,6 @@ func TestCloseFailureMakesCallInterrupted(t *testing.T) {
 	resp = &http.Response{Body: brokenBody{strings.NewReader(`garbage`), stderrors.New("reset")}}
 	if _, err := p.read(resp, nil, func(error) {}); !errors.HasCode(err, agent.ErrProviderResponse) {
 		t.Fatalf("decode failure lost its code behind the close failure: %v", err)
-	}
-}
-
-func TestStatusErrorKeepsCodeWhenBodyFails(t *testing.T) {
-	for status, code := range map[int]errors.ErrorCode{401: agent.ErrProviderAuth, 503: agent.ErrProviderUnavailable, 418: agent.ErrProviderInput} {
-		resp := &http.Response{StatusCode: status, Header: http.Header{},
-			Body: brokenBody{io.MultiReader(strings.NewReader("{"), errReader{}), nil}}
-		if err := statusError(resp); !errors.HasCode(err, code) {
-			t.Errorf("status %d with broken body: %v", status, err)
-		}
-	}
-	resp := &http.Response{StatusCode: 401, Header: http.Header{}, Body: brokenBody{strings.NewReader("{}"), stderrors.New("reset")}}
-	if err := withSecondary(statusError(resp), closeError(resp)); !errors.HasCode(err, agent.ErrProviderAuth) {
-		t.Fatalf("close failure hid the status code: %v", err)
-	}
-}
-
-func TestWithSecondary(t *testing.T) {
-	primary := errors.New(agent.ErrProviderAuth, "x")
-	second := stderrors.New("second")
-	if withSecondary(primary, nil) != error(primary) || withSecondary(nil, second) != second {
-		t.Fatal("nil cases")
-	}
-	got := withSecondary(primary, second)
-	if !errors.HasCode(got, agent.ErrProviderAuth) || primary.Context["secondary"] != "second" {
-		t.Fatalf("coded primary: %v %v", got, primary.Context)
-	}
-	plain := stderrors.New("plain")
-	joined := withSecondary(plain, second)
-	if !stderrors.Is(joined, plain) || !stderrors.Is(joined, second) {
-		t.Fatalf("plain primary: %v", joined)
 	}
 }
 

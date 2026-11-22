@@ -16,6 +16,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/internal/httpcall"
 )
 
 // maxBody bounds a non-streamed response. It protects memory against a
@@ -36,21 +37,21 @@ func (p *provider) Generate(ctx context.Context, req *agent.Request, sink agent.
 	defer cancel(nil)
 	resp, err := p.send(ctx, body, cancel)
 	if err != nil {
-		return finish(ctx, nil, err)
+		return httpcall.Finish(ctx, nil, err)
 	}
 	out, err := p.read(resp, sink, cancel)
 	if out != nil {
 		p.stamp(&out.Message)
 	}
-	return finish(ctx, out, err)
+	return httpcall.Finish(ctx, out, err)
 }
 
 // read decodes the body and closes it. A close error is not dropped: it
 // means the connection broke, so the call counts as interrupted even when
 // the body looked complete.
 func (p *provider) read(resp *http.Response, sink agent.TextSink, cancel context.CancelCauseFunc) (*agent.Response, error) {
-	reader := newStallReader(resp.Body, p.stall, cancel)
-	defer reader.stop()
+	reader := httpcall.NewStallReader(resp.Body, p.stall, cancel)
+	defer reader.Stop()
 	var out *agent.Response
 	var err error
 	if sink == nil {
@@ -59,7 +60,7 @@ func (p *provider) read(resp *http.Response, sink agent.TextSink, cancel context
 		out, err = decodeStream(reader, sink)
 	}
 	if closeErr := resp.Body.Close(); closeErr != nil {
-		return nil, withSecondary(err, interrupted(closeErr))
+		return nil, httpcall.WithSecondary(err, httpcall.Interrupted(closeErr))
 	}
 	return out, err
 }
@@ -77,15 +78,15 @@ func (p *provider) send(ctx context.Context, body []byte, cancel context.CancelC
 	}
 	p.setHeaders(httpReq, key)
 	if p.stall > 0 {
-		t := time.AfterFunc(p.stall, func() { cancel(errStalled) })
+		t := time.AfterFunc(p.stall, func() { cancel(httpcall.ErrStalled) })
 		defer t.Stop()
 	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, networkError(ctx, err)
+		return nil, httpcall.NetworkError(ctx, err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, withSecondary(statusError(resp), closeError(resp))
+		return nil, httpcall.WithSecondary(httpcall.StatusError(resp), httpcall.CloseError(resp))
 	}
 	return resp, nil
 }
@@ -99,35 +100,6 @@ func (p *provider) setHeaders(req *http.Request, key string) {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-}
-
-// finish turns a body error into the right classification: the caller's
-// cancellation stays a context error, a stall becomes an interruption.
-func finish(ctx context.Context, resp *agent.Response, err error) (*agent.Response, error) {
-	if err == nil {
-		return resp, nil
-	}
-	if context.Cause(ctx) == errStalled {
-		return nil, errors.New(agent.ErrProviderInterrupted, "response stalled").AsRetryable()
-	}
-	if ctxErr := context.Cause(ctx); ctxErr != nil {
-		return nil, ctxErr
-	}
-	return nil, err
-}
-
-func closeError(resp *http.Response) error {
-	if err := resp.Body.Close(); err != nil {
-		return interrupted(err)
-	}
-	return nil
-}
-
-func networkError(ctx context.Context, err error) error {
-	if ctxErr := context.Cause(ctx); ctxErr != nil {
-		return ctxErr
-	}
-	return errors.Wrap(err, agent.ErrProviderUnavailable, "request failed before a response").AsRetryable()
 }
 
 type wireResponse struct {
@@ -145,7 +117,7 @@ type wireResponse struct {
 func decodeBody(r io.Reader) (*agent.Response, error) {
 	data, err := io.ReadAll(io.LimitReader(r, maxBody+1))
 	if err != nil {
-		return nil, interrupted(err)
+		return nil, httpcall.Interrupted(err)
 	}
 	if len(data) > maxBody {
 		return nil, errors.New(agent.ErrProviderResponse, "response body exceeds the size bound")
@@ -182,41 +154,4 @@ func parseBody(data []byte) (*agent.Response, error) {
 		Usage:   decodeUsage(wire.Usage),
 		Stop:    decodeStop(choice.FinishReason, len(calls)),
 	}, nil
-}
-
-func interrupted(err error) error {
-	return errors.Wrap(err, agent.ErrProviderInterrupted, "response body was cut").AsRetryable()
-}
-
-// stallReader cancels the request when the body stays silent too long. A
-// stalled TCP connection otherwise blocks forever: the server is alive enough
-// to keep it open and never sends another byte.
-type stallReader struct {
-	r     io.Reader
-	timer *time.Timer
-	d     time.Duration
-}
-
-var errStalled = errors.New(agent.ErrProviderInterrupted, "response stalled")
-
-func newStallReader(r io.Reader, d time.Duration, cancel context.CancelCauseFunc) *stallReader {
-	s := &stallReader{r: r, d: d}
-	if d > 0 {
-		s.timer = time.AfterFunc(d, func() { cancel(errStalled) })
-	}
-	return s
-}
-
-func (s *stallReader) Read(b []byte) (int, error) {
-	n, err := s.r.Read(b)
-	if n > 0 && s.timer != nil {
-		s.timer.Reset(s.d)
-	}
-	return n, err
-}
-
-func (s *stallReader) stop() {
-	if s.timer != nil {
-		s.timer.Stop()
-	}
 }

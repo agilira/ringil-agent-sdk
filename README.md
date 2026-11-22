@@ -143,6 +143,32 @@ profilo con `provider: anthropic` è un endpoint a sé: usa solo la sua chiave. 
 non ha modelli di embedding: per la memoria per significato, `embedder` con `kind: ollama`.
 `make live-anthropic` prova il provider con `claude-haiku-5-5`.
 
+`provider/chatgpt` usa i modelli di un abbonamento ChatGPT (Plus, Pro, Business) al posto
+di una chiave API, con lo stesso accesso che usa Codex: OpenAI permette agli agenti di
+terzi di usare l'abbonamento. L'utente accede una volta, dal browser (`Login.Browser`) o
+con un codice da digitare su un altro dispositivo, per i server e le sessioni SSH
+(`Login.Device`). I token vanno in uno store dei segreti (`SecretStore`), mai in un file di
+impostazioni. Una `Session` li rinnova cinque minuti prima della scadenza: OpenAI ruota il
+refresh token a ogni rinnovo e rifiuta quello vecchio, quindi i processi che condividono lo
+store (un `serve` e un terminale) rinnovano uno alla volta (`FileLock`) e rileggono lo
+store prima di farlo. `Logout` revoca l'accesso presso OpenAI e lo dimentica anche se la
+revoca non arriva. Il provider parla la Responses API del backend di ChatGPT, sempre in
+streaming e senza conservare nulla presso OpenAI (`store: false`): il ragionamento torna
+cifrato e viene rimandato con la conversazione. `Models` elenca i modelli
+dell'abbonamento; `ReasoningEffort` (low ... xhigh) regola quanto pensano.
+
+```go
+s := &chatgpt.Session{Store: chatgpt.SecretStore(store, "CHATGPT_LOGIN"), Lock: chatgpt.FileLock(dir, "chatgpt.lock")}
+tok, err := chatgpt.Login{Show: func(p chatgpt.Prompt) error { fmt.Println(p.URL, p.Code); return nil }}.Browser(ctx)
+// ... s.Store.Save(ctx, tok)
+p, err := chatgpt.New(chatgpt.Config{Model: "gpt-5.6-luna", Session: s})
+```
+
+Nella CLI: `ringil login chatgpt` (`--device` senza browser), poi `provider: chatgpt` e
+`model:` in `ringil.yaml`, oppure la voce «ChatGPT, with your subscription» di `ringil
+setup`, che fa accesso e scelta del modello. L'accesso sta nello store di `secrets:`;
+`ringil logout chatgpt` lo revoca. Anche ChatGPT non ha modelli di embedding.
+
 ## Tool
 
 Un tool è una funzione Go tipizzata; lo schema JSON viene generato dalla struct:

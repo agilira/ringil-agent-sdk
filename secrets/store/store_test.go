@@ -144,6 +144,32 @@ func TestAnswersAreKept(t *testing.T) {
 	}
 }
 
+// Audit 22/11: a sign-in rotated by another process was read from the
+// cache under the lock meant to see it. Fresh reads the store itself,
+// and its answer refreshes the cache.
+func TestFreshReadsTheStore(t *testing.T) {
+	ctx := context.Background()
+	backend := &countingStore{Map: secrets.Map{"LOGIN": "r1"}}
+	cached := newTTLStore(backend, time.Hour)
+	_, _, _ = cached.Lookup(ctx, "LOGIN")
+	backend.Map["LOGIN"] = "r2" // another process rotated it
+	if v, _, _ := cached.Lookup(ctx, "LOGIN"); v != "r1" {
+		t.Fatalf("the cache: %q", v)
+	}
+	if v, _, _ := Fresh(cached).Lookup(ctx, "LOGIN"); v != "r2" {
+		t.Fatalf("fresh: %q", v)
+	}
+	if v, _, _ := cached.Lookup(ctx, "LOGIN"); v != "r2" {
+		t.Fatalf("the cache after a fresh read: %q", v)
+	}
+	if err := Fresh(cached).Set(ctx, "LOGIN", "r3"); err != nil || backend.Map["LOGIN"] != "r3" {
+		t.Fatalf("set: %v", err)
+	}
+	if Fresh(backend) != secrets.Store(backend) {
+		t.Fatal("a store not from a cache was wrapped")
+	}
+}
+
 // Audit 22/11: a store opened by the first run kept its base, so a token
 // rotated in the host's env file was never seen. It reads the latest.
 func TestTheLatestBaseOpens(t *testing.T) {
