@@ -46,9 +46,9 @@ func TestSecurityOpenChecksFirst(t *testing.T) {
 
 func TestSecurityCacheNilBaseDoesNotPanic(t *testing.T) {
 	ctx := context.Background()
-	var cache Cache
-	t.Cleanup(func() { _ = cache.Close() })
 	c := Config{Kind: File, File: filepath.Join(t.TempDir(), "s.enc"), PassphraseEnv: "PASS"}
+	var cache Cache
+	t.Cleanup(func() { _ = cache.Close() }) // after TempDir: cleanups run last first, Windows keeps an open store's directory
 	s, err := cache.Store(ctx, c, nil)
 	if err != nil {
 		t.Fatal(err)
