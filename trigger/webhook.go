@@ -33,7 +33,8 @@ const (
 
 // replayWindow is how long a delivery is remembered, so that the same
 // request sent again (by an attacker who saw it, or a retry of one that
-// arrived) does not set the trigger off twice; maxSeen bounds them.
+// arrived) does not set the trigger off twice; maxSeen bounds them per
+// trigger, so one trigger's traffic cannot evict another's replay records.
 const (
 	replayWindow = 24 * time.Hour
 	maxSeen      = 4096
@@ -51,7 +52,7 @@ const (
 // was delivered is kept in memory: a restart forgets it. Serve it on a listener of its own,
 // behind TLS when it faces the internet.
 func (s *Runner) WebhookHandler() http.Handler {
-	h := &hooks{runner: s, seen: map[string]time.Time{}}
+	h := &hooks{runner: s, seen: map[string]map[string]time.Time{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+WebhookPath+"{name}", h.serve)
 	return mux
@@ -60,7 +61,7 @@ func (s *Runner) WebhookHandler() http.Handler {
 type hooks struct {
 	runner *Runner
 	mu     sync.Mutex
-	seen   map[string]time.Time // deliveries (name and MAC), by when
+	seen   map[string]map[string]time.Time // per trigger name: delivery MAC -> when
 }
 
 func (h *hooks) serve(w http.ResponseWriter, r *http.Request) {
@@ -84,14 +85,14 @@ func (h *hooks) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	key := name + "\x00" + hex.EncodeToString(mac) // the MAC, not its spelling: "AB" and "ab" are one delivery
-	if !h.first(key) {
+	macHex := hex.EncodeToString(mac) // the MAC, not its spelling: "AB" and "ab" are one delivery
+	if !h.first(name, macHex) {
 		http.Error(w, "delivered already: the same body is taken once a day", http.StatusConflict)
 		return
 	}
 	err = h.runner.Fire(name, string(body))
 	if err != nil {
-		h.forgetKey(key) // not run: a retry may run it
+		h.forgetKey(name, macHex) // not run: a retry may run it
 	}
 	answerFire(w, err)
 }
@@ -139,43 +140,53 @@ func (h *hooks) signed(name, sig string, body []byte) ([]byte, bool) {
 	return mac, hmac.Equal(mac, sum) && known
 }
 
-// first records a delivery; false when it was seen within the window.
-func (h *hooks) first(key string) bool {
+// first records a delivery of trigger name; false when its MAC was seen
+// within the window. Each trigger's deliveries are kept and bounded on their
+// own, so one trigger's traffic never evicts another's replay records.
+func (h *hooks) first(name, mac string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := time.Now()
-	if at, ok := h.seen[key]; ok && now.Sub(at) < replayWindow {
+	m := h.seen[name]
+	if m == nil {
+		m = map[string]time.Time{}
+		h.seen[name] = m
+	}
+	if at, ok := m[mac]; ok && now.Sub(at) < replayWindow {
 		return false
 	}
-	if len(h.seen) >= maxSeen {
-		h.forget(now)
+	if len(m) >= maxSeen {
+		forget(m, now)
 	}
-	h.seen[key] = now
+	m[mac] = now
 	return true
 }
 
-// forgetKey drops a delivery that did not run.
-func (h *hooks) forgetKey(key string) {
+// forgetKey drops a delivery of trigger name that did not run.
+func (h *hooks) forgetKey(name, mac string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.seen, key)
+	if m := h.seen[name]; m != nil {
+		delete(m, mac)
+	}
 }
 
-// forget drops the deliveries out of the window, then, if still full,
-// the oldest. h.mu held.
-func (h *hooks) forget(now time.Time) {
+// forget drops one trigger's deliveries out of the window, then, if still
+// full, its oldest. The caller holds h.mu. Operating on one trigger's own
+// set, it can never evict another trigger's replay protection.
+func forget(seen map[string]time.Time, now time.Time) {
 	oldest, at := "", now
-	for sig, t := range h.seen {
+	for mac, t := range seen {
 		if now.Sub(t) >= replayWindow {
-			delete(h.seen, sig)
+			delete(seen, mac)
 			continue
 		}
 		if t.Before(at) {
-			oldest, at = sig, t
+			oldest, at = mac, t
 		}
 	}
-	if len(h.seen) >= maxSeen {
-		delete(h.seen, oldest)
+	if len(seen) >= maxSeen {
+		delete(seen, oldest)
 	}
 }
 

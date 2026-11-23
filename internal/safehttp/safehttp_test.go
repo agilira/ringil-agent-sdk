@@ -85,6 +85,54 @@ func TestBodyBoundAndStreams(t *testing.T) {
 	}
 }
 
+// A body of exactly the bound is not mistaken for one that grew past it
+// (regression: the limit was off by one at the exact bound).
+func TestBodyBoundAllowsExactMax(t *testing.T) {
+	const max = 1024
+	for _, n := range []int{max - 1, max, max + 1} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, strings.Repeat("x", n))
+		}))
+		resp, err := Client(nil, nil, max, false).Get(srv.URL)
+		if err != nil {
+			srv.Close()
+			t.Fatal(err)
+		}
+		got, rerr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		srv.Close()
+		wantErr := n > max
+		if (rerr != nil) != wantErr {
+			t.Fatalf("n=%d: err=%v want error=%v", n, rerr, wantErr)
+		}
+		if !wantErr && len(got) != n {
+			t.Fatalf("n=%d: read %d bytes", n, len(got))
+		}
+		if wantErr && !errors.HasCode(rerr, ErrTooLarge) {
+			t.Fatalf("n=%d: want ErrTooLarge, got %v", n, rerr)
+		}
+	}
+}
+
+// A host headers-func error must not surface in the returned error's message
+// (it could carry a credential path or value); it stays in the chain only.
+func TestCredentialErrorNotInMessage(t *testing.T) {
+	const secret = "s3cr3t-token-/home/u/.config/key"
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	bad := func(context.Context) (http.Header, error) {
+		return nil, errors.New(ErrCredentials, secret)
+	}
+	resp, err := Client(nil, bad, 1<<20, false).Get(srv.URL)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("expected a credentials error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("the error message leaked the host func's text: %q", err.Error())
+	}
+}
+
 // A transport error is returned as it is, also by a client that streams.
 func TestTransportErrorWithStreams(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

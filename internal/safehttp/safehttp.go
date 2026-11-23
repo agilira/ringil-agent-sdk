@@ -116,7 +116,10 @@ func (t transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.headers != nil {
 		h, err := t.headers(req.Context())
 		if err != nil {
-			return nil, errors.Wrap(err, ErrCredentials, "cannot get the server's credentials: "+err.Error())
+			// The wrapped err stays in the chain; its text is not repeated in
+			// the message, which a host headers-func could fill with a
+			// credential path or value that then reaches logs and the model.
+			return nil, errors.Wrap(err, ErrCredentials, "cannot get the server's credentials")
 		}
 		req = req.Clone(req.Context())
 		for k, vs := range h {
@@ -129,28 +132,37 @@ func (t transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	stream := t.streams && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 	if t.max > 0 && !stream {
-		resp.Body = &limitedBody{rc: resp.Body, left: t.max}
+		resp.Body = &limitedBody{rc: resp.Body, max: t.max}
 	}
 	return resp, err
 }
 
 // limitedBody fails a response body that grows past its bound, instead of
-// letting a server fill the client's memory.
+// letting a server fill the client's memory. A body of exactly max bytes is
+// allowed whether its EOF arrives with the last bytes or in a read of its
+// own: the bound is decided on the count delivered, not on a read reaching
+// an exhausted budget.
 type limitedBody struct {
-	rc   io.ReadCloser
-	left int64
+	rc  io.ReadCloser
+	n   int64 // bytes delivered so far
+	max int64
 }
 
 func (b *limitedBody) Read(p []byte) (int, error) {
-	if b.left <= 0 {
+	if b.n > b.max {
 		return 0, errors.New(ErrTooLarge, "the server's response is too large")
 	}
-	if int64(len(p)) > b.left {
-		p = p[:b.left]
+	// Read at most one byte past max: enough to tell a max-sized body from a
+	// larger one, without buffering the whole overflow (overflow-safe near MaxInt64).
+	if left := b.max - b.n; int64(len(p))-1 > left {
+		p = p[:left+1]
 	}
-	n, err := b.rc.Read(p)
-	b.left -= int64(n)
-	return n, err
+	m, err := b.rc.Read(p)
+	b.n += int64(m)
+	if b.n > b.max {
+		return 0, errors.New(ErrTooLarge, "the server's response is too large")
+	}
+	return m, err
 }
 
 func (b *limitedBody) Close() error { return b.rc.Close() }

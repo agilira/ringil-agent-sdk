@@ -84,6 +84,14 @@ or outside the model; reports on them are welcome as improvements.
   command however it is quoted, prefixed or launched; what a command
   decodes and runs (`base64 -d | sh`) no rule sees. bash's boundary is the
   sandbox.
+- **A home granted whole hides its secrets where they lie.** A project
+  directory is walked at every command, so a secret file (`*.pem`,
+  `id_rsa`) is hidden from bash at any depth. A home, as the working
+  directory or a read grant, is not: walking one takes seconds per
+  command, so bash hides the secrets at its top and in their known places
+  (`.ssh`, `.aws`, `.gnupg`...), and a key file left deep inside it stays
+  readable to a command, though `read_file` refuses it. For the full
+  guarantee, work in a project directory.
 - **What the provider receives and keeps.** Whatever the model is shown
   goes to its provider.
 - **Content safety and moderation.**

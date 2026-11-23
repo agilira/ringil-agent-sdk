@@ -80,6 +80,11 @@ type Team struct {
 	Config agent.Config
 	// MaxReport is how much of a report the parent sees; default 32 KiB.
 	MaxReport int
+	// MaxBackground bounds background tasks running at once: a request to
+	// start another is refused until one reports, so a burst of
+	// background:true cannot spawn workers and provider calls without bound.
+	// Default DefaultMaxBackground.
+	MaxBackground int
 }
 
 type taskIn struct {
@@ -120,7 +125,10 @@ func (c *Crew) describe() string {
 	var b strings.Builder
 	b.WriteString("Hand a self-contained task to a sub-agent with a clean context; it returns one final report, numbered. Use it for searches and work that would fill your context; call it several times in one turn to run tasks in parallel, or with background to keep working while it runs (its report then arrives as a message). Write the task in full: the worker knows nothing of this conversation. To ask a finished worker more, use continue_task with its number: it keeps its context. Workers:")
 	for _, n := range c.names {
-		b.WriteString("\n- " + n + ": " + c.byName[n].Description)
+		b.WriteString("\n- ")
+		b.WriteString(n)
+		b.WriteString(": ")
+		b.WriteString(c.byName[n].Description)
 	}
 	return b.String()
 }
@@ -129,13 +137,12 @@ func (c *Crew) call(ctx context.Context, in taskIn) (string, error) {
 	if strings.TrimSpace(in.Task) == "" {
 		return "", agent.ToolError(agent.ErrToolInput, "The task is empty.")
 	}
+	if in.Background {
+		return c.callBackground(ctx, in)
+	}
 	t, err := c.task(ctx, in)
 	if err != nil {
 		return "", err
-	}
-	if in.Background {
-		c.start(ctx, t, in.Task)
-		return "Task " + strconv.Itoa(t.id) + " (" + t.worker.Name + ") started in the background; its report will arrive as a message. Go on with other work.", nil
 	}
 	defer c.release(t)
 	report, err := c.work(ctx, t, in.Task)
@@ -143,6 +150,19 @@ func (c *Crew) call(ctx context.Context, in taskIn) (string, error) {
 		return "", err
 	}
 	return "Task " + strconv.Itoa(t.id) + " (" + t.worker.Name + "):\n" + report, nil
+}
+
+func (c *Crew) callBackground(ctx context.Context, in taskIn) (string, error) {
+	if !c.reserve() {
+		return "", agent.ToolError(agent.ErrToolInput, "Too many tasks are running in the background (the limit is "+strconv.Itoa(c.maxBackground())+"); wait for one to report before starting another.")
+	}
+	t, err := c.task(ctx, in)
+	if err != nil {
+		c.unreserve()
+		return "", err
+	}
+	c.start(ctx, t, in.Task)
+	return "Task " + strconv.Itoa(t.id) + " (" + t.worker.Name + ") started in the background; its report will arrive as a message. Go on with other work.", nil
 }
 
 // task returns the task to run: a new one, or a finished one to continue.

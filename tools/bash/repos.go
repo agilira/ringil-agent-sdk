@@ -219,7 +219,9 @@ func (f *configFilter) setting(t string) {
 		f.out.WriteString(sectionHeader(f.cur))
 		f.written = f.cur
 	}
-	f.out.WriteString("\t" + t + "\n")
+	f.out.WriteByte('\t')
+	f.out.WriteString(t)
+	f.out.WriteByte('\n')
 }
 
 // parseSection reads [name "sub"] and the old [name.sub].

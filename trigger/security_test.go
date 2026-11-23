@@ -229,7 +229,7 @@ func FuzzWebhook(f *testing.F) {
 		},
 	}
 	handler := r.WebhookHandler()
-	h := &hooks{runner: r, seen: map[string]time.Time{}}
+	h := &hooks{runner: r, seen: map[string]map[string]time.Time{}}
 
 	f.Fuzz(func(t *testing.T, name, sig string, rawBody []byte) {
 		if len(name) > 128 || len(sig) > 256 || len(rawBody) > 8192 {
@@ -323,7 +323,7 @@ func assertWebhookPaths(t *testing.T, h http.Handler, body, valid string) {
 
 func assertWebhookReplayAndSeenClean(t *testing.T, r *Runner, h http.Handler, rec *recorder, body, valid, hexSig string) {
 	t.Helper()
-	isolated := &hooks{runner: r, seen: map[string]time.Time{}}
+	isolated := &hooks{runner: r, seen: map[string]map[string]time.Time{}}
 	for i := range 50 {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/hooks/deploy", strings.NewReader(strconv.Itoa(i)))

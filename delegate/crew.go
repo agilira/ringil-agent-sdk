@@ -58,6 +58,36 @@ type Finished struct {
 // keep bounds the finished tasks held for follow-ups; the oldest go first.
 const keep = 32
 
+// DefaultMaxBackground bounds background tasks running at once when the team
+// sets no MaxBackground: a burst of background:true then cannot spawn
+// workers and provider calls without bound.
+const DefaultMaxBackground = 16
+
+func (c *Crew) maxBackground() int {
+	if c.MaxBackground > 0 {
+		return c.MaxBackground
+	}
+	return DefaultMaxBackground
+}
+
+// reserve takes a background slot, or reports that none is free.
+func (c *Crew) reserve() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.running >= c.maxBackground() {
+		return false
+	}
+	c.running++
+	return true
+}
+
+// unreserve returns a background slot taken before task creation failed.
+func (c *Crew) unreserve() {
+	c.mu.Lock()
+	c.running--
+	c.mu.Unlock()
+}
+
 // NewCrew checks the team and prepares its crew.
 func NewCrew(t Team) (*Crew, error) {
 	c := &Crew{Team: t, byName: map[string]Worker{}, tasks: map[int]*task{}, ready: make(chan struct{}, 1)}
@@ -172,9 +202,7 @@ func (c *Crew) forget(t *task) {
 // start runs a task in the background. It outlives the tool call that
 // started it, not the crew.
 func (c *Crew) start(ctx context.Context, t *task, message string) {
-	c.mu.Lock()
-	c.running++
-	c.mu.Unlock()
+	// The caller has taken this task's slot with reserve; finish releases it.
 	bg := context.WithoutCancel(ctx)
 	c.bg.Add(1)
 	go func() {
