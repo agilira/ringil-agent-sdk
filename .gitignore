@@ -8,8 +8,4 @@ go.work.sum
 
 # Local credentials for live tests, never committed
 .env
-
-# CLI build output
-/cmd/ringil/ringil
-/cmd/ringil/ringil.exe
 docs/RIPARTENZA-*.md

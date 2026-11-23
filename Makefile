@@ -1,13 +1,13 @@
 # Go Makefile - AGILira Standard
 # Usage: make help
 
-.PHONY: help test race coverage fmt vet staticcheck errcheck gosec govulcheck gocyclo lint security check check-race deps clean tools fuzz bench live live-local live-nim chat live-anthropic
+.PHONY: help test race coverage fmt vet staticcheck errcheck gosec govulcheck gocyclo lint security check check-race deps clean tools fuzz bench live live-local live-nim live-anthropic
 .DEFAULT_GOAL := help
 
 # Variables
 TOOLS_DIR := $(HOME)/go/bin
-# The library and the CLI are separate modules; every check runs on both.
-MODULES := . ./mcp ./a2a ./memory/sqlite ./provider/anthropic ./secrets/keyring ./secrets/store ./cmd/ringil
+# The library and its heavier parts are separate modules; every check runs on each.
+MODULES := . ./mcp ./a2a ./memory/sqlite ./provider/anthropic ./secrets/keyring ./secrets/store
 EACH = for m in $(MODULES); do (cd $$m && $(1)) || exit 1; done
 
 # Colors for output
@@ -35,7 +35,6 @@ coverage: ## Run tests with coverage
 	go tool cover -func=coverage.out | tail -1
 	cd mcp && go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
 	cd a2a && go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
-	cd cmd/ringil && go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "$(GREEN)Coverage report generated: coverage.html$(NC)"
 
@@ -117,10 +116,6 @@ OLLAMA_EMBED ?= mxbai-embed-large
 live-local: ## Run live tests on a local Ollama (no cost, no rate limits); keys from .env for Composio
 	@set -a && . ./.env && set +a && export RINGIL_BASE_URL=$(OLLAMA_URL) RINGIL_MODEL=$(OLLAMA_MODEL) RINGIL_API_KEY= RINGIL_EMBED_MODEL=$(OLLAMA_EMBED) && go test -tags live -run '^TestLive' -count=1 -v -timeout 40m ./... && cd mcp && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../a2a && go test -tags live -run '^TestLive' -count=1 -v ./... && cd ../memory/sqlite && go test -tags live -run '^TestLive' -count=1 -v ./...
 
-chat: ## Chat with the agent using the endpoint in .env
-	@test -f .env || (echo "$(RED).env missing$(NC)" && exit 1)
-	@cd cmd/ringil && go build -o ringil . && cd ../.. && ./cmd/ringil/ringil --env-file .env chat
-
 check: fmt vet lint security test ## Run all checks (format, vet, lint, security, test)
 	@echo "$(GREEN)All checks passed!$(NC)"
 
@@ -147,7 +142,7 @@ deps: ## Download and verify dependencies
 clean: ## Clean test artifacts and cache
 	@echo "$(YELLOW)Cleaning...$(NC)"
 	go clean -testcache
-	rm -f coverage.out coverage.html mcp/coverage.out a2a/coverage.out cmd/ringil/coverage.out cmd/ringil/ringil
+	rm -f coverage.out coverage.html mcp/coverage.out a2a/coverage.out
 
 bench: ## Run benchmarks
 	@echo "$(YELLOW)Running benchmarks...$(NC)"
