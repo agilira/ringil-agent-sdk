@@ -62,3 +62,42 @@ func TestSecurityCacheNilBaseDoesNotPanic(t *testing.T) {
 		t.Fatalf("base clobbered by nil: %q %v", v, err)
 	}
 }
+
+// Whatever the names and values, a name the store has never resolves to
+// the base's value, and the refusal never carries a value.
+func FuzzTheStoreIsNotShadowed(f *testing.F) {
+	f.Add("KEY", "store", "base", true)
+	f.Add("A_B", "", "x", false)
+	f.Fuzz(func(t *testing.T, name, inStore, inBase string, both bool) {
+		const mark = "\x01v:"
+		keys := secrets.Map{name: mark + "s" + inStore}
+		base := secrets.Map{}
+		if both {
+			base[name] = mark + "b" + inBase
+		}
+		v, found, err := Resolver(base, &mapStore{keys}).Lookup(context.Background(), name)
+		if err != nil {
+			if (both && !errors.HasCode(err, secrets.ErrShadow) && secrets.ValidateName(name) == nil) || containsMark(err.Error(), mark) {
+				t.Fatalf("%q: %v", name, err)
+			}
+			return
+		}
+		if found && v != keys[name] {
+			t.Fatalf("%q resolved to the base's value", name)
+		}
+	})
+}
+
+type mapStore struct{ secrets.Map }
+
+func (m *mapStore) Set(_ context.Context, name, value string) error { m.Map[name] = value; return nil }
+func (m *mapStore) Delete(_ context.Context, name string) error     { delete(m.Map, name); return nil }
+
+func containsMark(s, mark string) bool {
+	for i := 0; i+len(mark) <= len(s); i++ {
+		if s[i:i+len(mark)] == mark {
+			return true
+		}
+	}
+	return false
+}

@@ -159,6 +159,7 @@ type cli struct {
 	settings *settings
 	secrets  *store.Cache     // the configured store, shared with serve's runs
 	asker    orpheus.Prompter // the setup's questions; see prompter
+	shadowed []string         // keys the setup kept that the environment has too
 	// interactive says a person is at the terminal (tests set it).
 	interactive func() bool
 	// checkComposio tries a Composio key in the setup; tests replace it.
@@ -210,7 +211,7 @@ func (c *cli) app() *orpheus.App {
 		AddGlobalIntFlag("workflow-tokens", "", 0, "most tokens one workflow may use, across resumes; 0 is no limit").
 		AddGlobalFlag("embed-model", "", "", "embedding model for memory by meaning (or RINGIL_EMBED_MODEL); same endpoint and key as the chat model").
 		AddGlobalFlag("config", "c", "", "the configuration (default: <config>/ringil/ringil.yaml): settings, profiles, MCP servers, remote agents, serve; the flags win over it").
-		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins").
+		AddGlobalFlag("env-file", "e", "", "private env file (mode 600) read for settings and secrets; the environment wins over it, and a key in the secrets store must be in neither").
 		AddGlobalFlag("instructions", "", "", "a file of instructions added to the agent's prompt (tone, procedures, purpose): after the base prompt, which keeps its rules").
 		AddGlobalFlag("profile", "", "", "a role from the profiles of ringil.yaml: its model, endpoint, key and prompt (serve: the one serve.a2a offers)").
 		AddGlobalIntFlag("max-turns", "", 0, "stop after this many model calls per prompt (0: no limit)").
@@ -237,7 +238,12 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("setup", "Set ringil up, with a few questions: where keys are kept, the model, your system prompt, the memory, a Telegram bot").SetHandler(c.cmdSetup))
 	app.AddCommand(orpheus.NewCommand("secrets", "Keep keys in the store of ringil.yaml's secrets section (keyring, vault or file)").
 		AddSubcommand(orpheus.NewCommand("set", "Save a secret; its value is read from standard input, without echo at a terminal").SetHandler(c.withConfig(c.cmdSecretsSet)).SetUsage("secrets set <NAME>")).
-		AddSubcommand(orpheus.NewCommand("rm", "Delete a secret").SetHandler(c.withConfig(c.cmdSecretsRemove)).SetUsage("secrets rm <NAME>")))
+		AddSubcommand(orpheus.NewCommand("rm", "Delete a secret").SetHandler(c.withConfig(c.cmdSecretsRemove)).SetUsage("secrets rm <NAME>")).
+		AddSubcommand(orpheus.NewCommand("move", "Move the keys to another store (keyring, file, vault) or to a new env file for a container (env --to-file PATH): each is copied and read back, ringil.yaml switched, and only then the old ones deleted, if you say so").
+			SetHandler(c.withConfig(c.cmdSecretsMove)).SetUsage("secrets move keyring|file|vault|env").
+			AddFlag("to-file", "", "", "the new env file of a move to env (mode 600; never an existing one)").
+			AddFlag("vault-url", "", "", "Vault's address, when ringil.yaml does not have it").
+			AddFlag("vault-path", "", "", "the path of ringil's keys in Vault's KV engine, when ringil.yaml does not have it")))
 	app.AddCommand(orpheus.NewCommand("memory", "List what the agent remembers").SetHandler(c.withConfig(c.cmdMemory)).
 		AddSubcommand(orpheus.NewCommand("search", "Search what the agent remembers").SetHandler(c.withConfig(c.cmdMemory)).SetUsage("memory search <words...>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Delete memories by ID").SetHandler(c.withConfig(c.cmdMemoryRemove)).SetUsage("memory rm <id...>")))
@@ -876,12 +882,45 @@ func (c *cli) newModel(ctx *orpheus.Context, res secrets.Resolver, ep endpoint, 
 	})
 }
 
-// keyFunc reads the key from name; nil, no key, for "".
+// keyFunc reads a provider's key from name; nil, no key, for "". With a
+// secrets store the key comes from the store alone: one planted in the
+// environment for a provider the store has no key for is refused (audit
+// 23/11: the conversations went to the planter's account).
 func keyFunc(res secrets.Resolver, name string) func(context.Context) (string, error) {
 	if name == "" {
 		return nil
 	}
-	return secrets.OptionalKeyFunc(res, name)
+	return secrets.OptionalKeyFunc(storeOnly(res), name)
+}
+
+// storeOnly is res reading from the store alone when there is one: for
+// what decides who ringil talks to or who talks to it (a provider's key,
+// serve's token, the bot's token: audit 23/11).
+func storeOnly(res secrets.Resolver) secrets.Resolver {
+	if k, ok := res.(keyChain); ok && k.keys != nil {
+		return sourced{Resolver: store.StoreOnly(k.base, k.keys), record: k.record}
+	}
+	return res
+}
+
+// providerSetting is a provider's name: the flag, the environment's, the
+// file's. With a secrets store the environment's is refused: a name
+// planted there would send the conversations to a provider with no key to
+// guard it, Ollama's port on a shared host (audit 23/11).
+func (c *cli) providerSetting(ctx *orpheus.Context, res secrets.Resolver, flag, env, file string) (string, error) {
+	if flag != "" && ctx.GetGlobalFlagString(flag) != "" {
+		return ctx.GetGlobalFlagString(flag), nil
+	}
+	v, found, err := secrets.Lookup(ctx.Context(), settingsOf(res), env)
+	switch {
+	case err != nil:
+		return "", err
+	case found && c.conf().Secrets.Store != "":
+		return "", errors.New(ErrUsage, env+" is in the environment (or the env file), and with a secrets store the provider is ringil.yaml's (or --provider): remove it")
+	case found:
+		return v, nil
+	}
+	return file, nil
 }
 
 // resolver is where settings and secrets come from: the environment first,
@@ -897,17 +936,47 @@ func (c *cli) resolver(ctx *orpheus.Context) (secrets.Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return keyChain{Resolver: store.Resolver(base, keys), base: base}, nil
+	chain := keyChain{Resolver: store.Resolver(base, keys), base: base, keys: keys, record: c.settings.keySource}
+	if keys != nil {
+		chain.Resolver = sourced{Resolver: chain.Resolver, record: chain.record}
+	}
+	return chain, nil
 }
 
-// keyChain resolves keys through the store too; settingsOf gives what
+// sourced records where each key it gives was read from, as the store's
+// resolver tells it (one read: a second could answer otherwise).
+type sourced struct {
+	secrets.Resolver
+	record func(name, source string)
+}
+
+type sourceTeller interface {
+	LookupSource(ctx context.Context, name string) (string, bool, bool, error)
+}
+
+func (s sourced) Lookup(ctx context.Context, name string) (string, bool, error) {
+	teller, ok := s.Resolver.(sourceTeller)
+	if !ok {
+		return s.Resolver.Lookup(ctx, name)
+	}
+	value, found, fromStore, err := teller.LookupSource(ctx, name)
+	if err == nil && found {
+		s.record(name, map[bool]string{true: "store", false: "environment"}[fromStore])
+	}
+	return value, found, err
+}
+
+// keyChain resolves keys through the store first (a name in the store and
+// in the environment is an error, never a silent choice: 23/11); settingsOf gives what
 // resolves settings (the provider, the model, RINGIL_IMAGES): the
 // environment and the --env-file alone, so a store that cannot answer
 // stops only what needs a key, and an entry in it never changes a
 // setting of ringil.yaml (audit 22/11).
 type keyChain struct {
 	secrets.Resolver
-	base secrets.Resolver
+	base   secrets.Resolver
+	keys   secrets.Store // the store, nil for none
+	record func(name, source string)
 }
 
 func settingsOf(res secrets.Resolver) secrets.Resolver {

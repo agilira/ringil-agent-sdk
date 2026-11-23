@@ -80,11 +80,24 @@ memory_store:
   # headers: {X-Chroma-Token: "${CHROMA_TOKEN}"}   # Mem0: X-API-Key
   # raw: false                 # mem0 only
 
-# Where the keys are kept, read after the environment and the --env-file
-# (which win, for one run): by the CLI, by serve and its channels (a
-# Telegram bot's token too), the MCP servers and the remote agents.
+# The proxy every request of ringil goes through, https alone (tunnelled:
+# the proxy never reads it). Only from here: HTTPS_PROXY and ALL_PROXY in
+# the environment are ignored, so that a variable planted there cannot put
+# a proxy between ringil and its providers. No credentials in the URL.
+# proxy:
+#   url: http://proxy.example.com:3128
+#   no_proxy: [internal.example.com, 10.0.0.0/8]
+
+# Where the keys are kept: read by the CLI, by serve and its channels (a
+# Telegram bot's token too), the MCP servers and the remote agents. A key
+# the store has is the store's: the same name in the environment or the
+# --env-file too is an error, never a silent choice; a name it lacks comes
+# from them. Where each key came from is in the audit, by name.
 # `ringil secrets set NAME` saves one (its value from standard input,
-# without echo), `ringil secrets rm NAME` removes it.
+# without echo), `ringil secrets rm NAME` removes it; `ringil secrets move
+# keyring|file|vault` moves them all, each read back before ringil.yaml
+# switches; `move env --to-file PATH` writes them to a new private env file
+# (a container's, read with --env-file).
 secrets:
   store: keyring               # the system's: Keychain, Credential Manager, GNOME Keyring/KWallet
   # keyring_service: ringil

@@ -33,7 +33,7 @@ func (c *cli) startChannels(ctx *orpheus.Context, run context.Context, srv *serv
 	if err != nil {
 		return nil, err
 	}
-	token, found, err := secrets.Lookup(run, res, "RINGIL_TELEGRAM_TOKEN")
+	token, found, err := secrets.Lookup(run, storeOnly(res), "RINGIL_TELEGRAM_TOKEN") // a planted token would start someone else's bot
 	if err != nil || !found {
 		return func() {}, err
 	}
@@ -209,7 +209,7 @@ func (c *cli) audioConfig(ctx *orpheus.Context, res secrets.Resolver, prefix str
 	if err != nil || model == "" {
 		return openai.Config{}, err
 	}
-	name, err := envOr(ctx, res, prefix+"_PROVIDER", file.Provider)
+	name, err := c.providerSetting(ctx, res, "", prefix+"_PROVIDER", file.Provider)
 	if err == nil && name == "" {
 		name, err = c.mainProviderName(ctx, res)
 	}

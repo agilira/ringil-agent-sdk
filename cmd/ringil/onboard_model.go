@@ -218,7 +218,7 @@ func (s *setup) askKey() error {
 				return errors.New(ErrUsage, "setup stopped: the key was not kept")
 			}
 		}
-		return s.keys.Set(s.ctx, s.endpoint.keyName, key)
+		return s.keep(s.endpoint.keyName, key)
 	}
 	return errors.New(ErrUsage, "the key was refused three times")
 }

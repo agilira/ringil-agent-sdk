@@ -120,16 +120,80 @@ func Open(ctx context.Context, c Config, base secrets.Resolver) (secrets.Store, 
 	}})
 }
 
-// Resolver is base, then store: what the host resolves wins (an
-// environment variable overrides the store for one run). Give it to
-// what reads keys; settings that are not secrets are better read from
-// base alone, so that a store that cannot answer stops only what needs a
-// key.
+// Resolver resolves keys from store first: a name the store has is the
+// store's, and the same name in base too is an error ([secrets.ErrShadow])
+// naming it: a variable forgotten in the environment, or put there, never
+// wins over the store in silence. A name the store does not have comes
+// from base (what a host passes through, a key kept nowhere else). Settings
+// that are not secrets are better read from base alone, so that a store
+// that cannot answer stops only what needs a key. With no store, base.
 func Resolver(base secrets.Resolver, store secrets.Store) secrets.Resolver {
 	if store == nil {
 		return base
 	}
-	return secrets.Chain(base, store)
+	return storeFirst{base: base, store: store}
+}
+
+type storeFirst struct {
+	base  secrets.Resolver
+	store secrets.Store
+}
+
+// Lookup implements [secrets.Resolver].
+func (s storeFirst) Lookup(ctx context.Context, name string) (string, bool, error) {
+	value, found, _, err := s.LookupSource(ctx, name)
+	return value, found, err
+}
+
+// LookupSource is Lookup, saying whether the value came from the store
+// (from the one read that gave it: a record of where keys come from needs
+// no second read, which could answer otherwise).
+func (s storeFirst) LookupSource(ctx context.Context, name string) (value string, found, fromStore bool, err error) {
+	value, inStore, err := s.store.Lookup(ctx, name)
+	if err != nil {
+		return "", false, false, err
+	}
+	baseValue, inBase, err := s.base.Lookup(ctx, name)
+	switch {
+	case err != nil:
+		return "", false, false, err
+	case inStore && inBase:
+		return "", false, false, errors.New(secrets.ErrShadow, name+" is in the secrets store and in the environment (or the env file): remove it from the environment, the store's is the one used")
+	case inStore:
+		return value, true, true, nil
+	}
+	return baseValue, inBase, false, nil
+}
+
+// StoreOnly resolves from store alone, for the keys that must be kept
+// there once there is one (a model provider's: 23/11, a key planted in
+// the environment for a provider the store had no key for took the
+// conversations to another account). The same name in base is an error,
+// as with [Resolver]; a name only base has is an error too, saying to keep
+// it in the store. With no store, base.
+func StoreOnly(base secrets.Resolver, store secrets.Store) secrets.Resolver {
+	if store == nil {
+		return base
+	}
+	return storeOnly{storeFirst{base: base, store: store}}
+}
+
+type storeOnly struct{ storeFirst }
+
+// Lookup implements [secrets.Resolver].
+func (s storeOnly) Lookup(ctx context.Context, name string) (string, bool, error) {
+	value, found, _, err := s.LookupSource(ctx, name)
+	return value, found, err
+}
+
+// LookupSource is the store's answer alone: what only base has is an
+// error, whichever method is called.
+func (s storeOnly) LookupSource(ctx context.Context, name string) (string, bool, bool, error) {
+	value, found, fromStore, err := s.storeFirst.LookupSource(ctx, name)
+	if err == nil && found && !fromStore {
+		return "", false, false, errors.New(secrets.ErrShadow, name+" is in the environment (or the env file) but not in the secrets store, where this key is read: keep it in the store and remove it from the environment")
+	}
+	return value, found, fromStore, err
 }
 
 // DefaultTTL is how long the Cache's stores keep what they read: a key

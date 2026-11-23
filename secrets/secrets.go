@@ -36,6 +36,9 @@ const (
 	ErrValue errors.ErrorCode = "SECRET_VALUE"
 	// ErrSource: a source could not be loaded (unsafe file, bad syntax).
 	ErrSource errors.ErrorCode = "SECRET_SOURCE"
+	// ErrShadow: a name is in a store and in the environment too, which
+	// would hide the store's.
+	ErrShadow errors.ErrorCode = "SECRET_SHADOW"
 )
 
 // maxValue bounds a resolved value; far above any real credential.

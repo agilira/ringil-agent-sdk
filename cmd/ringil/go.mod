@@ -12,6 +12,7 @@ require (
 	github.com/agilira/ringil-agent-sdk/memory/sqlite v0.0.0
 	github.com/agilira/ringil-agent-sdk/provider/anthropic v0.0.0
 	github.com/agilira/ringil-agent-sdk/secrets/store v0.0.0
+	golang.org/x/net v0.60.0
 	golang.org/x/term v0.48.0
 )
 

@@ -22,11 +22,12 @@ import (
 )
 
 // secretsConfig is ringil.yaml's secrets section: the store the keys are
-// kept in (the SDK's secrets/store, as the TUI and the app read it), after
-// the environment and the --env-file (which win, so a key can be
-// overridden for one run). Every part of ringil reads its keys through
-// it: the CLI, serve and its channels (a Telegram bot's token too), the
-// remote agents and MCP servers.
+// kept in (the SDK's secrets/store, as the TUI and the app read it). A
+// key the store has is the store's: the same name in the environment or
+// the --env-file too stops what needs it (23/11: a forgotten or planted
+// variable won in silence); a name it lacks comes from them. Every part of
+// ringil reads its keys through it: the CLI, serve and its channels (a
+// Telegram bot's token too), the remote agents and MCP servers.
 type secretsConfig struct {
 	// Store is keyring (the system's), vault, or file (encrypted); empty,
 	// the environment and the --env-file alone.
@@ -121,7 +122,23 @@ func (c *cli) cmdSecretsSet(ctx *orpheus.Context) error {
 	if err := store.Set(ctx.Context(), name, value); err != nil {
 		return err
 	}
-	return c.line("saved " + name + " in the " + c.conf().Secrets.Store + " store")
+	if err := c.line("saved " + name + " in the " + c.conf().Secrets.Store + " store"); err != nil {
+		return err
+	}
+	return c.warnIfInEnvironment(ctx, name)
+}
+
+// warnIfInEnvironment says when name, just kept in the store, is in the
+// environment or the --env-file too: ringil refuses a key in both places.
+func (c *cli) warnIfInEnvironment(ctx *orpheus.Context, name string) error {
+	base, err := c.baseResolver(ctx)
+	if err != nil {
+		return err
+	}
+	if _, found, err := base.Lookup(ctx.Context(), name); err != nil || !found {
+		return err
+	}
+	return c.line("  " + name + " is in your environment or env file too: remove it there, ringil refuses a key in both places")
 }
 
 // cmdSecretsRemove deletes a secret from the configured store.

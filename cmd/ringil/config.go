@@ -54,6 +54,7 @@ type config struct {
 	// EmbedInputType sends the input type to the embedding model
 	// (RINGIL_EMBED_INPUT_TYPE=1 too).
 	EmbedInputType bool           `argus:"embed_input_type"`
+	Proxy          proxyConfig    `argus:"proxy"`
 	Memory         memoryStore    `argus:"memory_store"`
 	Secrets        secretsConfig  `argus:"secrets"`
 	Embedder       embedderConfig `argus:"embedder"`
@@ -265,7 +266,7 @@ func (s serveConfig) fixed() serveConfig {
 // Validate is what a file must be to be applied at all: a reload that
 // fails it is refused and the last good file stays.
 func (f *config) Validate() error {
-	checks := []func() error{f.checkGone, f.checkProviders, f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check, f.Secrets.check}
+	checks := []func() error{f.checkGone, f.Proxy.check, f.checkProviders, f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check, f.Secrets.check}
 	for _, check := range checks {
 		if err := check(); err != nil {
 			return err

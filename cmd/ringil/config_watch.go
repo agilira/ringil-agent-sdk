@@ -48,6 +48,8 @@ type settings struct {
 	skills       string // the skills directory
 	every        time.Duration
 	audit        *argus.AuditLogger
+	// sources are where each key was read from, as last recorded.
+	sources sync.Map
 	// served are the profiles serve offers, fixed at its start.
 	served atomic.Pointer[map[string]bool]
 
@@ -405,6 +407,21 @@ func (s *settings) refuse(c *cli, err error) {
 		s.audit.Log(argus.AuditWarn, "ringil_refused", "ringil.config", s.path, nil, nil,
 			map[string]interface{}{"in_force": s.applied, "reason": why})
 	}
+}
+
+// keySource records in the audit, once per change, where a key was read
+// from: the store, or the environment (a name the store does not have).
+// The name only, never the value: a key that starts coming from elsewhere
+// is in the hash chain.
+func (s *settings) keySource(name, source string) {
+	if s == nil || s.audit == nil {
+		return
+	}
+	if before, loaded := s.sources.Swap(name, source); loaded && before == source {
+		return
+	}
+	s.audit.Log(argus.AuditInfo, "ringil_key_source", "ringil.secrets", s.path, nil, nil,
+		map[string]interface{}{"name": name, "source": source})
 }
 
 func (s *settings) close() {

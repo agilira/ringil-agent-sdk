@@ -533,3 +533,17 @@ func TestSetupNamesAndOverrides(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// Audit 23/11: a key the setup kept that the environment exports too
+// stopped the first run. The setup names it, and the run does not start.
+func TestSetupNamesKeysInTheEnvironment(t *testing.T) {
+	base := modelServer(t)
+	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "7", base, "y", "good", "1", "", "1", "1", "n", "n", "hello", "/exit"},
+		map[string]string{keyNameOf(serverName(base)): "exported"}) // "hello": a chat that started would ask the model
+	h.c.interactive = func() bool { return true }
+	// A run that went on would stop at the key, in both places.
+	if code := h.run(); code != exitOK || !strings.Contains(h.err.String(), "Remove from your environment") || len(h.script.Requests()) != 1 ||
+		strings.Contains(h.err.String(), "is in the secrets store and in the environment") {
+		t.Fatalf("exit %d, %d model calls (the setup's try alone): %s", code, len(h.script.Requests()), h.err)
+	}
+}
