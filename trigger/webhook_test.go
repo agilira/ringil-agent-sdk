@@ -110,16 +110,16 @@ func TestAPausedWebhookIsNotNow(t *testing.T) {
 }
 
 func TestDeliveriesSeenAreBounded(t *testing.T) {
-	h := &hooks{seen: map[string]time.Time{}}
+	h := &hooks{seen: map[string]map[string]time.Time{}}
 	for i := range maxSeen + 10 {
-		if !h.first("sig-" + strconv.Itoa(i)) {
+		if !h.first("deploy", "sig-"+strconv.Itoa(i)) {
 			t.Fatalf("%d seen", i)
 		}
 	}
-	if len(h.seen) > maxSeen {
-		t.Fatalf("%d remembered", len(h.seen))
+	if n := len(h.seen["deploy"]); n > maxSeen {
+		t.Fatalf("%d remembered", n)
 	}
-	if h.first("sig-" + strconv.Itoa(maxSeen+9)) {
+	if h.first("deploy", "sig-"+strconv.Itoa(maxSeen+9)) {
 		t.Fatal("the newest forgotten")
 	}
 }
@@ -138,5 +138,25 @@ func TestARefusedDeliveryMayBeSentAgain(t *testing.T) {
 		if code := post(h, "/hooks/deploy", sign(hookSecret, "{}"), "{}"); code != http.StatusServiceUnavailable {
 			t.Fatalf("code %d", code)
 		}
+	}
+}
+
+// A trigger's own flood of deliveries must not evict another trigger's
+// replay records (regression: the seen set was global, so one trigger with a
+// valid Secret could re-enable replay of a captured delivery of another).
+func TestReplayIsolatedPerTrigger(t *testing.T) {
+	h := &hooks{seen: map[string]map[string]time.Time{}}
+	const bMAC = "b-captured-delivery"
+	if !h.first("b", bMAC) {
+		t.Fatal("b's first delivery should be new")
+	}
+	for i := range maxSeen + 100 { // trigger "a" floods its own set
+		h.first("a", "a-"+strconv.Itoa(i))
+	}
+	if h.first("b", bMAC) {
+		t.Fatal("a's traffic evicted b's replay protection: the captured delivery would replay")
+	}
+	if n := len(h.seen["a"]); n > maxSeen {
+		t.Fatalf("a's own set is unbounded: %d", n)
 	}
 }

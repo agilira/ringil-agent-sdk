@@ -9,8 +9,9 @@
 // Every Append is written in one write and synced before it returns, so a
 // message the agent recorded survives a crash. A session is held by one
 // opener at a time; a second Open, in this process or another, fails with
-// ErrSessionBusy. There is no size limit: a session grows as long as the
-// conversation does.
+// ErrSessionBusy. A session file is read into memory on Open and is refused
+// past maxSession bytes, so a file grown without bound (or planted in the
+// directory) cannot exhaust memory.
 package file
 
 import (
@@ -31,6 +32,9 @@ import (
 const (
 	dataExt = ".jsonl"
 	lockExt = ".lock"
+	// maxSession bounds the session file read into memory on Open; far above
+	// any real conversation, as memory/local bounds its own store.
+	maxSession = 1 << 30
 )
 
 // New returns a store in dir, creating it with mode 0700 if needed. An
@@ -157,9 +161,9 @@ func (s *store) load(id string, lock *os.File) (*session, error) {
 // readSession decodes f, writes the header of a new session, cuts a
 // partial last line left by a crash and restores a stripped final newline.
 func readSession(f *os.File) (*decoded, error) {
-	data, err := io.ReadAll(f)
+	data, err := readBounded(f, maxSession)
 	if err != nil {
-		return nil, ioError(err, "cannot read session")
+		return nil, err
 	}
 	d, err := decode(data)
 	if err != nil {
@@ -177,6 +181,26 @@ func readSession(f *os.File) (*decoded, error) {
 		return d, truncate(f, d.valid)
 	}
 	return d, nil
+}
+
+// readBounded reads f into memory up to limit bytes, failing rather than
+// silently truncating if the file exceeds limit (before or during reading).
+func readBounded(f *os.File, limit int64) ([]byte, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, ioError(err, "cannot read session")
+	}
+	if info.Size() > limit {
+		return nil, errors.New(agent.ErrSessionIO, "session file is too large to open")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, ioError(err, "cannot read session")
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New(agent.ErrSessionIO, "session file is too large to open")
+	}
+	return data, nil
 }
 
 // rewrite replaces the whole file with data.

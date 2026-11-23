@@ -352,3 +352,58 @@ func FuzzDecode(f *testing.F) {
 		}
 	})
 }
+
+// A session file larger than maxSession is refused on Open rather than read
+// into memory (regression: readSession had no size bound).
+func TestSessionFileTooLarge(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(dir, "big"+dataExt)
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxSession + 1); err != nil { // sparse: no real blocks
+		_ = f.Close()
+		t.Skipf("cannot make a sparse oversized file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Open(bg, "big"); !errors.HasCode(err, agent.ErrSessionIO) {
+		t.Fatalf("want ErrSessionIO for an oversized session, got %v", err)
+	}
+}
+
+func TestReadBoundedRejectsPastLimit(t *testing.T) {
+	dir := t.TempDir()
+	okPath := filepath.Join(dir, "ok.jsonl")
+	if err := os.WriteFile(okPath, []byte(strings.Repeat("a", 16)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(okPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := readBounded(f, 16)
+	_ = f.Close()
+	if err != nil || len(data) != 16 {
+		t.Fatalf("exact limit failed: len=%d err=%v", len(data), err)
+	}
+	bigPath := filepath.Join(dir, "big.jsonl")
+	if err := os.WriteFile(bigPath, []byte(strings.Repeat("a", 17)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := os.Open(bigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = readBounded(g, 16)
+	_ = g.Close()
+	if !errors.HasCode(err, agent.ErrSessionIO) {
+		t.Fatalf("want ErrSessionIO past limit, got %v", err)
+	}
+}

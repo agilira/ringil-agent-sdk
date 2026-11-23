@@ -370,14 +370,20 @@ func (t *tool) result(ctx context.Context, out *capture, err error, timeout time
 	var b strings.Builder
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
-		b.WriteString("Stopped after " + timeout.String() + " (timeout).\n")
+		b.WriteString("Stopped after ")
+		b.WriteString(timeout.String())
+		b.WriteString(" (timeout).\n")
 	case status != 0:
-		b.WriteString("Exit status " + strconv.Itoa(status) + ".\n")
+		b.WriteString("Exit status ")
+		b.WriteString(strconv.Itoa(status))
+		b.WriteString(".\n")
 	}
 	b.WriteString(text)
 	b.WriteString(hints(text, status != 0, out.blocked()))
 	if len(out.notes) > 0 {
-		b.WriteString("\n[Sandbox: " + strings.Join(out.notes, "; ") + ".]")
+		b.WriteString("\n[Sandbox: ")
+		b.WriteString(strings.Join(out.notes, "; "))
+		b.WriteString(".]")
 	}
 	if b.Len() == 0 {
 		b.WriteString("(no output)")
