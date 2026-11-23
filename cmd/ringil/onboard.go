@@ -32,9 +32,10 @@ type setup struct {
 	base       secrets.Map // what opens the store (a passphrase, a token), for this setup only
 	keys       secrets.Store
 	provider   providerChoice
-	baseURL    string
-	allowHTTP  bool   // plain http to another host, which the user allowed
-	key        string // the model's key, to list the models and try one
+	endpoint   endpoint // the chosen provider, resolved
+	custom     bool     // a server of one's own: written to the providers section
+	allowHTTP  bool     // plain http to another host, which the user allowed
+	key        string   // the model's key, to list the models and try one
 	model      string
 	prompt     string
 	memory     memoryStore

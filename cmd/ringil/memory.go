@@ -140,24 +140,17 @@ func (c *cli) embedder(ctx *orpheus.Context) (agent.Embedder, error) {
 
 // endpointEmbedder is model at the chat model's endpoint, with its key.
 func (c *cli) endpointEmbedder(ctx *orpheus.Context, res secrets.Resolver, model string) (agent.Embedder, error) {
-	switch kind, err := c.providerKind(ctx, res); {
+	ep, err := c.runEndpoint(ctx, res)
+	switch {
 	case err != nil:
 		return nil, err
-	case kind == providerAnthropic:
-		return nil, errors.New(ErrUsage, "Anthropic has no embedding models: set embedder kind ollama, or no embed_model")
-	}
-	base, err := c.roleSetting(ctx, res, "base", "RINGIL_BASE_URL")
-	if err != nil {
-		return nil, err
-	}
-	keyName, err := c.keyName(ctx, res)
-	if err != nil {
-		return nil, err
+	case ep.kind != providerOpenAI:
+		return nil, errors.New(ErrUsage, ep.name+" has no embedding models: set embedder kind ollama, or no embed_model")
 	}
 	return c.newEmbedder(openai.Config{
-		BaseURL:   base,
+		BaseURL:   ep.base,
 		Model:     model,
-		KeyFunc:   keyFunc(res, keyName),
+		KeyFunc:   keyFunc(res, ep.keyName),
 		AllowHTTP: c.flagBool(ctx, "allow-http"),
 		// Asymmetric models (NVIDIA NIM) need input_type.
 		EmbedInputType: c.getenv("RINGIL_EMBED_INPUT_TYPE") == "1" || c.conf().EmbedInputType,

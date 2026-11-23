@@ -40,7 +40,7 @@ func newHarness(t *testing.T, input string, steps ...fake.Step) *harness {
 	h.c = newCLI(strings.NewReader(input), h.out, h.err)
 	t.Cleanup(func() { _ = h.c.secrets.Close() }) // as main does: Windows keeps an open store's directory
 	h.c.getenv = func(k string) string {
-		return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "RINGIL_API_KEY": "k"}[k]
+		return map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "m", "OPENAI_API_KEY": "k"}[k]
 	}
 	h.c.newProvider = func(cfg openai.Config) (agent.Provider, error) {
 		h.config = cfg
@@ -75,17 +75,18 @@ func TestRunPrintsAnswerAndUsesEnvironment(t *testing.T) {
 	if h.out.String() != "Ciao Antonio" || !strings.Contains(h.err.String(), "[end, 1 model calls") {
 		t.Fatalf("out %q err %q", h.out, h.err)
 	}
-	if h.config.BaseURL != "http://localhost:1/v1" || h.config.Model != "m" || h.key(t) != "k" {
+	if h.config.BaseURL != "https://api.openai.com/v1" || h.config.Model != "m" || h.key(t) != "k" {
 		t.Fatalf("config %+v", h.config)
 	}
 }
 
 func TestFlagsOverrideEnvironment(t *testing.T) {
 	h := newHarness(t, "", fake.Reply("ok"))
-	if code := h.run("--base", "https://x.test/v1", "--model", "other", "--key-env", "NOPE", "--allow-http", "run", "x"); code != exitOK {
+	env(h, map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "m", "OPENAI_API_KEY": "k", "NVIDIA_API_KEY": "nv"})
+	if code := h.run("--provider", "nvidia", "--model", "other", "--allow-http", "run", "x"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
-	if h.config.BaseURL != "https://x.test/v1" || h.config.Model != "other" || h.key(t) != "" || !h.config.AllowHTTP {
+	if h.config.BaseURL != "https://integrate.api.nvidia.com/v1" || h.config.Model != "other" || h.key(t) != "nv" || !h.config.AllowHTTP {
 		t.Fatalf("config %+v", h.config)
 	}
 }
@@ -121,7 +122,12 @@ func TestRunErrors(t *testing.T) {
 	}
 	h = newHarness(t, "")
 	h.c.getenv = func(string) string { return "" }
-	if code := h.run("run", "x"); code != exitError || !strings.Contains(h.err.String(), "--base and --model") {
+	if code := h.run("run", "x"); code != exitError || !strings.Contains(h.err.String(), "no provider") {
+		t.Fatalf("missing config: %d %q", code, h.err)
+	}
+	h = newHarness(t, "")
+	env(h, map[string]string{"RINGIL_PROVIDER": "openai"})
+	if code := h.run("run", "x"); code != exitError || !strings.Contains(h.err.String(), "set --model") {
 		t.Fatalf("missing config: %d %q", code, h.err)
 	}
 }
@@ -300,18 +306,18 @@ func envFile(t *testing.T, mode os.FileMode, text string) string {
 func TestEnvFileProvidesSettingsAndKey(t *testing.T) {
 	h := newHarness(t, "", fake.Reply("ok"))
 	h.c.getenv = func(string) string { return "" }
-	path := envFile(t, 0o600, "RINGIL_BASE_URL=https://from.file/v1 # comment\nRINGIL_MODEL=filemodel\nRINGIL_API_KEY=sk-file\n")
+	path := envFile(t, 0o600, "RINGIL_PROVIDER=deepseek # comment\nRINGIL_MODEL=filemodel\nDEEPSEEK_API_KEY=sk-file\n")
 	if code := h.run("--env-file", path, "run", "x"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
-	if h.config.BaseURL != "https://from.file/v1" || h.config.Model != "filemodel" || h.key(t) != "sk-file" {
+	if h.config.BaseURL != "https://api.deepseek.com" || h.config.Model != "filemodel" || h.key(t) != "sk-file" {
 		t.Fatalf("config %+v", h.config)
 	}
 }
 
 func TestEnvironmentWinsOverEnvFile(t *testing.T) {
 	h := newHarness(t, "", fake.Reply("ok"))
-	path := envFile(t, 0o600, "RINGIL_MODEL=filemodel\nRINGIL_API_KEY=sk-file\n")
+	path := envFile(t, 0o600, "RINGIL_MODEL=filemodel\nOPENAI_API_KEY=sk-file\n")
 	if code := h.run("--env-file", path, "run", "x"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -327,9 +333,6 @@ func TestUnsafeEnvFileRefused(t *testing.T) {
 	h := newHarness(t, "", fake.Reply("ok"))
 	if code := h.run("--env-file", envFile(t, 0o644, "A=1\n"), "run", "x"); code != exitError || !strings.Contains(h.err.String(), "secrets:") {
 		t.Fatalf("exit %d: %q", code, h.err)
-	}
-	if code := h.run("--key-env", "bad name", "run", "x"); code != exitError {
-		t.Fatal("invalid key name accepted")
 	}
 }
 

@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,16 +29,11 @@ func (s *setup) write() error {
 	if err != nil {
 		return errors.Wrap(err, ErrUsage, s.path+" cannot be edited ("+describe(err)+"): fix it or move it away, then run setup again")
 	}
-	e := &edit{w: w}
-	for _, kv := range s.settings() {
-		e.set(kv.key, kv.value)
+	if err := leftovers(w); err != nil {
+		return err
 	}
-	s.mergeSections(e)
-	if len(s.owners) > 0 {
-		e.set("serve.telegram.owners", union(stringsOf(w.GetValue("serve.telegram.owners")), s.owners))
-	}
-	if e.err != nil {
-		return errors.Wrap(e.err, ErrUsage, "cannot set the answers in "+s.path+" ("+describe(e.err)+")")
+	if err := s.answer(w); err != nil {
+		return err
 	}
 	if !w.HasChanges() {
 		return nil // the same answers: no write, no backup
@@ -49,6 +45,41 @@ func (s *setup) write() error {
 		return errors.Wrap(err, ErrUsage, "cannot write "+s.path+" ("+describe(err)+")")
 	}
 	s.dropOAuthToken()
+	return nil
+}
+
+// answer sets the answers in w: what the setup asked, the sections it
+// merges, the bot's owners added to those there.
+func (s *setup) answer(w *argus.ConfigWriter) error {
+	e := &edit{w: w}
+	for _, kv := range s.settings() {
+		e.set(kv.key, kv.value)
+	}
+	s.mergeSections(e)
+	if len(s.owners) > 0 {
+		e.set("serve.telegram.owners", union(stringsOf(w.GetValue("serve.telegram.owners")), s.owners))
+	}
+	if e.err != nil {
+		return errors.Wrap(e.err, ErrUsage, "cannot set the answers in "+s.path+" ("+describe(e.err)+")")
+	}
+	return nil
+}
+
+// leftovers: base or key_env still in a profile or an audio model, which
+// the setup does not ask about (audit 23/11: it said "set up" and the next
+// run refused the file). The top level's it replaces.
+func leftovers(w *argus.ConfigWriter) error {
+	profiles, _ := w.GetValue("profiles").(map[string]interface{})
+	for _, name := range slices.Sorted(maps.Keys(profiles)) {
+		if p, ok := profiles[name].(map[string]interface{}); ok && (p["base"] != nil || p["key_env"] != nil) {
+			return errGone("profiles." + name + ": ")
+		}
+	}
+	for _, where := range []string{"transcribe", "speech"} {
+		if w.GetValue(where+".base") != nil || w.GetValue(where+".key_env") != nil {
+			return errGone(where + ": ")
+		}
+	}
 	return nil
 }
 
@@ -87,20 +118,28 @@ type keyValue struct {
 	value interface{} // "" removes the key
 }
 
-// settings are the answers as ringil.yaml's keys.
+// settings are the answers as ringil.yaml's keys: the provider by name,
+// and in the providers section a server of one's own, or a built-in at
+// another address than its own.
 func (s *setup) settings() []keyValue {
-	keyEnv := s.provider.keyName // written only where it is not the kind's default
-	if keyEnv == map[string]string{"openai": "RINGIL_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}[s.provider.kind] {
-		keyEnv = ""
-	}
-	return []keyValue{
-		{"provider", s.provider.kind},
-		{"base", s.baseURL},
+	kv := []keyValue{
+		{"provider", s.endpoint.name},
+		{"base", ""}, // the endpoint is the provider's: none beside it
+		{"key_env", ""},
 		{"model", s.model},
-		{"key_env", keyEnv},
 		{"instructions", s.prompt},
 		{"embed_model", s.embedModel},
 	}
+	if !s.custom && s.endpoint.base == builtinProviders[s.endpoint.name].Base {
+		// A built-in at its own address: an entry of the file that sent its
+		// key elsewhere goes (audit 23/11: the key checked here went there).
+		return append(kv, keyValue{"providers." + s.endpoint.name, ""})
+	}
+	entry := map[string]interface{}{"base": s.endpoint.base}
+	if s.endpoint.keyName != "" {
+		entry["key_env"] = s.endpoint.keyName
+	}
+	return append(kv, keyValue{"providers." + s.endpoint.name, entry})
 }
 
 // mergeSections sets, in the sections the setup asks about, what it was

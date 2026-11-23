@@ -6,8 +6,8 @@
 // Command ringil runs an agent built on ringil-agent-sdk from the terminal:
 // an interactive chat, or a single prompt with "ringil run".
 //
-// The model is any OpenAI-compatible endpoint, configured with flags or with
-// RINGIL_BASE_URL, RINGIL_MODEL and RINGIL_API_KEY.
+// The model's provider is chosen by name (--provider, RINGIL_PROVIDER or
+// ringil.yaml): a built-in one, or one of ringil.yaml's providers.
 package main
 
 import (

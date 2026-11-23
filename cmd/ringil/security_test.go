@@ -6,6 +6,7 @@
 package main
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,6 +23,7 @@ import (
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
+	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
 func FuzzConfigYAML(f *testing.F) {
@@ -34,7 +36,10 @@ func FuzzConfigYAML(f *testing.F) {
 		"defaults: &d\n  model: x\nprofiles:\n  w: *d\n",
 		"profiles: null\n",
 		`instructions: "*.md"` + "\n",
-		"transcribe:\n  key_env: BAD=KEY\n",
+		"transcribe:\n  provider: anthropic\n",
+		"providers:\n  x: {base: \"https://u:p@h/v1\", key_env: \"A B\"}\n",
+		"providers:\n  openai: {kind: anthropic}\nprovider: openai\n",
+		"provider: x\nprofiles:\n  w: {provider: y, embed_model: e}\n",
 		"serve:\n  max_runs: -1\n",
 		"serve:\n  replies: shout\n",
 		"serve:\n  language: fr\n",
@@ -100,9 +105,9 @@ func checkAcceptedConfig(t *testing.T, cfg *config) {
 	}
 	checkAcceptedProfiles(t, cfg)
 	checkAcceptedServe(t, cfg)
-	for _, a := range []audioConfig{cfg.Transcribe, cfg.Speech} {
-		if a.KeyEnv != "" && validKeyName(a.KeyEnv) != nil {
-			t.Fatalf("bad audio key_env accepted: %q", a.KeyEnv)
+	for name, p := range cfg.Providers {
+		if checkProvider(name, p) != nil {
+			t.Fatalf("bad provider %q accepted: %+v", name, p)
 		}
 	}
 	for name, m := range cfg.MCPServers {
@@ -155,11 +160,20 @@ func TestSecurityConfigValidationBoundaries(t *testing.T) {
 		"qmarkGlobal":   {Instructions: "a?b.md"},
 		"bracketGlobal": {Instructions: "[a].md"},
 		"globProfile":   {Profiles: map[string]profile{"w": {Instructions: "*.md"}}},
-		"badTranscribe": {Transcribe: audioConfig{KeyEnv: "BAD=KEY"}},
-		"badSpeech":     {Speech: audioConfig{KeyEnv: "1ABC"}},
-		"badProfKey":    {Profiles: map[string]profile{"w": {Base: "https://a.test", KeyEnv: "A B"}}},
-		"keyNoBase":     {Profiles: map[string]profile{"w": {KeyEnv: "MY_KEY"}}},
-		"embedNoBase":   {Profiles: map[string]profile{"w": {EmbedModel: "emb"}}},
+		"badTranscribe": {Transcribe: audioConfig{Provider: "nowhere"}},
+		"badSpeech":     {Speech: audioConfig{Provider: "chatgpt"}},
+		"badProvKey":    {Providers: map[string]providerEntry{"w": {Base: "https://a.test", KeyEnv: "A B"}}},
+		"provNoBase":    {Providers: map[string]providerEntry{"w": {KeyEnv: "MY_KEY"}}},
+		"provBadName":   {Providers: map[string]providerEntry{"W x": {Base: "https://a.test"}}},
+		"provBadKind":   {Providers: map[string]providerEntry{"w": {Kind: "grpc", Base: "https://a.test"}}},
+		"provRekind":    {Providers: map[string]providerEntry{"openai": {Kind: providerAnthropic}}},
+		"provCreds":     {Providers: map[string]providerEntry{"w": {Base: "https://u:p@a.test"}}},
+		"provScheme":    {Providers: map[string]providerEntry{"w": {Base: "file:///etc"}}},
+		"chatgptKey":    {Providers: map[string]providerEntry{"chatgpt": {KeyEnv: "K"}}},
+		"mainUnknown":   {Provider: "nowhere"},
+		"roleUnknown":   {Profiles: map[string]profile{"w": {Provider: "nowhere"}}},
+		"embedNoProv":   {Profiles: map[string]profile{"w": {EmbedModel: "emb"}}},
+		"embedClaude":   {Profiles: map[string]profile{"w": {Provider: "anthropic", EmbedModel: "emb"}}},
 		"mcpBadType":    {MCPServers: map[string]mcpEntry{"m": {Type: "grpc", Command: "x"}}},
 		"mcpCmdAndURL":  {MCPServers: map[string]mcpEntry{"m": {Command: "x", URL: "https://x.test"}}},
 	}
@@ -247,4 +261,24 @@ func checkInstructionsPermsNonWindows(t *testing.T) {
 	if code := h2.run("--no-tools", "run", "hi"); code == 0 {
 		t.Error("symlink instructions file accepted")
 	}
+}
+
+// Any address the setup accepts names a provider ringil.yaml takes, with a
+// key name the stores take.
+func FuzzServerName(f *testing.F) {
+	for _, s := range []string{"https://vllm.lan:8000/v1", "http://10.0.0.5/v1", "http://[::1]:8000/v1", "https://" + strings.Repeat("a.", 60) + "x/v1", "https://-/v1"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, base string) {
+		if u, err := url.Parse(base); err != nil || u.Host == "" {
+			return
+		}
+		name := serverName(base)
+		if !providerName.MatchString(name) || secrets.ValidateName(keyNameOf(name)) != nil {
+			t.Fatalf("%q: name %q, key %q", base, name, keyNameOf(name))
+		}
+		if _, builtin := builtinProviders[name]; builtin {
+			t.Fatalf("%q named as the built-in %s", base, name)
+		}
+	})
 }
