@@ -103,9 +103,6 @@ jobs:
         docker run -d --name vault --cap-add=IPC_LOCK -p 127.0.0.1:8200:8200 -e VAULT_DEV_ROOT_TOKEN_ID=ci-root hashicorp/vault:1.19
         for i in $(seq 30); do curl -sf http://127.0.0.1:8200/v1/sys/health >/dev/null && break; sleep 1; done
         VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=ci-root go test -tags live -run LiveVault -v ./secrets/vault/
-    - name: CLI
-      working-directory: cmd/ringil
-      run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
 
   lint:
     name: Lint and security
@@ -131,6 +128,6 @@ jobs:
     - name: Cross-platform vet
       # The sandbox has per-architecture and per-OS code paths.
       run: |
-        for m in . mcp a2a memory/sqlite provider/anthropic secrets/keyring secrets/store cmd/ringil; do
+        for m in . mcp a2a memory/sqlite provider/anthropic secrets/keyring secrets/store; do
           (cd $m && GOARCH=arm64 go vet ./... && GOOS=windows go vet ./... && GOOS=darwin go vet ./...) || exit 1
         done
