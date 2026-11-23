@@ -242,3 +242,27 @@ func TestTokensClaims(t *testing.T) {
 		t.Fatal("claims")
 	}
 }
+
+// Structured output goes as text.format in the Responses API.
+func TestTextFormat(t *testing.T) {
+	type answer struct {
+		A string `json:"a"`
+	}
+	format, err := agent.FormatFor[answer]("answer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	p, _, _ := backend(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sse(w, completed)
+	})
+	if _, err := p.Generate(bg, &agent.Request{Messages: []agent.Message{agent.UserText("x")}, Format: format}, nil); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := body["text"].(map[string]any)
+	f, _ := text["format"].(map[string]any)
+	if f["type"] != "json_schema" || f["name"] != "answer" || f["strict"] != true || f["schema"] == nil {
+		t.Fatalf("%v", body["text"])
+	}
+}

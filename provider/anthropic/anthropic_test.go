@@ -506,3 +506,24 @@ func TestToolResultImages(t *testing.T) {
 		t.Fatalf("%s", f.sent(0))
 	}
 }
+
+// Structured output goes as output_config.format, beside the effort.
+func TestOutputFormat(t *testing.T) {
+	type answer struct {
+		A string `json:"a"`
+	}
+	format, err := agent.FormatFor[answer]("answer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, url := newFake(t, text(`{"a":"x"}`))
+	req := ask("?")
+	req.Format = format
+	if _, err := open(t, url, Config{Effort: "low"}).Generate(t.Context(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(f.body(0))
+	if !has(string(body), `"effort":"low"`, `"format":{"schema":{`, `"type":"json_schema"`, `"additionalProperties":false`) {
+		t.Fatalf("body %s", body)
+	}
+}

@@ -9,8 +9,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -36,6 +38,9 @@ func (p *provider) Generate(ctx context.Context, req *agent.Request, sink agent.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	resp, err := p.send(ctx, body, cancel)
+	if err != nil && p.formatRefused(req, err) {
+		resp, err = p.sendInWords(ctx, req, sink != nil, cancel)
+	}
 	if err != nil {
 		return httpcall.Finish(ctx, nil, err)
 	}
@@ -44,6 +49,41 @@ func (p *provider) Generate(ctx context.Context, req *agent.Request, sink agent.
 		p.stamp(&out.Message)
 	}
 	return httpcall.Finish(ctx, out, err)
+}
+
+// formatRefused: the request asked structured output, and the server
+// refused it: many OpenAI-compatible models have none.
+func (p *provider) formatRefused(req *agent.Request, err error) bool {
+	var e *errors.Error
+	if req.Format == nil || p.formatFlag(req).Load() || !stderrors.As(err, &e) || e.Code != agent.ErrProviderInput {
+		return false
+	}
+	status, _ := e.Context["status"].(int)
+	return status == http.StatusBadRequest || status == http.StatusUnprocessableEntity
+}
+
+// formatFlag is the memory of a refused format for requests like req:
+// with tools, or without.
+func (p *provider) formatFlag(req *agent.Request) *atomic.Bool {
+	if len(req.Tools) > 0 {
+		return &p.unformattedTools
+	}
+	return &p.unformatted
+}
+
+// sendInWords sends the request again with the schema asked in words;
+// when the server takes it, the provider asks so from then on. The answer
+// is checked by Parse either way.
+func (p *provider) sendInWords(ctx context.Context, req *agent.Request, stream bool, cancel context.CancelCauseFunc) (*http.Response, error) {
+	body, err := p.encodeWith(req, stream, true)
+	if err != nil {
+		return nil, errors.Wrap(err, agent.ErrProviderInput, "request does not encode")
+	}
+	resp, err := p.send(ctx, body, cancel)
+	if err == nil {
+		p.formatFlag(req).Store(true)
+	}
+	return resp, err
 }
 
 // read decodes the body and closes it. A close error is not dropped: it

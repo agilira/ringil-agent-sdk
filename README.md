@@ -22,6 +22,9 @@ go run ./examples/agent "Ricorda che il mio colore preferito è il verde"
 go run ./examples/agent "Qual è il mio colore preferito, e che ore sono a New York?"
 ```
 
+Risposte in JSON di un tipo: `f, _ := agent.FormatFor[Fattura]("fattura")`, `Config{Format: f}`,
+poi `agent.Parse[Fattura](f, res.Text)` decodifica la risposta dopo averla validata.
+
 Il modello di sicurezza (cosa l'SDK garantisce, cosa decide l'host, cosa è fuori) è in
 [SECURITY.md](SECURITY.md). Le protezioni sono accese di default (argomenti dei tool validati, errori dei tool
 filtrati, sessioni con ripresa sicura, compattazione); limiti e politiche sono

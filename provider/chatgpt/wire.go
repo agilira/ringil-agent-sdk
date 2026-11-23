@@ -26,6 +26,20 @@ type wireRequest struct {
 	Stream            bool           `json:"stream"`
 	Include           []string       `json:"include"`
 	PromptCacheKey    string         `json:"prompt_cache_key,omitempty"`
+	Text              *wireText      `json:"text,omitempty"`
+}
+
+// wireText is structured output in the Responses API: the answer in JSON
+// of a schema, strict where every field is required.
+type wireText struct {
+	Format wireFormat `json:"format"`
+}
+
+type wireFormat struct {
+	Type   string          `json:"type"`
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict,omitempty"`
 }
 
 type wireReasoning struct {
@@ -80,6 +94,9 @@ func (p *provider) encode(req *agent.Request) ([]byte, error) {
 	}
 	if req.ToolChoice != "" {
 		w.ToolChoice = string(req.ToolChoice)
+	}
+	if f := req.Format; f != nil {
+		w.Text = &wireText{Format: wireFormat{Type: "json_schema", Name: f.Name, Schema: f.Schema, Strict: f.Strict}}
 	}
 	for _, t := range req.Tools {
 		schema := t.InputSchema

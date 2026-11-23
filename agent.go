@@ -45,6 +45,8 @@ func (cfg Config) check() error {
 		return errors.New(ErrAgentConfig, "max turns, max tokens and context window cannot be negative")
 	case len(cfg.Instructions) > MaxInstructions:
 		return errors.New(ErrAgentConfig, "the instructions are at most 64 KiB")
+	case cfg.Format != nil && cfg.Format.node == nil:
+		return errors.New(ErrAgentConfig, "format must be made by FormatFor")
 	}
 	return cfg.Loop.validate()
 }
@@ -98,6 +100,10 @@ type Config struct {
 	// all, as mature agents do; 1 suits servers that take one image per
 	// request (llama.cpp and some vLLM builds).
 	KeepImages int
+	// Format asks every answer in JSON of a type (FormatFor): providers
+	// with structured output constrain it, and Parse decodes Result.Text
+	// after checking it. Tools are called as usual on the way.
+	Format *Format
 	// Approve is asked before every tool call. Its Decision may run the
 	// call (with other arguments, if it sets Input), or refuse it, telling
 	// the model why (Message), and end the run after the calls of this
@@ -623,7 +629,7 @@ func empty(resp *Response) bool {
 
 // request sends the conversation with the given system prompt.
 func (r *run) request(ctx context.Context, system string) (*Response, error) {
-	full := &Request{System: system, Messages: r.msgs, Tools: r.toolSpecs(), MaxTokens: r.cfg.MaxTokens}
+	full := &Request{System: system, Messages: r.msgs, Tools: r.toolSpecs(), MaxTokens: r.cfg.MaxTokens, Format: r.cfg.Format}
 	resp, streamed, err := r.generate(ctx, full, r.compactor.budget(r.cfg.MaxTokens))
 	if errors.HasCode(err, ErrProviderContext) && !streamed && !r.cfg.Compaction.Disabled {
 		// The estimate was wrong or the window unknown: compact harder,

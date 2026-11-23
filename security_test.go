@@ -54,3 +54,25 @@ func decideWith(effect agent.Effect, prefix string, mode agent.Mode, c agent.Too
 func compound(command string) bool {
 	return strings.ContainsAny(command, ";&|\n\r`<>$\\(){}") || strings.ContainsAny(strings.Fields(command + " x")[0], "=\"'/")
 }
+
+// Whatever the answer, Parse never panics, and its errors never carry the
+// answer's text.
+func FuzzParse(f *testing.F) {
+	f.Add(`{"number":"F-7","total":1,"lines":[]}`)
+	f.Add("```json\n{\"number\":1}\n```")
+	f.Add(`{"lines":[{"qty":"x"}],"total":{}}`)
+	f.Add(`{"number":"X","X":1,"total":"bad"}`)
+	format, err := agent.FormatFor[invoice]("invoice")
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Fuzz(func(t *testing.T, answer string) {
+		const mark = "\x01mark"
+		if _, err := agent.Parse[invoice](format, answer+mark); err != nil && strings.Contains(err.Error(), mark) {
+			t.Fatalf("the answer in the error: %v", err)
+		}
+		if _, err := agent.Parse[invoice](format, strings.ReplaceAll(answer, "X", mark)); err != nil && strings.Contains(err.Error(), mark) {
+			t.Fatalf("the answer in the error: %v", err)
+		}
+	})
+}

@@ -19,6 +19,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -88,6 +89,11 @@ type provider struct {
 	endpoint string
 	client   *http.Client
 	stall    time.Duration
+	// unformatted: the server refused response_format, and took the same
+	// request with the schema asked in words; Parse checks the answer. Kept
+	// apart with tools and without: some servers refuse the two together
+	// only.
+	unformatted, unformattedTools atomic.Bool
 }
 
 var _ agent.Provider = (*provider)(nil)
