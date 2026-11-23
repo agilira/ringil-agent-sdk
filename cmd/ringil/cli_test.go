@@ -386,7 +386,7 @@ func (s *stubSandbox) Wait() error { return s.exit }
 
 func checkSandboxSpec(t *testing.T, spec sandbox.Spec) {
 	t.Helper()
-	if strings.Join(spec.Argv, " ") != "python3 -V" || spec.Network != sandbox.IsolatedNetwork || spec.Dir != "/w" || len(spec.Mounts) != 1 {
+	if strings.Join(spec.Argv, " ") != "python3 -V" || spec.Network != sandbox.ProxiedNetwork || spec.Proxy == "" || spec.Dir != "/w" || len(spec.Mounts) != 1 {
 		t.Fatalf("spec %+v", spec)
 	}
 	if len(spec.Protected) != 1 || !strings.HasSuffix(spec.Protected[0], "ringil") {
@@ -398,7 +398,7 @@ func TestSandboxCommand(t *testing.T) {
 	h := newHarness(t, "")
 	stub := &stubSandbox{}
 	h.c.newSandbox = func() (sandbox.Sandbox, error) { return stub, nil }
-	if code := h.run("sandbox", "--mount", "x:/w:rw", "--net", "--dir", "/w", "--", "python3", "-V"); code != exitOK {
+	if code := h.run("sandbox", "--mount", "x:/w:rw", "--allow-domain", "pypi.org", "--dir", "/w", "--", "python3", "-V"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
 	checkSandboxSpec(t, stub.spec)

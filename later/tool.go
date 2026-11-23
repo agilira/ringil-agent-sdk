@@ -54,7 +54,7 @@ func Tools(b *Board, conv func(context.Context) string) []agent.Tool {
 			}
 			return "Check " + strconv.Itoa(c.ID) + " set: every " + every.String() + ", at most " + strconv.Itoa(c.Max) +
 				" times, until " + c.Until.Format("15:04") + ". Each check comes to you as a message; stop it with " + StopTool + " when it is done.", nil
-		})
+		}, agent.Internal())
 	stop := agent.NewTool(StopTool,
 		"Stop a check set with check_later: what it waited for is done, or the user no longer wants it.",
 		func(ctx context.Context, in stopIn) (string, error) {
@@ -62,7 +62,7 @@ func Tools(b *Board, conv func(context.Context) string) []agent.Tool {
 				return "", agent.ToolError(agent.ErrToolInput, agent.ModelMessage(err)+openList(b.Of(conv(ctx))))
 			}
 			return "Check " + strconv.Itoa(in.ID) + " stopped.", nil
-		})
+		}, agent.Internal())
 	return []agent.Tool{check, stop}
 }
 

@@ -22,7 +22,8 @@ go run ./examples/agent "Ricorda che il mio colore preferito è il verde"
 go run ./examples/agent "Qual è il mio colore preferito, e che ore sono a New York?"
 ```
 
-Le protezioni sono accese di default (argomenti dei tool validati, errori dei tool
+Il modello di sicurezza (cosa l'SDK garantisce, cosa decide l'host, cosa è fuori) è in
+[SECURITY.md](SECURITY.md). Le protezioni sono accese di default (argomenti dei tool validati, errori dei tool
 filtrati, sessioni con ripresa sicura, compattazione); limiti e politiche sono
 opzioni, non obblighi.
 
@@ -464,11 +465,13 @@ token con `mcp.FileTokens`, così la volta dopo non serve rifare il login.
 CLI: `mcp_servers` in `ringil.yaml`, con le chiavi del formato comune (`command`,
 `args`, `env`, `url`, `headers`: la voce JSON di un server copiata da un fornitore va
 bene così, il JSON è YAML); nei valori `${NOME}` viene risolto da ambiente ed `--env-file`.
-Per un server locale `sandbox: true` con `network` e `mounts` lo isola;
+Un server locale gira come processo normale, con i tuoi permessi, come negli agenti di
+codice; `sandbox: true` lo isola: vede solo i `mounts` (in sola lettura) e raggiunge solo
+gli `allow_domains`, attraverso il proxy di uscita;
 `oauth: {}` fa il login dal browser (token in `<config>/ringil/oauth/`);
 `trust_annotations: true` evita la conferma sui tool che il server dichiara di sola
-lettura; `disabled: true` lo tiene spento. Alla conferma, `a` consente quel tool per
-tutta la sessione.
+lettura; `disabled: true` lo tiene spento. Alla conferma, `a` consente per la sessione,
+`p` lo scrive in `permissions.allow`.
 Esempio di server: `mcp/examples/notes`.
 
 ## Cronologia dopo la compattazione

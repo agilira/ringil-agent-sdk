@@ -157,7 +157,7 @@ func (t *tool) outputTool() agent.Tool {
 }
 
 func (t *tool) killTool() agent.Tool {
-	return agent.NewTool("bash_kill", "Stop a background bash command.", t.kill) // only what bash started: no one need approve it
+	return agent.NewTool("bash_kill", "Stop a background bash command.", t.kill, agent.Internal()) // only what bash started
 }
 
 func (t *tool) output(_ context.Context, in jobIn) (string, error) {

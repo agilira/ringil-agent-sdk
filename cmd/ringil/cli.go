@@ -96,8 +96,11 @@ type cli struct {
 	outMu sync.Mutex
 	// workerIn and workerOut add up the workers' tokens of a turn.
 	workerIn, workerOut atomic.Int64
-	// allowed are tools the user allowed for the rest of the session.
-	allowed map[string]bool
+	// learned are the rules the user's "always" added, by asker (the
+	// parent "", a worker by name).
+	learned   map[string][]agent.Rule
+	learnedMu sync.Mutex
+	keepMu    sync.Mutex // one "p" answer writes ringil.yaml at a time
 	// newSandbox returns the platform sandbox; tests may replace it.
 	newSandbox func() (sandbox.Sandbox, error)
 	// cwd is where the CLI was started, home the user's home; tests
@@ -290,9 +293,9 @@ func (c *cli) app() *orpheus.App {
 		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.withConfig(c.cmdSkillInstall)).SetUsage("skill install <dir>")).
 		AddSubcommand(orpheus.NewCommand("rm", "Remove installed skills").SetHandler(c.withConfig(c.cmdSkillRemove)).SetUsage("skill rm <name...>")))
 	app.AddCommand(orpheus.NewCommand("sandbox", "Run a command isolated, as scripts and tools will be").SetHandler(c.withConfig(c.cmdSandbox)).
-		SetUsage("sandbox [--mount DIR[:/dest][:rw]]... [--net] [--dir /path] -- command [args...]").
+		SetUsage("sandbox [--mount DIR[:/dest][:rw]]... [--allow-domain D]... [--dir /path] -- command [args...]").
 		AddStringSliceFlag("mount", "", nil, "grant a host directory, at its own path unless :/dest is given; read-only unless :rw").
-		AddBoolFlag("net", "", false, "give the command an isolated network (no access to the host's services)").
+		AddStringSliceFlag("allow-domain", "", nil, "let the command reach this domain (*.example.com for its subdomains), through the egress proxy; none, no network").
 		AddFlag("dir", "", "", "working directory inside the sandbox"))
 	app.SetDefaultCommand("chat")
 	return app
@@ -622,59 +625,76 @@ func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
 
 // decide is approve as the agent's approval hook.
 func (c *cli) decide(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (agent.Decision, error) {
-	ok, err := c.approve(ctx, call, spec)
-	return agent.Decision{Allow: ok}, err
+	p := c.policy(ctx)
+	if c.notesReadInPlan(ctx, p, call, spec) {
+		return agent.Allow(), nil
+	}
+	if p.Effect(call, spec) == agent.EffectDeny { // a deny rule, or plan mode: before anything else allows it
+		return p.Approve(ctx, call, spec)
+	}
+	if allow, decided := c.triggerAllowed(call.Name); decided { // a trigger's run may only what it was allowed
+		if (allow && !replacesSkill(call) && !p.AskedByRule(call, spec)) || p.Effect(call, spec) == agent.EffectAllow {
+			return agent.Allow(), nil // allowed when the trigger was made (unless a rule wants a person: no one is here), or what runs without asking
+		}
+		return agent.Deny("This automation was not allowed this call when it was set up, and no one can be asked now."), nil
+	}
+	if c.notesFree(ctx, p, call, spec) {
+		return agent.Allow(), nil
+	}
+	return p.Approve(ctx, call, spec)
 }
 
-// approve asks before destructive tools (forget, MCP tools from servers
-// whose hints are not trusted, file writes later); everything else runs
-// without interrupting the user. "a" allows that tool for the rest of
-// the session.
-func (c *cli) approve(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
-	if allow, decided := c.triggerAllowed(call.Name); decided { // before --no-approvals: a trigger's run may only what it was allowed
-		return (allow && !replacesSkill(call)) || !c.mustAsk(ctx, call, spec), nil
+// notesReadInPlan: plan mode reads, and the notes tool's calls that change
+// nothing (a view, the session's scratchpad) are reading; a deny or ask
+// rule on them still holds.
+func (c *cli) notesReadInPlan(ctx context.Context, p *agent.Policy, call agent.ToolCall, spec agent.ToolSpec) bool {
+	if call.Name != notes.DefaultName || c.mode() != agent.ModePlan || c.notesMustAsk(ctx, call) || p.AskedByRule(call, spec) {
+		return false
 	}
-	if c.unasked() {
-		return true, nil
-	}
+	return (&agent.Policy{Rules: p.Rules}).Effect(call, spec) != agent.EffectDeny // the rules alone, without the mode
+}
+
+func (c *cli) notesFree(ctx context.Context, p *agent.Policy, call agent.ToolCall, spec agent.ToolSpec) bool {
+	return call.Name == notes.DefaultName && !p.AskedByRule(call, spec) && !c.notesMustAsk(ctx, call)
+}
+
+// askPerson asks whoever decides this run: the API's caller under serve
+// (a chat's owner), else the terminal.
+func (c *cli) askPerson(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (agent.Answer, error) {
 	if c.server != nil {
-		return c.serveApprove(ctx, call, spec)
+		ok, err := c.server.Ask(ctx, call)
+		return agent.Answer{Allow: ok}, err
 	}
 	return c.askTerminal(ctx, call, spec)
 }
 
-// askTerminal asks in the terminal, unless the call needs no asking.
-func (c *cli) askTerminal(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
+// askTerminal asks in the terminal: yes, no, always for this session, or
+// always, kept in ringil.yaml.
+func (c *cli) askTerminal(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (agent.Answer, error) {
 	c.holdTerminal(ctx)
 	defer c.askMu.Unlock()
-	// "always" is remembered per asker: a worker's yes is not the
-	// parent's, nor another worker's.
-	who, key := asker(ctx), call.Name
-	if info, ok := delegate.Current(ctx); ok {
-		key = info.Worker + ":" + call.Name
-	}
-	if !c.mustAsk(ctx, call, spec) || c.allowed[key] {
-		return true, nil
-	}
 	if checking(ctx) { // the user may be typing: a line meant for the chat must not answer it
 		c.note("a check may not ask in the terminal: " + call.Name + " refused")
-		return false, nil
+		return agent.Answer{}, nil
 	}
 	c.showCall(call)
-	answer, err := c.ask("\n  ? " + who + " wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? [y/N/a=always this session] ")
-	return c.answered(key, answer), err
+	options := "[y/N]"
+	if rule, ok := agent.RuleFor(call, spec); ok {
+		options = "[y/N/a=always " + rule.String() + " this session/p=always, kept in ringil.yaml]"
+	}
+	answer, err := c.ask("\n  ? " + asker(ctx) + " wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? " + options + " ")
+	return answered(answer), err
 }
 
-// answered reads a yes, no or always; always is remembered for key.
-func (c *cli) answered(key, answer string) bool {
-	if answer == "a" || answer == "always" || answer == "sempre" {
-		if c.allowed == nil {
-			c.allowed = map[string]bool{}
-		}
-		c.allowed[key] = true
-		return true
+// answered reads a yes, no, always (this session) or always (the project).
+func answered(answer string) agent.Answer {
+	switch answer {
+	case "a", "always", "sempre":
+		return agent.Answer{Allow: true, Remember: agent.RememberSession}
+	case "p", "project", "progetto":
+		return agent.Answer{Allow: true, Remember: agent.RememberProject}
 	}
-	return yes(answer)
+	return agent.Answer{Allow: yes(answer)}
 }
 
 // holdTerminal takes the terminal for a question; when the chat prompt
@@ -696,12 +716,6 @@ func asker(ctx context.Context) string {
 	}
 	return "The agent"
 }
-
-// mustAsk: destructive tools, and the notes changes their scope wants
-// confirmed (project notes, deletions).
-// writesFiles are the tools that change files: confirmed unless
-// --accept-edits.
-var writesFiles = map[string]bool{"write_file": true, "edit_file": true}
 
 // confirmProtected asks before any write to a protected file (other
 // agents' rules, editor and CI settings, .git), even with --accept-edits;
@@ -745,29 +759,16 @@ func (c *cli) chatRun() bool {
 	return false
 }
 
-// serveApprove: under serve, the API's caller decides what the chat
-// would ask the user.
-func (c *cli) serveApprove(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (bool, error) {
-	if !c.mustAsk(ctx, call, spec) {
-		return true, nil
-	}
-	return c.server.Ask(ctx, call)
-}
-
-func (c *cli) mustAsk(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) bool {
-	if call.Name == "bash" {
-		return false // the tool asks itself: outside the sandbox, and dangerous commands
-	}
-	if writesFiles[call.Name] {
-		return !c.acceptEdits // protected files are confirmed apart, always
-	}
-	if call.Name != notes.DefaultName {
-		return spec.Annotations.Destructive
-	}
+// notesMustAsk reports whether a notes call changes something its scope
+// wants confirmed (project notes or deletions).
+func (c *cli) notesMustAsk(ctx context.Context, call agent.ToolCall) bool {
 	if _, worker := delegate.Current(ctx); worker {
 		// A worker writes only its own scratchpad (the project is read
 		// only for it): only deleting is confirmed.
-		return strings.Contains(string(call.Input), `"delete"`)
+		var in struct {
+			Command string `json:"command"`
+		}
+		return json.Unmarshal(call.Input, &in) != nil || in.Command == "delete" // what cannot be read is asked
 	}
 	return c.notes != nil && c.notes.NeedsApproval(call)
 }

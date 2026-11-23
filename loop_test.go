@@ -28,7 +28,7 @@ func constant(name string, runs *atomic.Int32) agent.Tool {
 	return agent.NewTool(name, "always the same", func(context.Context, in) (string, error) {
 		runs.Add(1)
 		return name + " result", nil
-	})
+	}, agent.ReadOnly())
 }
 
 // script calls each name in order, then answers "done".
@@ -98,7 +98,7 @@ func TestChangingResultsAreNotALoop(t *testing.T) {
 	next := agent.NewTool("read_page", "next page", func(context.Context, struct{}) (string, error) {
 		page++
 		return "page " + strconv.Itoa(page), nil
-	})
+	}, agent.ReadOnly())
 	results, loops, _ := loopRun(t, agent.Config{Tools: tools(t, next), Loop: warn}, script("read_page", "read_page", "read_page", "read_page", "read_page"))
 	if got := warned(results); strings.Contains(got, "true") || len(loops) != 0 {
 		t.Fatalf("warned %s", got)
@@ -188,7 +188,7 @@ func roConst(name string, runs *atomic.Int32) agent.Tool {
 	return agent.NewTool(name, "same", func(context.Context, struct{}) (string, error) {
 		runs.Add(1)
 		return name + " result", nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 }
 
 func together(names ...string) fake.Step {
@@ -229,7 +229,7 @@ func TestShorterPeriodIsChecked(t *testing.T) {
 func TestWarningSurvivesCompaction(t *testing.T) {
 	big := agent.NewTool("read", "big", func(context.Context, struct{}) (string, error) {
 		return strings.Repeat("x", 20000), nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 	p := fake.New(fake.Call("read", `{}`), fake.Call("read", `{}`), together("read", "read"), fake.Reply("done"))
 	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, big), ContextWindow: 4000, Loop: warn})
 	if _, err := a.Run(context.Background(), nil, agent.UserText("go")); err != nil {

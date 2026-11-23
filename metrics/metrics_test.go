@@ -43,7 +43,7 @@ func has(t *testing.T, out string, lines ...string) {
 // A real run: a tool call, two model calls, the tokens, the outcome.
 func TestARunIsCounted(t *testing.T) {
 	m := New()
-	add := agent.NewTool("add", "adds", func(_ context.Context, in addIn) (int, error) { return in.A + in.B, nil })
+	add := agent.NewTool("add", "adds", func(_ context.Context, in addIn) (int, error) { return in.A + in.B, nil }, agent.ReadOnly())
 	tools, err := agent.NewRegistry(add)
 	if err != nil {
 		t.Fatal(err)

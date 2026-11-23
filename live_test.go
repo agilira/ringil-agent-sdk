@@ -107,7 +107,7 @@ func TestLiveTypedTool(t *testing.T) {
 		func(_ context.Context, in convertIn) (string, error) {
 			seen = append(seen, in)
 			return "rate 1.25, result " + strconv.FormatFloat(in.Amount*1.25, 'f', -1, 64), nil
-		}, agent.ReadOnly())
+		}, agent.ReadOnly(), agent.ReadOnly())
 	tools, err := agent.NewRegistry(convert)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestLiveCompaction(t *testing.T) {
 		page++
 		return "Page " + strconv.Itoa(page) + " of 4. Key figure on this page: " + strconv.Itoa(page*111) + ". " +
 			strings.Repeat("Filler text. ", 300), nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 	tools, err := agent.NewRegistry(fetch)
 	if err != nil {
 		t.Fatal(err)
@@ -308,9 +308,9 @@ func TestLiveDiscovery(t *testing.T) {
 	tools := []agent.Tool{agent.NewTool("weather_today", "Today's weather in Milan.", func(context.Context, noArgs) (string, error) {
 		called = true
 		return "Milano: sole, 21 gradi.", nil
-	}, agent.Deferrable())}
+	}, agent.Deferrable(), agent.ReadOnly())}
 	for _, n := range []string{"crm_lookup", "invoice_create", "slack_post", "calendar_add"} {
-		tools = append(tools, agent.NewTool(n, "Business tool "+n+".", func(context.Context, noArgs) (string, error) { return "", nil }, agent.Deferrable()))
+		tools = append(tools, agent.NewTool(n, "Business tool "+n+".", func(context.Context, noArgs) (string, error) { return "", nil }, agent.Deferrable(), agent.ReadOnly()))
 	}
 	reg, err := agent.NewRegistry(tools...)
 	if err != nil {
@@ -341,7 +341,12 @@ func TestLiveNotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := agent.New(agent.Config{Provider: model, Tools: tools, Context: nb.Context, MaxTurns: 5})
+	notesBlock := func(ctx context.Context) ([]agent.ContextBlock, error) {
+		text, err := nb.Context(ctx)
+		return []agent.ContextBlock{{Name: "notes", Text: text}}, err
+	}
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, Context: notesBlock, MaxTurns: 5,
+		Approve: (&agent.Policy{Mode: agent.ModeBypass}).Approve}) // the host lets the agent keep its notes
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +370,11 @@ func TestLiveRules(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("Rispondi sempre in inglese, e chiudi ogni risposta con: -- ringil"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	a, err := agent.New(agent.Config{Provider: model, Context: rules.Context(rules.Config{Dir: dir})})
+	rulesBlock := func(ctx context.Context) ([]agent.ContextBlock, error) {
+		text, err := rules.Context(rules.Config{Dir: dir})(ctx)
+		return []agent.ContextBlock{{Name: "rules", Text: text}}, err
+	}
+	a, err := agent.New(agent.Config{Provider: model, Context: rulesBlock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +394,7 @@ func TestLiveDelegation(t *testing.T) {
 	type noArgs struct{}
 	stock := agent.NewTool("stock_level", "Stock of item AX-7 in the warehouse.", func(context.Context, noArgs) (string, error) {
 		return "AX-7: 314 units in Bologna.", nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 	wtools, err := agent.NewRegistry(stock)
 	if err != nil {
 		t.Fatal(err)
@@ -454,7 +463,7 @@ func TestLiveReadHistory(t *testing.T) {
 			return "PAGE 1. The access code of the vault is 7391. " + body, nil
 		}
 		return "PAGE " + strconv.Itoa(n) + ". " + body, nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 	tools, err := agent.NewRegistry(fetch)
 	if err != nil {
 		t.Fatal(err)
@@ -520,7 +529,7 @@ func TestLiveLoop(t *testing.T) {
 	status := agent.NewTool("job_status", "Status of the nightly export job.", func(context.Context, struct{}) (string, error) {
 		runs++
 		return "export job: still running", nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 	tools, err := agent.NewRegistry(status)
 	if err != nil {
 		t.Fatal(err)
@@ -550,7 +559,7 @@ func TestLiveEventLog(t *testing.T) {
 	}
 	weather := agent.NewTool("weather", "Weather in a city.", func(_ context.Context, i in) (string, error) {
 		return "Bologna-Meteo-Riservato: 18 gradi", nil
-	})
+	}, agent.ReadOnly())
 	tools, err := agent.NewRegistry(weather)
 	if err != nil {
 		t.Fatal(err)
@@ -593,7 +602,8 @@ func TestLiveFileEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := agent.New(agent.Config{Provider: model, Tools: tools, MaxTurns: 6})
+	edits := &agent.Policy{Mode: agent.ModeAcceptEdits} // the host lets edits run, as accept-edits does
+	a, err := agent.New(agent.Config{Provider: model, Tools: tools, MaxTurns: 6, Approve: edits.Approve})
 	if err != nil {
 		t.Fatal(err)
 	}

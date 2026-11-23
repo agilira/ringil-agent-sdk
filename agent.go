@@ -98,12 +98,15 @@ type Config struct {
 	// all, as mature agents do; 1 suits servers that take one image per
 	// request (llama.cpp and some vLLM builds).
 	KeepImages int
-	// Approve, when set, is asked before every tool call. Its Decision
-	// may run the call (with other arguments, if it sets Input), or refuse
-	// it, telling the model why (Message), and end the run after the calls
-	// of this turn (Stop). An error refuses the call. Which calls to ask
-	// about is the host's choice: the CLI asks for tools marked
-	// Destructive, an app may ask for more or none.
+	// Approve is asked before every tool call. Its Decision may run the
+	// call (with other arguments, if it sets Input), or refuse it, telling
+	// the model why (Message), and end the run after the calls of this
+	// turn (Stop). An error refuses the call. Nil is a Policy with no
+	// one to ask: reading and the agent's bookkeeping run, and what would
+	// need a person's yes (changing files, destructive and outward calls,
+	// a tool marked nothing) is refused. A Policy with Ask is the usual choice;
+	// (&Policy{Mode: ModeBypass}).Approve runs everything, by the host's
+	// explicit choice.
 	Approve func(ctx context.Context, call ToolCall, spec ToolSpec) (Decision, error)
 	// AfterTool, when set, sees every result before the model does and
 	// returns the one the model gets (to redact it, shorten it, add to
@@ -115,7 +118,9 @@ type Config struct {
 	// it is new or changed since the conversation last held it. The system
 	// prompt stays the same at every turn, so the provider's cache keeps
 	// it and the history. An error is reported as an event and the run
-	// goes on without the blocks.
+	// goes on without the blocks. Its blocks reach the model as they are:
+	// the agent does not filter them, so they must come from sources the
+	// host trusts.
 	Context func(ctx context.Context) ([]ContextBlock, error)
 	// Discovery lists deferrable tools by name only once their schemas
 	// exceed DiscoveryThreshold bytes (default 16 KiB); the model loads
@@ -827,14 +832,11 @@ func (r *run) gate(ctx context.Context, call *ToolCall) (ToolResult, error, bool
 	if res, err, refused := r.precheck(ctx, *call); refused {
 		return res, err, false
 	}
-	if r.cfg.Approve == nil {
-		return ToolResult{}, nil, true
-	}
 	spec, ok := r.spec(call.Name)
 	if !ok {
 		return ToolResult{}, nil, true
 	}
-	d, err := r.cfg.Approve(ctx, *call, spec)
+	d, err := r.cfg.approver()(ctx, *call, spec)
 	if d.Stop {
 		r.denyStop = true
 	}

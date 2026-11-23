@@ -14,6 +14,7 @@ import (
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
 
+	"github.com/agilira/ringil-agent-sdk/egress"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 )
 
@@ -22,7 +23,7 @@ import (
 func (c *cli) cmdSandbox(ctx *orpheus.Context) error {
 	argv := ctx.Positional()
 	if len(argv) == 0 {
-		return errors.New(ErrUsage, "usage: ringil sandbox [--mount DIR[:/dest][:rw]]... [--net] -- command [args...]")
+		return errors.New(ErrUsage, "usage: ringil sandbox [--mount DIR[:/dest][:rw]]... [--allow-domain D]... -- command [args...]")
 	}
 	mounts, err := parseMounts(ctx.GetFlagStringSlice("mount"))
 	if err != nil {
@@ -33,8 +34,12 @@ func (c *cli) cmdSandbox(ctx *orpheus.Context) error {
 		return err
 	}
 	spec := sandbox.Spec{Argv: argv, Mounts: mounts, Stdin: c.in, Stdout: c.out, Stderr: c.errOut}
-	if ctx.GetFlagBool("net") {
-		spec.Network = sandbox.IsolatedNetwork
+	if domains := ctx.GetFlagStringSlice("allow-domain"); len(domains) > 0 {
+		stop, err := proxied(ctx, &spec, domains)
+		if err != nil {
+			return err
+		}
+		defer stop()
 	}
 	if dir := ctx.GetFlagString("dir"); dir != "" {
 		spec.Dir = dir
@@ -48,6 +53,21 @@ func (c *cli) cmdSandbox(ctx *orpheus.Context) error {
 		return err
 	}
 	return exitStatus(p.Wait())
+}
+
+// proxied gives spec the network to domains alone, through the egress
+// proxy, as bash and MCP servers have it.
+func proxied(ctx *orpheus.Context, spec *sandbox.Spec, domains []string) (func(), error) {
+	p, err := egress.New(egress.Config{Allow: domains})
+	if err != nil {
+		return nil, errors.Wrap(err, ErrUsage, "--allow-domain: "+err.Error())
+	}
+	sock, stop, err := p.Listen(ctx.Context(), nil)
+	if err != nil {
+		return nil, err
+	}
+	spec.Network, spec.Proxy = sandbox.ProxiedNetwork, sock
+	return stop, nil
 }
 
 // parseMounts reads DIR, DIR:rw, DIR:/dest or DIR:/dest:rw. Without a

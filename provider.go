@@ -87,6 +87,18 @@ type Annotations struct {
 	// Parallel: calls may run at the same time as other parallel or
 	// read-only calls of the same turn, such as sub-agents.
 	Parallel bool `json:"parallel,omitempty"`
+	// Edits: the tool changes files of the workspace (accept-edits allows
+	// it without asking).
+	Edits bool `json:"edits,omitempty"`
+	// SelfConfirms: the tool confines or confirms its own risky calls (bash
+	// and skill scripts in the sandbox, asking for what leaves it), so the
+	// policy does not ask again for the others; rules and modes still apply.
+	SelfConfirms bool `json:"self_confirms,omitempty"`
+	// Internal: the tool changes only the agent's own state (its to-do
+	// list, its checks, its workers, its memory): it runs without asking,
+	// in plan mode too. What others read (a published artifact) is Edits. A tool marked nothing asks, as one that may change
+	// anything.
+	Internal bool `json:"internal,omitempty"`
 }
 
 // Clone returns a deep copy of r.

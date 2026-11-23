@@ -200,7 +200,7 @@ func New(cfg Config) (*Shell, error) {
 // Tools are bash, and bash_output and bash_kill for the commands it runs
 // in the background.
 func (s *Shell) Tools() []agent.Tool {
-	bash := agent.NewTool("bash", s.t.description(), s.t.call, agent.Destructive(), agent.OpenWorld())
+	bash := agent.NewTool("bash", s.t.description(), s.t.call, agent.Destructive(), agent.OpenWorld(), agent.SelfConfirms())
 	return []agent.Tool{bash, s.t.outputTool(), s.t.killTool()}
 }
 

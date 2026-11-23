@@ -32,7 +32,7 @@ func TestOneSequence(t *testing.T) {
 	slow := agent.NewTool("slow", "s", func(context.Context, struct{}) (string, error) {
 		time.Sleep(5 * time.Millisecond)
 		return "ok", nil
-	})
+	}, agent.ReadOnly())
 	var seen []agent.Event
 	cfg := agent.Config{Tools: tools(t, slow), Observers: []agent.Observer{func(ev agent.Event) { seen = append(seen, ev) }}}
 	cfg.Provider = fake.New(fake.Call("slow", `{}`), fake.Reply("done"))
@@ -197,7 +197,7 @@ func TestStartedOpensEveryRun(t *testing.T) {
 // Audit 18/11 (3): the empty call before the nudge was counted in the
 // result but in no EventModel, so a worker's spend was short.
 func TestEveryModelCallIsReported(t *testing.T) {
-	noop := agent.NewTool("noop", "n", func(context.Context, struct{}) (string, error) { return "", nil })
+	noop := agent.NewTool("noop", "n", func(context.Context, struct{}) (string, error) { return "", nil }, agent.ReadOnly())
 	sum := 0
 	cfg := agent.Config{Tools: tools(t, noop), Provider: fake.New(fake.Step{Usage: agent.Usage{Input: 100}}, fake.Step{Chunks: []string{"hi"}, Usage: agent.Usage{Input: 7}}),
 		Observers: []agent.Observer{func(ev agent.Event) {

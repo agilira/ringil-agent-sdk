@@ -51,6 +51,19 @@ func Parallel() ToolOption { return func(s *ToolSpec) { s.Annotations.Parallel =
 // OpenWorld marks a tool that reaches outside the host (network, email).
 func OpenWorld() ToolOption { return func(s *ToolSpec) { s.Annotations.OpenWorld = true } }
 
+// Edits marks a tool that changes files of the workspace: the default
+// policy asks for it, accept-edits allows it.
+func Edits() ToolOption { return func(s *ToolSpec) { s.Annotations.Edits = true } }
+
+// SelfConfirms marks a tool that confines or confirms its own risky calls
+// (bash and skill scripts in the sandbox): the default policy does not ask
+// again.
+func SelfConfirms() ToolOption { return func(s *ToolSpec) { s.Annotations.SelfConfirms = true } }
+
+// Internal marks a tool that changes only the agent's own state: it runs
+// without asking, in plan mode too.
+func Internal() ToolOption { return func(s *ToolSpec) { s.Annotations.Internal = true } }
+
 // Tool error codes.
 const (
 	// ErrToolConfig: a tool or registry was built badly.

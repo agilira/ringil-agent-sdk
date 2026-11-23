@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	stderrors "errors"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -170,54 +169,6 @@ func TestNoNetworkMeansNoSockets(t *testing.T) {
 	}
 }
 
-func listen(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := ln.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			if err := c.Close(); err != nil {
-				return
-			}
-		}
-	}()
-	return strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
-}
-
-func TestIsolatedNetworkCannotReachHostLoopback(t *testing.T) {
-	s := sandboxOrSkip(t)
-	if !executable(slirpPath) {
-		t.Skip("slirp4netns not installed")
-	}
-	port := listen(t)
-	script := `timeout 3 bash -c 'exec 3<>/dev/tcp/10.0.2.2/` + port + `' 2>/dev/null && echo host-reached || echo host-blocked;
-python3 -c "import socket
-try:
- socket.socket(socket.AF_UNIX)
- print('unix-open')
-except OSError:
- print('unix-refused')"
-timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && echo internet-ok || echo internet-fail`
-	out, errOut, err := run(t, s, Spec{Argv: sh(script), Network: IsolatedNetwork})
-	if err != nil {
-		t.Fatalf("%v: %s", err, errOut)
-	}
-	if !strings.Contains(out, "host-blocked") || !strings.Contains(out, "unix-refused") || !strings.Contains(out, "internet-ok") {
-		t.Fatalf("out %q", out)
-	}
-}
-
 func TestSeccompDeniesKernelSurface(t *testing.T) {
 	s := sandboxOrSkip(t)
 	numbers := map[string]string{"amd64": "323,321,298", "arm64": "282,280,241"} // userfaultfd, bpf, perf_event_open
@@ -323,14 +274,9 @@ func TestSamePathMountWritesOutsideTheWorkingDirectory(t *testing.T) {
 func TestSocketpairOnlyStream(t *testing.T) {
 	s := sandboxOrSkip(t)
 	script := "import socket\nfor ty in (socket.SOCK_STREAM, socket.SOCK_SEQPACKET, socket.SOCK_DGRAM):\n try:\n  socket.socketpair(socket.AF_UNIX, ty)\n  print('ok')\n except OSError as e:\n  print('refused', e.errno)"
-	for _, n := range []Network{NoNetwork, IsolatedNetwork} {
-		if n == IsolatedNetwork && !executable(slirpPath) {
-			continue
-		}
-		out, errOut, err := run(t, s, Spec{Argv: []string{"/usr/bin/python3", "-c", script}, Network: n})
-		if err != nil || strings.TrimSpace(out) != "ok\nok\nrefused 1" {
-			t.Fatalf("network %d: %q %v %s", n, out, err, errOut)
-		}
+	out, errOut, err := run(t, s, Spec{Argv: []string{"/usr/bin/python3", "-c", script}})
+	if err != nil || strings.TrimSpace(out) != "ok\nok\nrefused 1" {
+		t.Fatalf("%q %v %s", out, err, errOut)
 	}
 }
 

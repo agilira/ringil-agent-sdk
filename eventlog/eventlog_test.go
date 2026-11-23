@@ -28,7 +28,7 @@ func TestLogsMetadataNeverContent(t *testing.T) {
 	}
 	tool := agent.NewTool("search", "s", func(context.Context, in) (string, error) {
 		return "", agent.ToolError("SEARCH_DOWN", "the index at /srv/"+secret+" is down")
-	})
+	}, agent.ReadOnly())
 	reg, err := agent.NewRegistry(tool)
 	if err != nil {
 		t.Fatal(err)

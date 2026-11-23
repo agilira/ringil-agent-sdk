@@ -10,8 +10,9 @@
 // bash tool all run through it.
 //
 // The Linux backend uses bubblewrap (namespaces, no capabilities, a
-// seccomp filter) with per-process resource limits. Other platforms report
-// ErrUnavailable: there is never a silent fallback to running unconfined.
+// seccomp filter) with per-process resource limits; the macOS backend uses
+// Seatbelt. Other platforms report ErrUnavailable: there is never a silent
+// fallback to running unconfined.
 package sandbox
 
 import (
@@ -46,14 +47,6 @@ const (
 	// sockets at all, so a granted directory holding a host Unix socket
 	// cannot be used to reach the host.
 	NoNetwork Network = iota
-	// IsolatedNetwork: outbound IPv4/IPv6 through a user-mode network stack
-	// (slirp4netns). Services the host binds to loopback only are not
-	// reachable and Unix sockets are refused. Everything else is: other
-	// hosts, the LAN, and the host's own services bound to a non-loopback
-	// address (including container and VM bridges such as docker0); DNS
-	// goes through the host's resolver, local names included. An egress
-	// filter is planned; until then grant network only where that is fine.
-	IsolatedNetwork
 	// ProxiedNetwork: no network but one address, ProxyAddr, which leads to
 	// the host's Unix socket Spec.Proxy: an egress proxy (package egress)
 	// deciding which domains the program may reach. HTTP_PROXY and its
@@ -189,6 +182,9 @@ func validate(spec Spec) error {
 }
 
 func validateProxy(spec Spec) error {
+	if spec.Network != NoNetwork && spec.Network != ProxiedNetwork {
+		return configError("the network is NoNetwork or ProxiedNetwork")
+	}
 	if (spec.Network == ProxiedNetwork) != (spec.Proxy != "") || spec.Proxy != "" && !filepath.IsAbs(spec.Proxy) {
 		return configError("a proxied network needs the proxy's absolute socket path, and only it")
 	}
@@ -344,6 +340,7 @@ func fixedEnv(spec Spec, tmp, proxy string) map[string]string {
 			env[k] = "http://" + proxy
 		}
 		env["NO_PROXY"], env["no_proxy"] = "", ""
+		env["NODE_USE_ENV_PROXY"] = "1" // Node reads the proxy variables only when told to
 	}
 	return env
 }

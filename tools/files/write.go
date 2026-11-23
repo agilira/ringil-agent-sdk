@@ -57,14 +57,14 @@ func (w *workspace) writeTool() agent.Tool {
 	return agent.NewTool("write_file",
 		"Create a file, or replace a whole file. An existing file must have been read with read_file first, and not changed since; "+
 			"to change part of a file, use edit_file. Missing folders are created. Granted directories: "+w.dirList()+".",
-		w.write)
+		w.write, agent.Edits())
 }
 
 func (w *workspace) editTool() agent.Tool {
 	return agent.NewTool("edit_file",
 		"Replace text in a file: old_string must appear exactly once (or set replace_all), copied exactly from read_file's output "+
 			"without the line-number prefix. The file must have been read first, and not changed since. Granted directories: "+w.dirList()+".",
-		w.edit)
+		w.edit, agent.Edits())
 }
 
 // WriteTools implements Workspace.

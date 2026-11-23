@@ -19,9 +19,9 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/egress"
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
 	"github.com/agilira/ringil-agent-sdk/mcp"
-	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
@@ -37,11 +37,16 @@ type mcpEntry struct {
 	URL     string            `argus:"url"`
 	Headers map[string]string `argus:"headers"`
 	Tools   []string          `argus:"tools"`
-	// Sandbox runs a local server isolated (Linux), with Network and
-	// read-only Mounts; off by default, as the user chose the command.
-	Sandbox bool     `argus:"sandbox"`
-	Network bool     `argus:"network"`
-	Mounts  []string `argus:"mounts"`
+	// A local server runs as a plain process with the user's rights, as
+	// coding agents run the servers their user configured. Sandbox runs it
+	// isolated, seeing only its read-only Mounts and reaching only
+	// AllowDomains, through the egress proxy (none: no network).
+	Sandbox      bool     `argus:"sandbox"`
+	Mounts       []string `argus:"mounts"`
+	AllowDomains []string `argus:"allow_domains"`
+	// OldNetwork is the key of before 23/11, read only to say where it
+	// went.
+	OldNetwork *bool `argus:"network"`
 	// Disabled keeps the entry without starting it.
 	Disabled bool `argus:"disabled"`
 	// TrustAnnotations lets the server's read-only hints skip the
@@ -159,8 +164,14 @@ func (c *cli) sandboxServer(srv mcp.Server, e mcpEntry) (mcp.Server, error) {
 		return srv, err
 	}
 	srv.Sandbox = sb
-	if e.Network {
-		srv.Network = sandbox.IsolatedNetwork
+	if len(e.AllowDomains) > 0 {
+		if srv.Proxy, err = egress.New(egress.Config{Allow: e.AllowDomains}); err != nil {
+			return srv, errors.Wrap(err, ErrUsage, "mcp_servers."+srv.Name+".allow_domains: "+err.Error())
+		}
+		name := srv.Name
+		srv.Refused = func(host, why string) {
+			c.note("MCP server " + name + " could not reach " + host + " (" + why + "): add it to its allow_domains if it should")
+		}
 	}
 	for _, m := range e.Mounts {
 		mount, ok := maskedMount(m)
@@ -181,6 +192,18 @@ func (e mcpEntry) check() error {
 		return errors.New(ErrUsage, "unknown server type "+e.Type)
 	case e.URL != "" && e.Command != "":
 		return errors.New(ErrUsage, "give either a command or a url, not both")
+	}
+	return e.checkSandbox()
+}
+
+// checkSandbox: the old network key is refused saying where it went;
+// mounts and domains are the sandbox's.
+func (e mcpEntry) checkSandbox() error {
+	switch {
+	case e.OldNetwork != nil:
+		return errors.New(ErrUsage, "network is gone: a sandboxed server reaches only its allow_domains, through the egress proxy")
+	case !e.Sandbox && (len(e.Mounts) > 0 || len(e.AllowDomains) > 0):
+		return errors.New(ErrUsage, "mounts and allow_domains are the sandbox's: add sandbox: true")
 	}
 	return nil
 }
