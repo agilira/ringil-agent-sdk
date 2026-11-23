@@ -37,6 +37,8 @@ func FuzzConfigYAML(f *testing.F) {
 		"profiles: null\n",
 		`instructions: "*.md"` + "\n",
 		"transcribe:\n  provider: anthropic\n",
+		"proxy: {url: \"http://u:p@proxy:3128\"}\n",
+		"proxy: {no_proxy: [x]}\n",
 		"providers:\n  x: {base: \"https://u:p@h/v1\", key_env: \"A B\"}\n",
 		"providers:\n  openai: {kind: anthropic}\nprovider: openai\n",
 		"provider: x\nprofiles:\n  w: {provider: y, embed_model: e}\n",

@@ -45,6 +45,7 @@ type setup struct {
 	composio   bool             // Composio's key was kept
 	dropOAuth  string           // server whose OAuth token is dropped once ringil.yaml writes
 	session    *chatgpt.Session // the ChatGPT sign-in, for that provider
+	saved      []string         // the keys kept in the store
 }
 
 // cmdSetup asks the questions a first start needs, in order: where the
@@ -90,7 +91,30 @@ func (s *setup) done() error {
 			msg = "ringil is set up. Before starting it, set " + name + " in your environment (or an --env-file of mode 600): ringil never writes it down."
 		}
 	}
+	s.c.shadowed = s.inEnvironment()
+	if len(s.c.shadowed) > 0 {
+		msg += " Remove from your environment (and your shell's profile) " + strings.Join(s.c.shadowed, ", ") +
+			": they are in the store now, and ringil refuses a key in both places."
+	}
 	return s.c.line(msg)
+}
+
+// keep saves a key in the store chosen, and remembers its name.
+func (s *setup) keep(name, value string) error {
+	s.saved = append(s.saved, name)
+	return s.keys.Set(s.ctx, name, value)
+}
+
+// inEnvironment are the keys kept that the environment has too (audit
+// 23/11: an exported OPENAI_API_KEY stopped the first run after setup).
+func (s *setup) inEnvironment() []string {
+	var both []string
+	for _, name := range s.saved {
+		if s.c.getenv(name) != "" {
+			both = append(both, name)
+		}
+	}
+	return both
 }
 
 // firstRun offers the setup to a person who starts ringil with nothing
@@ -104,8 +128,8 @@ func (c *cli) firstRun(next func(*orpheus.Context) error) func(*orpheus.Context)
 		if err != nil || !yes {
 			return err
 		}
-		if err := c.cmdSetup(ctx); err != nil {
-			return err
+		if err := c.cmdSetup(ctx); err != nil || len(c.shadowed) > 0 {
+			return err // with keys in both places, the run would stop: the setup said what to remove
 		}
 		return next(ctx)
 	}

@@ -64,8 +64,7 @@ func secretsCommand(t *testing.T, dir, input string, vars map[string]string, arg
 }
 
 // 22/11: the keys came from the environment and the --env-file alone; the
-// store of ringil.yaml serves every part of ringil, the environment
-// winning for one run.
+// store of ringil.yaml serves every part of ringil.
 func TestSecretsInTheStore(t *testing.T) {
 	dir := t.TempDir()
 	writeProfiles(t, dir, `{"secrets":{"store":"file"},"provider":"mine","providers":{"mine":{"base":"https://llm.example.com/v1","key_env":"MY_KEY"}}}`)
@@ -79,16 +78,30 @@ func TestSecretsInTheStore(t *testing.T) {
 	if k := keyOfRun(t, dir, vars); k != "sk-from-store" {
 		t.Fatalf("key %q", k)
 	}
+	secretsCommand(t, dir, "", vars, "rm", "MY_KEY")
+	if k := keyOfRun(t, dir, vars); k != "" {
+		t.Fatalf("still there after rm: %q", k)
+	}
+}
+
+// 23/11: the same key in the environment too stops the run, naming it:
+// a variable forgotten there, or put there, never wins in silence.
+func TestAKeyInTheStoreIsNotShadowed(t *testing.T) {
+	dir := t.TempDir()
+	writeProfiles(t, dir, `{"secrets":{"store":"file"},"provider":"mine","providers":{"mine":{"base":"https://llm.example.com/v1","key_env":"MY_KEY"}}}`)
+	vars := map[string]string{"RINGIL_MODEL": "m", "RINGIL_SECRETS_PASSPHRASE": "frase lunga"}
+	secretsCommand(t, dir, "sk-from-store\n", vars, "set", "MY_KEY")
 	over := map[string]string{"MY_KEY": "from-env"}
 	for k, v := range vars {
 		over[k] = v
 	}
-	if k := keyOfRun(t, dir, over); k != "from-env" {
-		t.Fatalf("the environment does not win: %q", k)
+	h := storeHarness(t, dir, "", over, fake.Reply("ok"))
+	h.c.newProvider = func(cfg openai.Config) (agent.Provider, error) {
+		_, err := cfg.KeyFunc(context.Background())
+		return nil, err
 	}
-	secretsCommand(t, dir, "", vars, "rm", "MY_KEY")
-	if k := keyOfRun(t, dir, vars); k != "" {
-		t.Fatalf("still there after rm: %q", k)
+	if code := h.run("--no-tools", "run", "hi"); code == exitOK || !strings.Contains(h.err.String(), "MY_KEY is in the secrets store and in the environment") || strings.Contains(h.err.String(), "from-env") {
+		t.Fatalf("exit %d: %s", code, h.err)
 	}
 }
 
@@ -128,24 +141,32 @@ func TestSecretsSectionChecked(t *testing.T) {
 }
 
 // Audit 22/11: every setting absent from the environment went to the
-// store: an entry there changed ringil.yaml's, and a store that could not
-// answer stopped every run. Settings are the environment's, the
-// --env-file's and ringil.yaml's alone.
+// store: an entry there changed ringil.yaml's. Settings are the
+// environment's, the --env-file's and ringil.yaml's alone.
 func TestSettingsAreNotSecrets(t *testing.T) {
 	dir := t.TempDir()
-	writeProfiles(t, dir, `{"secrets":{"store":"file"},"model":"from-yaml"}`)
-	vars := map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_SECRETS_PASSPHRASE": "p", "OPENAI_API_KEY": "k"}
+	writeProfiles(t, dir, `{"secrets":{"store":"file"},"provider":"openai","model":"from-yaml"}`)
+	vars := map[string]string{"RINGIL_SECRETS_PASSPHRASE": "p"}
 	secretsCommand(t, dir, "planted-model\n", vars, "set", "RINGIL_MODEL")
+	secretsCommand(t, dir, "k\n", vars, "set", "OPENAI_API_KEY")
 	h := storeHarness(t, dir, "", vars, fake.Reply("ok"))
 	if code := h.run("--no-tools", "run", "hi"); code != exitOK || h.config.Model != "from-yaml" {
 		t.Fatalf("exit %d, model %q: %s", code, h.config.Model, h.err)
 	}
-	// A Vault no one answers at: the run, its key in the environment,
-	// goes on.
-	writeProfiles(t, dir, `{"secrets":{"store":"vault","vault":{"url":"http://127.0.0.1:1","path":"x"}}}`)
-	h = storeHarness(t, dir, "", map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "m", "OPENAI_API_KEY": "k"}, fake.Reply("ok"))
-	if code := h.run("--no-tools", "run", "hi"); code != exitOK {
-		t.Fatalf("a store that cannot answer stopped the run: %s", h.err)
+}
+
+// 23/11: a store that cannot answer stops what needs a provider's key: it
+// is read from the store alone, never from the environment instead.
+func TestAStoreDownFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	writeProfiles(t, dir, `{"secrets":{"store":"vault","vault":{"url":"http://127.0.0.1:1","path":"x"}},"provider":"openai","model":"m"}`)
+	h := storeHarness(t, dir, "", map[string]string{"OPENAI_API_KEY": "k", "VAULT_TOKEN": "t"}, fake.Reply("ok"))
+	h.c.newProvider = func(cfg openai.Config) (agent.Provider, error) {
+		_, err := cfg.KeyFunc(context.Background())
+		return nil, err
+	}
+	if code := h.run("--no-tools", "run", "hi"); code == exitOK {
+		t.Fatalf("the environment's key was used with the store down: %s", h.err)
 	}
 }
 

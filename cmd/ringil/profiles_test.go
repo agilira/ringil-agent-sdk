@@ -198,7 +198,7 @@ func TestTokenRace(t *testing.T) {
 				c := newCLI(strings.NewReader(""), io.Discard, io.Discard)
 				c.getenv = func(string) string { return "" }
 				c.configDir = func() (string, error) { return dir, nil }
-				tokens[i], _, errs[i] = c.serveToken()
+				tokens[i], _, errs[i] = c.keptServeToken()
 			}()
 		}
 		wg.Wait()

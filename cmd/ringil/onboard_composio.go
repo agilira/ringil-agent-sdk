@@ -66,7 +66,7 @@ func (s *setup) keepComposio(key string) (again bool, err error) {
 		}
 		said = "  the key is kept; Composio is tried again when ringil starts"
 	}
-	if err := s.keys.Set(s.ctx, composioKey, key); err != nil {
+	if err := s.keep(composioKey, key); err != nil {
 		return false, err
 	}
 	s.composio = true

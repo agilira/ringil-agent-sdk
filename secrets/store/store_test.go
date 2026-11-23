@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,13 +67,13 @@ func TestOpenEachKind(t *testing.T) {
 	checkOrder(t, f)
 }
 
-// checkOrder: the base wins over the store, which is read when the base
-// has nothing.
+// checkOrder: the store's key is the store's; the same name in the base
+// too is refused (23/11: the base won in silence).
 func checkOrder(t *testing.T, f secrets.Store) {
 	t.Helper()
 	ctx := context.Background()
-	if got, _, _ := Resolver(secrets.Map{"KEY": "from-base"}, f).Lookup(ctx, "KEY"); got != "from-base" {
-		t.Fatalf("the base does not win: %q", got)
+	if _, _, err := Resolver(secrets.Map{"KEY": "from-base"}, f).Lookup(ctx, "KEY"); !errors.HasCode(err, secrets.ErrShadow) {
+		t.Fatalf("the base shadowed the store: %v", err)
 	}
 	if got, _, _ := Resolver(secrets.Map{}, f).Lookup(ctx, "KEY"); got != "v" {
 		t.Fatalf("the store is not read: %q", got)
@@ -206,5 +207,89 @@ func TestOneStorePerConfiguration(t *testing.T) {
 	}
 	if _, _, err := first.Lookup(ctx, "KEY"); err == nil {
 		t.Fatal("a closed store answered")
+	}
+}
+
+// 23/11: the store's keys are the store's. The same name in the
+// environment too is an error naming it, never a silent choice; a name the
+// store lacks comes from the environment; a store that fails stops the
+// lookup.
+func TestTheStoreIsNotShadowed(t *testing.T) {
+	ctx := context.Background()
+	keys := &countingStore{Map: secrets.Map{"IN_STORE": "store-value", "BOTH": "store-both"}}
+	res := Resolver(secrets.Map{"BOTH": "env-both", "ONLY_ENV": "env-value"}, keys)
+	for name, want := range map[string]string{"IN_STORE": "store-value", "ONLY_ENV": "env-value", "NOWHERE": ""} {
+		if v, ok, err := res.Lookup(ctx, name); err != nil || ok != (want != "") || v != want {
+			t.Errorf("%s: %q %v %v", name, v, ok, err)
+		}
+	}
+	checkShadowed(t, res, "BOTH", "-both")
+	if _, _, err := Resolver(secrets.Map{"K": "env"}, brokenStore{}).Lookup(ctx, "K"); err == nil {
+		t.Fatal("a failing store fell through to the environment")
+	}
+}
+
+// checkShadowed: name is refused, naming it and no value (value is part of
+// the base's).
+func checkShadowed(t *testing.T, res secrets.Resolver, name, value string) {
+	t.Helper()
+	v, _, err := res.Lookup(context.Background(), name)
+	if !errors.HasCode(err, secrets.ErrShadow) || v != "" || strings.Contains(err.Error(), value) || !strings.Contains(err.Error(), name) {
+		t.Fatalf("%q %v", v, err)
+	}
+}
+
+type brokenStore struct{}
+
+func (brokenStore) Lookup(context.Context, string) (string, bool, error) {
+	return "", false, errors.New(secrets.ErrLookup, "down")
+}
+func (brokenStore) Set(context.Context, string, string) error { return nil }
+func (brokenStore) Delete(context.Context, string) error      { return nil }
+
+// 23/11: a provider's key comes from the store alone once there is one: a
+// key planted in the environment for a provider the store lacks is
+// refused, naming it.
+func TestStoreOnly(t *testing.T) {
+	ctx := context.Background()
+	keys := &countingStore{Map: secrets.Map{"IN_STORE": "s"}}
+	res := StoreOnly(secrets.Map{"PLANTED": "attacker", "BOTH": "b"}, keys)
+	keys.Map["BOTH"] = "s"
+	if v, ok, err := res.Lookup(ctx, "IN_STORE"); err != nil || !ok || v != "s" {
+		t.Fatalf("%q %v %v", v, ok, err)
+	}
+	checkShadowed(t, res, "PLANTED", "attacker")
+	if _, _, _, err := res.(interface {
+		LookupSource(context.Context, string) (string, bool, bool, error)
+	}).LookupSource(ctx, "PLANTED"); !errors.HasCode(err, secrets.ErrShadow) {
+		t.Fatalf("LookupSource let the planted key through: %v", err)
+	}
+	checkShadowed(t, res, "BOTH", "\x00")
+	if _, ok, err := res.Lookup(ctx, "NOWHERE"); err != nil || ok {
+		t.Fatalf("%v %v", ok, err)
+	}
+	if v, _, err := StoreOnly(secrets.Map{"K": "env"}, nil).Lookup(ctx, "K"); err != nil || v != "env" {
+		t.Fatalf("no store: %q %v", v, err)
+	}
+}
+
+// The resolver tells where a value came from, from the read that gave it.
+func TestLookupSource(t *testing.T) {
+	keys := &countingStore{Map: secrets.Map{"IN_STORE": "s"}}
+	base := &countingStore{Map: secrets.Map{"E": "e"}}
+	assertSource(t, Resolver(base, keys), "E", "e", false)
+	if base.lookups != 1 {
+		t.Fatalf("base lookups: %d", base.lookups)
+	}
+	assertSource(t, Resolver(secrets.Map{}, keys), "IN_STORE", "s", true)
+}
+
+func assertSource(t *testing.T, res secrets.Resolver, name, want string, wantStore bool) {
+	t.Helper()
+	v, found, fromStore, err := res.(interface {
+		LookupSource(context.Context, string) (string, bool, bool, error)
+	}).LookupSource(context.Background(), name)
+	if err != nil || !found || fromStore != wantStore || v != want {
+		t.Fatalf("%s: %q %v %v %v", name, v, found, fromStore, err)
 	}
 }

@@ -26,7 +26,9 @@ const (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
-	code := run(ctx, os.Args[1:], newCLI(os.Stdin, os.Stdout, os.Stderr))
+	c := newCLI(os.Stdin, os.Stdout, os.Stderr)
+	c.ownProxy() // before any client is made: the proxy is ringil.yaml's, never the environment's
+	code := run(ctx, os.Args[1:], c)
 	stop()
 	os.Exit(code)
 }

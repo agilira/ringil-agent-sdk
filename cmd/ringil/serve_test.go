@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/agilira/orpheus/pkg/orpheus"
 )
 
 func TestServeToken(t *testing.T) {
@@ -19,11 +21,11 @@ func TestServeToken(t *testing.T) {
 	c := newCLI(strings.NewReader(""), io.Discard, io.Discard)
 	c.getenv = func(string) string { return "" }
 	c.configDir = func() (string, error) { return dir, nil }
-	first, where, err := c.serveToken()
+	first, where, err := c.keptServeToken()
 	if err != nil || len(first) < 32 || !strings.Contains(where, "(new)") {
 		t.Fatalf("%q %q %v", first, where, err)
 	}
-	again, _, err := c.serveToken()
+	again, _, err := c.keptServeToken()
 	if err != nil || again != first {
 		t.Fatalf("not kept: %v", err)
 	}
@@ -40,9 +42,12 @@ func TestServeTokenFromEnv(t *testing.T) {
 		}
 		return ""
 	}
-	if tok, where, _ := c.serveToken(); tok != "from-env" || !strings.Contains(where, "RINGIL_SERVE_TOKEN") {
-		t.Fatalf("%q %q", tok, where)
-	}
+	probe(t, c, nil, func(ctx *orpheus.Context) error {
+		if tok, where, _ := c.serveToken(ctx); tok != "from-env" || !strings.Contains(where, "RINGIL_SERVE_TOKEN") {
+			t.Fatalf("%q %q", tok, where)
+		}
+		return nil
+	})
 }
 
 // checkPrivateToken: a token file others can read is refused.
@@ -51,7 +56,7 @@ func checkPrivateToken(t *testing.T, c *cli, path string) {
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := c.serveToken(); err == nil {
+	if _, _, err := c.keptServeToken(); err == nil {
 		t.Fatal("a token readable by others was used")
 	}
 }

@@ -59,7 +59,7 @@ func TestServeCountsItsRuns(t *testing.T) {
 		defer srv.Close()
 		web := httptest.NewServer(srv.Handler())
 		defer web.Close()
-		token, _, _ := h.c.serveToken()
+		token, _, _ := h.c.serveToken(ctx)
 		call := apiCaller(t, web.URL, token)
 		_, out := call("POST", "/v1/runs", `{"profile":"default","input":"hi"}`)
 		waitDone(call, out)

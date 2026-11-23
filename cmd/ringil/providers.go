@@ -267,7 +267,7 @@ func builtinNames() string {
 // mainProviderName is the main model's provider: --provider,
 // RINGIL_PROVIDER, else ringil.yaml's provider.
 func (c *cli) mainProviderName(ctx *orpheus.Context, res secrets.Resolver) (string, error) {
-	name, err := c.setting(ctx, res, "provider", "RINGIL_PROVIDER")
+	name, err := c.providerSetting(ctx, res, "provider", "RINGIL_PROVIDER", c.conf().Provider)
 	if err == nil && name == "" {
 		err = errors.New(ErrUsage, "no provider: set provider in ringil.yaml (ringil setup), or --provider")
 	}
@@ -294,8 +294,10 @@ func (c *cli) ownEndpoint(ctx *orpheus.Context, res secrets.Resolver) (bool, err
 	if c.role == nil || c.role.Provider == "" {
 		return false, nil
 	}
-	main, err := c.setting(ctx, res, "provider", "RINGIL_PROVIDER")
-	return c.role.Provider != main, err // no main provider: the role's is its own
+	main, err := c.providerSetting(ctx, res, "provider", "RINGIL_PROVIDER", c.conf().Provider)
+	// No main provider, or one the environment names under a store (refused
+	// where it is used): the role's is its own, and keeps its memories.
+	return err != nil || c.role.Provider != main, nil
 }
 
 // keepImages is how many of the latest messages send their images: all

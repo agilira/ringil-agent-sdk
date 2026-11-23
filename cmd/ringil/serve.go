@@ -30,6 +30,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/eventlog"
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
 	"github.com/agilira/ringil-agent-sdk/metrics"
+	"github.com/agilira/ringil-agent-sdk/secrets"
 	"github.com/agilira/ringil-agent-sdk/serve"
 )
 
@@ -97,7 +98,7 @@ func (c *cli) startBackground(ctx *orpheus.Context, run context.Context, srv *se
 // newServer builds the server: its token, the shared remote tools, the
 // session store and the profiles. It returns where the token is.
 func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
-	token, where, err := c.serveToken()
+	token, where, err := c.serveToken(ctx)
 	if err != nil {
 		return nil, "", err
 	}
@@ -231,12 +232,27 @@ func (c *cli) shareRemote(ctx *orpheus.Context) error {
 	return nil
 }
 
-// serveToken is RINGIL_SERVE_TOKEN, or the token kept in the config
-// directory, made the first time.
-func (c *cli) serveToken() (token, where string, err error) {
-	if t := c.getenv("RINGIL_SERVE_TOKEN"); t != "" {
-		return t, "from RINGIL_SERVE_TOKEN", nil
+// serveTokenName is the secret that sets serve's bearer token.
+const serveTokenName = "RINGIL_SERVE_TOKEN" // #nosec G101 -- the secret's name, not its value
+
+// serveToken is RINGIL_SERVE_TOKEN (the store's, or the environment's), or
+// the token kept in the config directory, made the first time.
+func (c *cli) serveToken(ctx *orpheus.Context) (token, where string, err error) {
+	// From the store alone when there is one: a planted token would be
+	// known to whoever planted it (audit 23/11).
+	res, err := c.resolver(ctx)
+	if err != nil {
+		return "", "", err
 	}
+	if t, found, err := secrets.Lookup(ctx.Context(), storeOnly(res), serveTokenName); err != nil || found && t != "" {
+		return t, "from " + serveTokenName, err
+	}
+	return c.keptServeToken()
+}
+
+// keptServeToken is the token kept in the config directory, made the first
+// time.
+func (c *cli) keptServeToken() (token, where string, err error) {
 	base, err := c.configDir()
 	if err != nil {
 		return "", "", errors.Wrap(err, ErrUsage, "no user config directory; set RINGIL_SERVE_TOKEN")

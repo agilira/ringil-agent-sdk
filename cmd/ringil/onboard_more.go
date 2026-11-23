@@ -151,7 +151,7 @@ func (s *setup) askTelegram() error {
 	if err != nil {
 		return errors.Wrap(err, ErrUsage, "Telegram refused the token: "+describe(err))
 	}
-	if err := s.keys.Set(s.ctx, "RINGIL_TELEGRAM_TOKEN", token); err != nil {
+	if err := s.keep("RINGIL_TELEGRAM_TOKEN", token); err != nil {
 		return err
 	}
 	if err := s.c.line("  now write /start to @" + bot.Username() + " from your phone (waiting up to 5 minutes)"); err != nil {

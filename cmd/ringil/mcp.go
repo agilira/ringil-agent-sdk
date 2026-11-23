@@ -195,7 +195,7 @@ func (c *cli) withOAuth(ctx context.Context, srv mcp.Server, o *oauthEntry, res 
 	if err != nil {
 		return srv, err
 	}
-	login := mcp.Login{ClientID: o.ClientID, ClientSecret: secret["s"], Port: o.Port, Show: c.showSignIn(srv.Name)}
+	login := mcp.Login{ClientID: o.ClientID, ClientSecret: secret["s"], Port: o.Port, Show: c.showSignIn(srv.Name), HTTPClient: c.proxiedClient()}
 	if base, err := c.configDir(); err == nil {
 		login.Tokens = mcp.FileTokens(filepath.Join(base, "ringil", "oauth", srv.Name+".json"))
 	}
