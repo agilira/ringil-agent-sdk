@@ -50,7 +50,7 @@ func StatusError(resp *http.Response) error {
 		err := agent.WithRetryAfter(errors.New(agent.ErrProviderUnavailable, "server error ("+strconv.Itoa(code)+")"), RetryAfter(resp))
 		return WithSecondary(err.AsRetryable(), readErr)
 	}
-	return WithSecondary(errors.New(agent.ErrProviderInput, "request refused ("+strconv.Itoa(code)+")"), readErr)
+	return WithSecondary(errors.New(agent.ErrProviderInput, "request refused ("+strconv.Itoa(code)+")").WithContext("status", code), readErr)
 }
 
 func knownStatus(resp *http.Response, body []byte) error {

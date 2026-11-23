@@ -9,7 +9,10 @@ import (
 	"context"
 	"encoding/json"
 	stderrors "errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -272,5 +275,139 @@ func TestDecodeUsage(t *testing.T) {
 	}{CachedTokens: 4}
 	if got := decodeUsage(u); got != (agent.Usage{Input: 10, Output: 0, CacheRead: 4}) {
 		t.Fatalf("decodeUsage = %+v", got)
+	}
+}
+
+// Structured output goes as response_format, strict when every field is
+// required; a host's extra field never replaces it.
+func TestResponseFormat(t *testing.T) {
+	type answer struct {
+		A string `json:"a"`
+	}
+	f, err := agent.FormatFor[answer]("answer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("x")}, Format: f}
+	body := encodeFor(t, Config{Extra: map[string]any{"response_format": "planted"}}, req, false)
+	rf, _ := body["response_format"].(map[string]any)
+	js, _ := rf["json_schema"].(map[string]any)
+	if rf["type"] != "json_schema" || js["name"] != "answer" || js["strict"] != true || js["schema"] == nil {
+		t.Fatalf("%v", body["response_format"])
+	}
+	if _, set := encodeFor(t, Config{}, &agent.Request{Messages: []agent.Message{agent.UserText("x")}}, false)["response_format"]; set {
+		t.Fatal("a format with none asked")
+	}
+}
+
+// A server without structured output refuses response_format: the same
+// request goes again with the schema asked in words, and so from then on.
+func TestFormatAskedInWordsWhereRefused(t *testing.T) {
+	type answer struct {
+		A string `json:"a"`
+	}
+	f, _ := agent.FormatFor[answer]("answer")
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if _, asked := body["response_format"]; asked {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"{\"a\":\"x\"}"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := mustNew(t, Config{BaseURL: srv.URL, Model: "m", AllowHTTP: true})
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("x")}, Format: f}
+	for range 2 {
+		resp, err := p.Generate(context.Background(), req, nil)
+		if err != nil || resp.Message.Text() != `{"a":"x"}` {
+			t.Fatalf("%v %v", resp, err)
+		}
+	}
+	if len(bodies) != 3 { // refused, in words, then in words at once
+		t.Fatalf("%d requests", len(bodies))
+	}
+	msgs, _ := bodies[2]["messages"].([]any)
+	first, _ := msgs[0].(map[string]any)
+	if text, _ := first["content"].(string); first["role"] != "system" || !strings.Contains(text, "JSON Schema") || len(msgs) != 2 {
+		t.Fatalf("%v", msgs)
+	}
+}
+
+// Audit 23/11: only a 400 or 422 asks in words; a call with tools is
+// remembered apart; a host's own response_format stays when no Format is
+// asked.
+func TestFormatFallbackIsNarrow(t *testing.T) {
+	type answer struct {
+		A string `json:"a"`
+	}
+	f, _ := agent.FormatFor[answer]("answer")
+	status := http.StatusNotFound
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if _, asked := body["response_format"]; asked {
+			w.WriteHeader(status)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := mustNew(t, Config{BaseURL: srv.URL, Model: "m", AllowHTTP: true})
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("x")}, Format: f}
+	if _, err := p.Generate(context.Background(), req, nil); err == nil || calls != 1 {
+		t.Fatalf("a 404 was taken for a refused format: %v, %d calls", err, calls)
+	}
+	status = http.StatusBadRequest
+	withTools := &agent.Request{Messages: req.Messages, Format: f, Tools: []agent.ToolSpec{{Name: "t", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+	if _, err := p.Generate(context.Background(), withTools, nil); err != nil {
+		t.Fatal(err)
+	}
+	if body := encodeFor(t, Config{}, req, false); body["response_format"] == nil {
+		t.Fatal("a fresh provider lost the format")
+	}
+	if !p.unformattedTools.Load() || p.unformatted.Load() {
+		t.Fatal("a refusal with tools was remembered for calls without")
+	}
+	body := encodeFor(t, Config{Extra: map[string]any{"response_format": map[string]any{"type": "json_object"}}}, &agent.Request{Messages: req.Messages}, false)
+	if rf, _ := body["response_format"].(map[string]any); rf["type"] != "json_object" {
+		t.Fatalf("the host's response_format was dropped: %v", body["response_format"])
+	}
+}
+
+// During an in-words fallback, Extra["response_format"] is not re-injected
+// on the retry that is meant to go without structured output.
+func TestFormatFallbackSuppressesExtraFormat(t *testing.T) {
+	type answer struct {
+		A string `json:"a"`
+	}
+	f, _ := agent.FormatFor[answer]("answer")
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if _, asked := body["response_format"]; asked {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"{\"a\":\"x\"}"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := mustNew(t, Config{BaseURL: srv.URL, Model: "m", AllowHTTP: true, Extra: map[string]any{"response_format": "planted"}})
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("x")}, Format: f}
+	if _, err := p.Generate(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(bodies))
+	}
+	if _, has := bodies[1]["response_format"]; has {
+		t.Fatalf("Extra injected response_format into fallback: %v", bodies[1]["response_format"])
 	}
 }

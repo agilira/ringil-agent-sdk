@@ -46,7 +46,10 @@ func (p *provider) params(req *agent.Request) (anthropic.BetaMessageNewParams, e
 		params.Messages = append(params.Messages, mustCallTools)
 	}
 	if p.cfg.Effort != "" {
-		params.OutputConfig = anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffort(p.cfg.Effort)}
+		params.OutputConfig.Effort = anthropic.BetaOutputConfigEffort(p.cfg.Effort)
+	}
+	if req.Format != nil { // structured output: the answer in JSON of the schema
+		params.OutputConfig.Format = anthropic.BetaJSONOutputFormatParam{Schema: req.Format.Schema}
 	}
 	if !p.cfg.NoThinking {
 		params.Thinking = anthropic.BetaThinkingConfigParamUnion{OfAdaptive: &anthropic.BetaThinkingConfigAdaptiveParam{

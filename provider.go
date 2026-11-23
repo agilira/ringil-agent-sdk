@@ -48,6 +48,10 @@ type Request struct {
 	// ToolChoice is "", "auto", "none" or "required"; empty means the
 	// provider's default.
 	ToolChoice ToolChoice
+	// Format, when set, asks the answer in JSON of its schema: a provider
+	// with structured output constrains it; the host's Parse checks it
+	// either way.
+	Format *Format
 }
 
 // ToolChoice tells the model whether it may, must or must not call tools.
@@ -120,6 +124,11 @@ func (r *Request) Clone() *Request {
 	if r.Temperature != nil {
 		temperature := *r.Temperature
 		clone.Temperature = &temperature
+	}
+	if r.Format != nil {
+		f := *r.Format
+		f.Schema = append(json.RawMessage(nil), f.Schema...)
+		clone.Format = &f
 	}
 	return &clone
 }

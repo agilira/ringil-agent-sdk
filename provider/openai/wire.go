@@ -16,16 +16,51 @@ import (
 )
 
 type wireRequest struct {
-	Model         string         `json:"model"`
-	Messages      []wireMessage  `json:"messages"`
-	Tools         []wireTool     `json:"tools,omitempty"`
-	ToolChoice    string         `json:"tool_choice,omitempty"`
-	MaxTokens     int            `json:"max_tokens,omitempty"`
-	MaxCompletion int            `json:"max_completion_tokens,omitempty"`
-	Effort        string         `json:"reasoning_effort,omitempty"`
-	Temperature   *float64       `json:"temperature,omitempty"`
-	Stream        bool           `json:"stream,omitempty"`
-	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []wireMessage   `json:"messages"`
+	Tools          []wireTool      `json:"tools,omitempty"`
+	ToolChoice     string          `json:"tool_choice,omitempty"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
+	MaxCompletion  int             `json:"max_completion_tokens,omitempty"`
+	Effort         string          `json:"reasoning_effort,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
+	Stream         bool            `json:"stream,omitempty"`
+	StreamOptions  *streamOptions  `json:"stream_options,omitempty"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+}
+
+// responseFormat is structured output: the answer in JSON of a schema;
+// strict where every field is required, as the API's strict mode wants.
+type responseFormat struct {
+	Type       string     `json:"type"`
+	JSONSchema jsonSchema `json:"json_schema"`
+}
+
+type jsonSchema struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict,omitempty"`
+}
+
+// withFormatInWords is req with its Format asked in the system prompt, for
+// a server without structured output: no message of its own, which would
+// break templates that want user and assistant turns in alternation.
+func withFormatInWords(req *agent.Request) *agent.Request {
+	c := *req
+	ask := "Your final answer is one JSON object and nothing else, no prose and no code fence, valid against this JSON Schema:\n" + string(req.Format.Schema)
+	if c.System != "" {
+		ask = c.System + "\n\n" + ask
+	}
+	c.System = ask
+	return &c
+}
+
+// formatOf is req's Format as the API takes it, nil for none.
+func formatOf(f *agent.Format) *responseFormat {
+	if f == nil {
+		return nil
+	}
+	return &responseFormat{Type: "json_schema", JSONSchema: jsonSchema{Name: f.Name, Schema: f.Schema, Strict: f.Strict}}
 }
 
 type streamOptions struct {
@@ -74,14 +109,28 @@ type wireUsage struct {
 var emptySchema = json.RawMessage(`{"type":"object","properties":{}}`)
 
 func (p *provider) encode(req *agent.Request, stream bool) ([]byte, error) {
+	return p.encodeWith(req, stream, p.formatFlag(req).Load())
+}
+
+// encodeWith is the request's body; inWords asks the Format's schema in the
+// system prompt instead of response_format, for a server without one.
+func (p *provider) encodeWith(req *agent.Request, stream, inWords bool) ([]byte, error) {
+	format := formatOf(req.Format)
+	if inWords && format != nil {
+		req = withFormatInWords(req)
+		format = nil
+	}
+	messages := p.encodeMessages(req)
 	wire := wireRequest{
 		Model:       p.cfg.Model,
-		Messages:    p.encodeMessages(req),
+		Messages:    messages,
 		Tools:       encodeTools(req.Tools),
 		ToolChoice:  string(req.ToolChoice),
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stream:      stream,
+
+		ResponseFormat: format,
 	}
 	if wire.MaxTokens == 0 {
 		wire.MaxTokens = p.cfg.MaxTokens
@@ -97,18 +146,19 @@ func (p *provider) encode(req *agent.Request, stream bool) ([]byte, error) {
 	if err != nil || len(p.cfg.Extra) == 0 {
 		return body, err
 	}
-	return withExtra(body, p.cfg.Extra)
+	return withExtra(body, p.cfg.Extra, req.Format != nil)
 }
 
 // withExtra adds the host's own fields to the request body; a field the
-// provider sets itself is never replaced.
-func withExtra(body []byte, extra map[string]any) ([]byte, error) {
+// provider sets itself is never replaced. When the request asked a Format,
+// Extra["response_format"] is suppressed even during an in-words fallback.
+func withExtra(body []byte, extra map[string]any, hasFormat bool) ([]byte, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return nil, err
 	}
 	for k, v := range extra {
-		if _, set := fields[k]; set || ownFields[k] {
+		if _, set := fields[k]; set || ownFields[k] || hasFormat && k == "response_format" {
 			continue
 		}
 		raw, err := json.Marshal(v)
