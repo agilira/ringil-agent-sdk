@@ -48,7 +48,8 @@ type Session interface {
 }
 
 // Store opens, lists and deletes sessions. Implementations live in their
-// own packages (session/file, session/mem).
+// own packages (session/file, session/mem). A resumed session's history
+// reaches the model as it is: the host trusts the store it reads.
 type Store interface {
 	// Open returns the session with id, creating it if absent. It fails
 	// with ErrSessionBusy if another holder has it open.

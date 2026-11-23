@@ -33,8 +33,7 @@ const sandboxExecPath = "/usr/bin/sandbox-exec"
 //   - HOME is Spec.Home but stays read-only (no private directory can be
 //     put there), and /tmp is a private temporary directory, in TMPDIR;
 //   - host processes are visible, and the limits are CPU time, file size
-//     and open files (no address-space or process cap);
-//   - IsolatedNetwork allows any destination but the host's loopback.
+//     and open files (no address-space or process cap).
 type darwinSandbox struct{}
 
 func newPlatform() (Sandbox, error) {

@@ -44,7 +44,7 @@ func Tools(m agent.Memory) []agent.Tool {
 					return "", err
 				}
 				return "Remembered as " + rec.ID + ".", nil
-			}),
+			}, agent.Internal()), // the agent's own memory: it remembers without asking, as assistants do
 		agent.NewTool("recall", "Search what you remembered in earlier conversations.",
 			func(ctx context.Context, in recallIn) (string, error) {
 				limit := in.Limit

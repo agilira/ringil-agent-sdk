@@ -347,7 +347,7 @@ func (c *Crew) WorkerTools() []agent.Tool {
 		desc := w.Description + ". A sub-agent with a clean context: give it a complete task; it returns one report, numbered. Use background to keep working meanwhile, continue_task to ask it more."
 		tools = append(tools, agent.NewTool(n, desc, func(ctx context.Context, in workerIn) (string, error) {
 			return c.call(ctx, taskIn{Worker: n, Description: in.Description, Task: in.Task, Background: in.Background, ContinueTask: in.ContinueTask})
-		}, agent.Parallel()))
+		}, agent.Parallel(), agent.Internal()))
 	}
 	return tools
 }

@@ -22,7 +22,7 @@ func bigTool(name, desc string, calls *int) agent.Tool {
 	return agent.NewTool(name, desc+strings.Repeat(" padding", 400), func(context.Context, noIn) (string, error) {
 		*calls++
 		return name + " done", nil
-	}, agent.Deferrable())
+	}, agent.Deferrable(), agent.ReadOnly()) // a fake business read
 }
 
 func names(specs []agent.ToolSpec) string {

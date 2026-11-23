@@ -30,7 +30,9 @@ type MemoryRecord struct {
 // user (one Agent per user, or Config.Memory chosen per user), or recall
 // would show one user's facts to another.
 // Implementations live in their own packages (memory/local); a vector
-// store is one more implementation of the same interface.
+// store is one more implementation of the same interface. What a Memory
+// returns reaches the model as it is: the agent does not filter it, so the
+// host trusts the store and what was put in it.
 type Memory interface {
 	// Search returns up to limit records relevant to query, best first;
 	// an empty query returns the most recent. A degraded search returns its

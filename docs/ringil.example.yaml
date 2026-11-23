@@ -80,6 +80,20 @@ memory_store:
   # headers: {X-Chroma-Token: "${CHROMA_TOKEN}"}   # Mem0: X-API-Key
   # raw: false                 # mem0 only
 
+# What runs without asking, as coding agents do it. Reading runs; changing
+# files, destructive and outward calls ask; bash runs in its sandbox and
+# asks for what leaves it. Rules first (deny wins over ask, ask over
+# allow), then the mode: default, accept-edits (file changes run), plan
+# (reading only) or bypass (everything but deny). --accept-edits and
+# --no-approvals win for one command. Answering "p" to a question adds its
+# rule to allow here. Rules on bash read the command's text: a best effort
+# (what a command decodes and runs, no rule sees); bash's boundary is its
+# sandbox.
+permissions:
+  mode: default
+  allow: ["bash(go test:*)", "write_file(src/**)"]
+  deny: ["bash(rm -rf:*)", "fetch(domain:example.org)"]
+
 # The proxy every request of ringil goes through, https alone (tunnelled:
 # the proxy never reads it). Only from here: HTTPS_PROXY and ALL_PROXY in
 # the environment are ignored, so that a variable planted there cannot put
@@ -150,8 +164,9 @@ mcp_servers:
     command: mcp-files
     args: [--root, /srv/docs]
     env: {FILES_TOKEN: "${FILES_TOKEN}"}
-    sandbox: true              # isolated (Linux), read-only mounts
-    mounts: [/srv/docs]
+    sandbox: true              # isolated: else a plain process with your rights
+    mounts: [/srv/docs]        # what it sees, read-only
+    allow_domains: [api.example.com]   # its only network, through the egress proxy
   composio:
     type: http
     url: https://connect.composio.dev/mcp

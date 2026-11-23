@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -75,13 +76,42 @@ func Connect(ctx context.Context, srv Server) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx, watched := untilExit(ctx, transport)
+	defer watched()
 	c, err := connect(ctx, srv, transport, stop)
+	if err != nil && stderrors.Is(context.Cause(ctx), errExited) {
+		return nil, errors.New(ErrConnect, "MCP server "+srv.Name+" stopped before it answered (in the sandbox: is its program mounted?)")
+	}
 	// With OAuth a first 401 is how sign-in starts, and a sign-in not
 	// finished in time is not a refusal (audit 22/11).
 	if err != nil && w.status.Load() != 0 && srv.OAuth == nil && ctx.Err() == nil {
 		return nil, errors.Wrap(err, ErrRefused, fmt.Sprintf("MCP server %s refused the credentials (HTTP %d)", srv.Name, w.status.Load()))
 	}
 	return c, err
+}
+
+// errExited: the local server's process ended while connecting.
+var errExited = stderrors.New("the server exited")
+
+// exiter is a transport whose process can end before it answers.
+type exiter interface{ exited() <-chan struct{} }
+
+// untilExit is ctx, ended too when the transport's process ends: a server
+// that cannot start fails at once, not at the deadline (23/11).
+func untilExit(ctx context.Context, t sdk.Transport) (context.Context, func()) {
+	e, ok := t.(exiter)
+	if !ok {
+		return ctx, func() {}
+	}
+	watched, cancel := context.WithCancelCause(ctx)
+	go func() {
+		select {
+		case <-e.exited():
+			cancel(errExited)
+		case <-watched.Done():
+		}
+	}()
+	return watched, func() { cancel(nil) }
 }
 
 func connect(ctx context.Context, srv Server, transport sdk.Transport, stop func() error) (*Client, error) {

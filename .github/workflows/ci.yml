@@ -67,7 +67,7 @@ jobs:
       # the sandbox needs them, as on a developer machine with bubblewrap.
       run: |
         sudo apt-get update -q
-        sudo apt-get install -y -q bubblewrap slirp4netns socat
+        sudo apt-get install -y -q bubblewrap socat
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         echo "RINGIL_REQUIRE_SANDBOX=1" >> "$GITHUB_ENV"
     - name: Sandbox required (macOS)

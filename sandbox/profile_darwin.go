@@ -118,18 +118,12 @@ func denyRules(g grant) string {
 	return b.String()
 }
 
-// networkRules: none, only the proxy's loopback port, or anywhere but
-// the host's loopback (DNS through the system's resolver).
+// networkRules: none, or only the proxy's loopback port.
 func networkRules(n Network, proxy string) string {
 	switch n {
 	case ProxiedNetwork:
 		_, port, _ := net.SplitHostPort(proxy)
 		return "(allow network-outbound (remote ip " + quote("localhost:"+port) + "))\n"
-	case IsolatedNetwork:
-		return "(allow network-outbound (remote ip \"*:*\"))\n" +
-			"(deny network-outbound (remote ip \"localhost:*\"))\n" +
-			"(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))\n" +
-			"(allow mach-lookup (global-name \"com.apple.dnssd.service\"))\n"
 	}
 	return ""
 }

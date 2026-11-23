@@ -50,8 +50,8 @@ func assertInvalidProxyAndEnv(t *testing.T, src string, assertBad func(string, S
 	sock := filepath.Join(src, "proxy.sock")
 	assertBad("proxiedNoSock", Spec{Argv: []string{"true"}, Network: ProxiedNetwork})
 	assertBad("noNetWithSock", Spec{Argv: []string{"true"}, Network: NoNetwork, Proxy: sock})
-	assertBad("isoNetWithSock", Spec{Argv: []string{"true"}, Network: IsolatedNetwork, Proxy: sock})
 	assertBad("relProxy", Spec{Argv: []string{"true"}, Network: ProxiedNetwork, Proxy: "proxy.sock"})
+	assertBad("unknownNet", Spec{Argv: []string{"true"}, Network: Network(7)})
 
 	badEnv := map[string]string{
 		"empty":  "",

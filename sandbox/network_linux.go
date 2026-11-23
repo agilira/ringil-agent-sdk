@@ -1,5 +1,4 @@
-// network_linux.go: an isolated network through slirp4netns, or only a
-// proxy through a socat bridge
+// network_linux.go: no network but a proxy, through a socat bridge
 //
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
@@ -16,7 +15,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -27,13 +25,10 @@ import (
 // generous, because a loaded machine (a CI runner) can be slow.
 const netStartTimeout = 30 * time.Second
 
-// resolvConf points DNS at slirp4netns' forwarder.
-const resolvConf = "nameserver 10.0.2.3\n"
-
-// networkArgs prepares the descriptors for an isolated network: bwrap
+// networkArgs prepares the descriptors for a proxied network: bwrap
 // reports the sandbox's PID on an info pipe and waits on a block pipe
-// until slirp4netns has attached the network, so the program never starts
-// without it.
+// until the bridge to the proxy is up, so the program never starts without
+// it.
 func (l *launch) networkArgs(n Network) ([]string, error) {
 	if n == NoNetwork {
 		return nil, nil
@@ -50,11 +45,8 @@ func (l *launch) networkArgs(n Network) ([]string, error) {
 		return nil, errors.Wrap(err, ErrStart, "cannot create the block pipe")
 	}
 	l.extra = append(l.extra, blockW)
-	text, at := resolvConf, "/etc/resolv.conf"
-	if n == ProxiedNetwork {
-		// No DNS: clients hand the proxy names, not addresses.
-		text, at = hostsFile, "/etc/hosts"
-	}
+	// No DNS: clients hand the proxy names, not addresses.
+	text, at := hostsFile, "/etc/hosts"
 	data, err := dataFile(text)
 	if err != nil {
 		l.extra = append(l.extra, infoW, blockR)
@@ -101,63 +93,7 @@ func (l *launch) connect(ctx context.Context, p *process, spec Spec) error {
 	if err != nil {
 		return err
 	}
-	if spec.Network == ProxiedNetwork {
-		return l.bridge(ctx, p, pid, spec.Proxy, blockW)
-	}
-	readyR, readyW, err := os.Pipe()
-	if err != nil {
-		return errors.Wrap(err, ErrStart, "cannot create the ready pipe")
-	}
-	exitR, exitW, err := os.Pipe()
-	if err != nil {
-		l.extra = append(l.extra, readyR, readyW)
-		return errors.Wrap(err, ErrStart, "cannot create the exit pipe")
-	}
-	// exitW stays open on our side for the sandbox's life: when Wait
-	// closes it, slirp4netns exits.
-	l.extra = append(l.extra, readyR, exitW)
-	netns, userns, err := namespaces(pid)
-	if err != nil {
-		l.extra = append(l.extra, readyW, exitR)
-		return err
-	}
-	l.extra = append(l.extra, netns, userns)
-	p.net = slirpCommand(ctx, readyW, exitR, userns, netns)
-	diag := &tailBuffer{}
-	p.net.Stderr = diag
-	err = p.net.Start()
-	l.extra = append(l.extra, readyW, exitR) // the child has its copies now
-	if err != nil {
-		p.net = nil
-		return errors.Wrap(err, ErrStart, "cannot start slirp4netns")
-	}
-	if err := waitReady(readyR); err != nil {
-		return err.WithContext("slirp4netns", diag.String())
-	}
-	return release(blockW)
-}
-
-// tailBuffer keeps the last bytes slirp4netns wrote to stderr, for the
-// host's error when the network does not come up.
-type tailBuffer struct {
-	mu  sync.Mutex
-	buf []byte
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > 4096 {
-		t.buf = t.buf[len(t.buf)-4096:]
-	}
-	return len(p), nil
-}
-
-func (t *tailBuffer) String() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return string(t.buf)
+	return l.bridge(ctx, p, pid, spec.Proxy, blockW)
 }
 
 // nsGetUserns is NS_GET_USERNS, _IO(0xb7, 0x1): asked of a namespace, the
@@ -167,8 +103,8 @@ const nsGetUserns = 0xb701
 // namespaces opens the sandbox's network namespace and the user namespace
 // that owns it. Asking the kernel for the owner, instead of reading
 // /proc/PID/ns/user, matters: bwrap nests a second user namespace for
-// --disable-userns shortly after reporting the PID, and slirp4netns joining
-// that one could not configure the network. Holding both as descriptors
+// --disable-userns shortly after reporting the PID, and a bridge joining
+// that one could not reach the network. Holding both as descriptors
 // also rules out PID reuse.
 func namespaces(pid int) (*os.File, *os.File, error) {
 	netns, err := os.Open("/proc/" + strconv.Itoa(pid) + "/ns/net")
@@ -180,16 +116,6 @@ func namespaces(pid int) (*os.File, *os.File, error) {
 		return nil, nil, closeWith(errors.Wrap(err, ErrStart, "cannot find the network namespace's owner"), netns)
 	}
 	return netns, os.NewFile(uintptr(fd), "userns"), nil
-}
-
-func slirpCommand(ctx context.Context, ready, exit, userns, netns *os.File) *exec.Cmd {
-	// #nosec G204 -- fixed binary; namespaces passed as inherited descriptors
-	cmd := exec.CommandContext(ctx, slirpPath, "--configure", "--mtu=65520", "--disable-host-loopback",
-		"--ready-fd=3", "--exit-fd=4", "--userns-path=/proc/self/fd/5",
-		"--netns-type=path", "/proc/self/fd/6", "tap0")
-	cmd.ExtraFiles = []*os.File{ready, exit, userns, netns}
-	cmd.Env = []string{"PATH=/usr/bin:/bin"}
-	return cmd
 }
 
 // childPID reads the sandbox's PID from bwrap's info descriptor.
@@ -204,17 +130,6 @@ func childPID(info *os.File) (int, error) {
 		return 0, errors.New(ErrStart, "bwrap did not report the sandbox PID")
 	}
 	return status.ChildPID, nil
-}
-
-func waitReady(ready *os.File) *errors.Error {
-	if err := ready.SetReadDeadline(time.Now().Add(netStartTimeout)); err != nil {
-		return errors.Wrap(err, ErrStart, "cannot wait on slirp4netns")
-	}
-	buf := make([]byte, 1)
-	if _, err := ready.Read(buf); err != nil {
-		return errors.Wrap(err, ErrStart, "the isolated network did not come up")
-	}
-	return nil
 }
 
 // release lets bwrap run the program.
@@ -248,7 +163,7 @@ func (l *launch) bridge(ctx context.Context, p *process, pid int, proxy string, 
 	cmd.ExtraFiles = []*os.File{userns, netns}
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	cmd.Stderr = logW
-	p.net, p.bridge = cmd, true
+	p.net = cmd
 	err = cmd.Start()
 	// The child has its copy: ours goes now, so that a bridge dying early
 	// ends the wait at once.

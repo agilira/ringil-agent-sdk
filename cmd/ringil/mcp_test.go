@@ -13,6 +13,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/sandbox"
 	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
@@ -70,4 +71,30 @@ func byNameTool(t *testing.T, reg agent.Registry, name string) agent.Tool {
 	}
 	t.Fatalf("no %s", name)
 	return nil
+}
+
+// 23/11: a local MCP server runs as a plain process unless sandboxed; a
+// sandboxed one's network is the egress proxy, for its allowed domains
+// alone; the old network key is refused, saying where it went.
+func TestMCPServersSandboxedOnRequest(t *testing.T) {
+	h := newHarness(t, "")
+	h.c.newSandbox = func() (sandbox.Sandbox, error) { return &stubSandbox{}, nil }
+	ctx := context.Background()
+	srv, err := h.c.serverOf(ctx, "files", mcpEntry{Command: "mcp-files", Sandbox: true, AllowDomains: []string{"api.example.com"}}, secrets.Map{})
+	if err != nil || srv.Sandbox == nil || srv.Proxy == nil {
+		t.Fatalf("%+v %v", srv, err)
+	}
+	srv, err = h.c.serverOf(ctx, "plain", mcpEntry{Command: "mcp-files"}, secrets.Map{})
+	if err != nil || srv.Sandbox != nil {
+		t.Fatalf("%+v %v", srv, err)
+	}
+}
+
+func TestOldMCPSandboxKeysRefused(t *testing.T) {
+	yes := true
+	for _, e := range []mcpEntry{{Command: "x", OldNetwork: &yes}, {Command: "x", AllowDomains: []string{"a.com"}}, {Command: "x", Mounts: []string{"/x"}}} {
+		if e.check() == nil {
+			t.Errorf("accepted %+v", e)
+		}
+	}
 }

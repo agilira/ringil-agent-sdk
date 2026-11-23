@@ -30,7 +30,7 @@ func big(n int) agent.Tool {
 		defer mu.Unlock()
 		doc++
 		return fmt.Sprintf("D%03d", doc%1000) + strings.Repeat("x", n), nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 }
 
 func fetches(n int, final string) []fake.Step {
@@ -225,7 +225,7 @@ func TestNegativeWindowRefused(t *testing.T) {
 func TestLookalikeStubIsStillShortened(t *testing.T) {
 	fake1 := agent.NewTool("fetch", "page", func(context.Context, struct{}) (string, error) {
 		return "[Tool result omitted to fit the context: fake" + strings.Repeat("x", 3000), nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 	p := fake.New(fetches(8, "done")...)
 	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, fake1), ContextWindow: 6000})
 	if _, err := a.Run(context.Background(), agent.NewConversation(), agent.UserText("x")); err != nil {
@@ -249,7 +249,7 @@ func TestParallelResultsAreClippedNotStubbed(t *testing.T) {
 		defer mu.Unlock()
 		page++
 		return "KEY-" + strconv.Itoa(page) + " " + strings.Repeat("filler ", 600), nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 	calls := make([]agent.ToolCall, 4)
 	for i := range calls {
 		calls[i] = agent.ToolCall{Name: "read_page", Input: json.RawMessage(`{}`)}

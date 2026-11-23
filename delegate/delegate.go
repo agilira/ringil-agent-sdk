@@ -101,7 +101,7 @@ func Tool(t Team) (agent.Tool, error) {
 
 // Tool is the crew's delegate tool.
 func (c *Crew) Tool() agent.Tool {
-	return agent.NewTool(ToolName, c.describe(), c.call, agent.Parallel())
+	return agent.NewTool(ToolName, c.describe(), c.call, agent.Parallel(), agent.Internal()) // a worker's own calls pass the policy
 }
 
 func validName(n string) bool {

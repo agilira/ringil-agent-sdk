@@ -286,7 +286,7 @@ func blocker(started chan<- struct{}) agent.Tool {
 		started <- struct{}{}
 		<-ctx.Done()
 		return "", ctx.Err()
-	})
+	}, agent.ReadOnly())
 }
 
 func TestCancelAndLimits(t *testing.T) {

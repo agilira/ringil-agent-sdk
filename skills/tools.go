@@ -111,7 +111,7 @@ func Tools(c *Catalog, opts Options) []agent.Tool {
 		r := &runner{cat: c, opts: opts}
 		tools = append(tools, agent.NewTool("run_skill_script",
 			"Run a script of an installed skill in an isolated sandbox: Python, shell, JavaScript, Ruby, Perl, or any script with a #! line. The skill's files are at /skill, the working directory; output is returned.",
-			r.run))
+			r.run, agent.SelfConfirms())) // in the sandbox, always
 	}
 	return tools
 }

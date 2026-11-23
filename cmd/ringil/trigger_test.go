@@ -29,7 +29,7 @@ func TestATriggersRunMayOnlyWhatItWasAllowed(t *testing.T) {
 	if ok, _ := c.approve(ctx, agent.ToolCall{Name: "wipe"}, destructive); ok {
 		t.Error("a tool not allowed ran")
 	}
-	if ok, _ := c.approve(ctx, agent.ToolCall{Name: "read_file"}, agent.ToolSpec{}); !ok {
+	if ok, _ := c.approve(ctx, agent.ToolCall{Name: "read_file"}, agent.ToolSpec{Annotations: agent.Annotations{ReadOnly: true}}); !ok {
 		t.Error("a tool that never asks refused")
 	}
 	if ok, _ := c.confirmCommand(ctx, bashRequest("rm -rf build")); ok {

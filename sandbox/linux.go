@@ -26,7 +26,6 @@ import (
 const (
 	bwrapPath   = "/usr/bin/bwrap"
 	prlimitPath = "/usr/bin/prlimit"
-	slirpPath   = "/usr/bin/slirp4netns"
 	nsenterPath = "/usr/bin/nsenter"
 	socatPath   = "/usr/bin/socat"
 )
@@ -80,9 +79,6 @@ func (l *launch) failed(err error) error {
 func (linuxSandbox) Start(ctx context.Context, spec Spec) (Process, error) {
 	if err := validate(spec); err != nil {
 		return nil, err
-	}
-	if spec.Network == IsolatedNetwork && !executable(slirpPath) {
-		return nil, errors.New(ErrUnavailable, "isolated network needs "+slirpPath)
 	}
 	if spec.Network == ProxiedNetwork && (!executable(nsenterPath) || !executable(socatPath)) {
 		return nil, errors.New(ErrUnavailable, "a proxied network needs "+nsenterPath+" and "+socatPath+" (install util-linux and socat)")
@@ -397,8 +393,7 @@ func (l *launch) start(ctx context.Context, spec Spec, args []string) (Process, 
 type process struct {
 	cmd    *exec.Cmd
 	launch *launch
-	net    *exec.Cmd // slirp4netns, or the proxy's bridge
-	bridge bool
+	net    *exec.Cmd // the proxy's bridge
 }
 
 // Wait returns the program's exit error first. A failure to release the
@@ -408,17 +403,13 @@ func (p *process) Wait() error {
 	cerr := p.launch.close()
 	var nerr error
 	if p.net != nil {
-		// Closing our end of the exit pipe (in close) stops slirp4netns;
-		// the proxy's bridge is stopped by hand.
-		if p.bridge {
-			_ = p.net.Process.Kill() // #nosec G104 -- it may be gone already; Wait reports the rest
-		}
+		_ = p.net.Process.Kill() // #nosec G104 -- the bridge is stopped by hand; it may be gone already
 		nerr = p.net.Wait()
 	}
 	return stderrors.Join(err, cerr, ignoreExit(nerr))
 }
 
-// ignoreExit drops slirp4netns' exit status once the sandbox is gone: it is
+// ignoreExit drops the bridge's exit status once the sandbox is gone: it is
 // killed on purpose. Other failures (it never ran) are kept.
 func ignoreExit(err error) error {
 	var exit *exec.ExitError

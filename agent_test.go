@@ -36,7 +36,7 @@ func adder(calls *int) agent.Tool {
 		*calls++
 		addMu.Unlock()
 		return in.A + in.B, nil
-	}, agent.ReadOnly())
+	}, agent.ReadOnly(), agent.ReadOnly())
 }
 
 func newAgent(t *testing.T, cfg agent.Config) agent.Agent {
@@ -263,7 +263,7 @@ func TestBreakingOutStopsTheRun(t *testing.T) {
 // cancelling cancels the context while a tool runs.
 func TestCancelDuringTool(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	slow := agent.NewTool("slow", "", func(context.Context, struct{}) (string, error) { cancel(); return "late", nil })
+	slow := agent.NewTool("slow", "", func(context.Context, struct{}) (string, error) { cancel(); return "late", nil }, agent.ReadOnly())
 	p := fake.New(fake.Call("slow", `{}`), fake.Reply("unused"))
 	_, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, slow)}).Run(ctx, nil, agent.UserText("x"))
 	if !stderrors.Is(err, context.Canceled) || p.Remaining() != 1 {
@@ -380,7 +380,7 @@ func TestCorruptHistoryRefused(t *testing.T) {
 
 func TestCancelledToolResultIsStillRecorded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	tool := agent.NewTool("slow", "", func(context.Context, struct{}) (string, error) { cancel(); return "done", nil })
+	tool := agent.NewTool("slow", "", func(context.Context, struct{}) (string, error) { cancel(); return "done", nil }, agent.ReadOnly())
 	conv := agent.NewConversation()
 	p := fake.New(fake.Call("slow", `{}`), fake.Reply("unused"))
 	_, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, tool)}).Run(ctx, conv, agent.UserText("x"))
@@ -396,7 +396,7 @@ func block(started, release chan struct{}) agent.Tool {
 		close(started)
 		<-release
 		return "done", nil
-	})
+	}, agent.ReadOnly())
 }
 
 // Audit finding 1: a second run on a busy conversation is refused instead
@@ -455,7 +455,7 @@ func TestMemoryConversationRefusesInvalidAppend(t *testing.T) {
 }
 
 func TestInvalidUTF8ToolOutputIsRepaired(t *testing.T) {
-	bin := agent.NewTool("bin", "", func(context.Context, struct{}) (string, error) { return "a\xff\xfeb", nil })
+	bin := agent.NewTool("bin", "", func(context.Context, struct{}) (string, error) { return "a\xff\xfeb", nil }, agent.ReadOnly())
 	res, err := tools(t, bin).Execute(context.Background(), agent.ToolCall{ID: "1", Name: "bin"})
 	if err != nil || res.Content != "a�b" {
 		t.Fatalf("content %q err %v", res.Content, err)
@@ -528,7 +528,8 @@ func TestParallelCallsRunTogether(t *testing.T) {
 		calls = append(calls, agent.ToolCall{Name: n, Input: json.RawMessage(`{}`)})
 	}
 	p := fake.New(fake.Step{Calls: calls}, fake.Reply("ok"))
-	res, err := newAgent(t, agent.Config{Provider: p, Tools: reg}).Run(context.Background(), nil, agent.UserText("x"))
+	bypass := &agent.Policy{Mode: agent.ModeBypass} // the destructive call runs: the host chose so
+	res, err := newAgent(t, agent.Config{Provider: p, Tools: reg, Approve: bypass.Approve}).Run(context.Background(), nil, agent.UserText("x"))
 	if err != nil {
 		t.Fatal(err)
 	}

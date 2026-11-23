@@ -20,6 +20,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/egress"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 )
 
@@ -223,5 +224,25 @@ func TestImagesInResults(t *testing.T) {
 	}
 	if text := render(res); !strings.Contains(text, "attached") || !strings.Contains(text, "not shown") {
 		t.Fatalf("%q", text)
+	}
+}
+
+// 23/11: a sandboxed server that cannot start fails at once (its input
+// was an io.Pipe, and Wait waited for it until the deadline); mounts and
+// a proxy need a sandbox.
+func TestASandboxedServerThatCannotStartFailsAtOnce(t *testing.T) {
+	sb, err := sandbox.New()
+	if err != nil {
+		t.Skip(err)
+	}
+	ctx, cancel := context.WithTimeout(bg, 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = Connect(ctx, Server{Name: "boxed", Command: []string{"/nonexistent/server"}, Sandbox: sb})
+	if err == nil || time.Since(start) > 15*time.Second {
+		t.Fatalf("%v after %s", err, time.Since(start))
+	}
+	if err := (Server{Name: "x", Command: []string{"x"}, Proxy: &egress.Proxy{}}).validate(); err == nil {
+		t.Fatal("a proxy without a sandbox")
 	}
 }
