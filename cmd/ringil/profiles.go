@@ -26,19 +26,15 @@ import (
 type profile struct {
 	Description string `argus:"description"`
 	Model       string `argus:"model"`
-	Base        string `argus:"base"`
-	// Provider is the API the role's model speaks, when not the main
-	// one's: openai (OpenAI-compatible) or anthropic. Another provider is
-	// another endpoint: the role sends only its own key.
+	// Provider is the role's model's provider, by name, when not the
+	// main one: its own endpoint, its own key.
 	Provider string `argus:"provider"`
-	// KeyEnv names the variable holding this role's API key. A role with
-	// its own base sends only this key, none without it: the main key
-	// never goes to another endpoint. It needs base: a role's key never
-	// goes to the main endpoint either.
-	KeyEnv string `argus:"key_env"`
-	// EmbedModel is the embedding model at the role's base, for memory by
-	// meaning. A role with its own base and none keeps memory by words:
-	// memories never go to another endpoint.
+	// OldBase and OldKeyEnv: as config's.
+	OldBase   string `argus:"base"`
+	OldKeyEnv string `argus:"key_env"`
+	// EmbedModel is the embedding model at the role's provider, for
+	// memory by meaning. A role on another provider than the main one and
+	// none keeps memory by words: memories never go to another endpoint.
 	EmbedModel string `argus:"embed_model"`
 	// Instructions is a file of the role's own instructions, added to
 	// the prompt after the base and after --instructions; a relative
@@ -79,13 +75,8 @@ func (p profile) check(name string) error {
 	switch {
 	case !profileName.MatchString(name) || name == "default":
 		return errors.New(ErrUsage, "profile names are 1-64 letters, digits, - _, and not \"default\": "+name)
-	case p.KeyEnv != "" && secrets.ValidateName(p.KeyEnv) != nil:
-		return errors.New(ErrUsage, "profile "+name+": key_env is not a valid variable name")
-	case p.Base == "" && p.Provider == "" && p.KeyEnv+p.EmbedModel != "":
-		return errors.New(ErrUsage, "profile "+name+": key_env and embed_model need the role's own base or provider")
-	}
-	if err := p.checkProvider(name); err != nil {
-		return err
+	case p.Provider == "" && p.EmbedModel != "":
+		return errors.New(ErrUsage, "profile "+name+": embed_model needs the role's own provider")
 	}
 	return p.checkLimits(name)
 }
@@ -190,53 +181,10 @@ func names(all map[string]profile) []string {
 // Overrides of the role, when there is one.
 
 func (c *cli) roleSetting(ctx *orpheus.Context, res secrets.Resolver, flag, env string) (string, error) {
-	if c.role != nil {
-		own, err := c.ownEndpoint(ctx, res)
-		switch {
-		case err != nil:
-			return "", err
-		case flag == "base" && own:
-			return c.role.Base, nil // empty: the provider's own API
-		case flag == "model" && c.role.Model != "":
-			return c.role.Model, nil
-		}
+	if c.role != nil && flag == "model" && c.role.Model != "" {
+		return c.role.Model, nil
 	}
 	return c.setting(ctx, res, flag, env)
-}
-
-// keyEnv names the key's variable; "" sends none. A role with its own
-// endpoint (base or provider) uses only its own key; Anthropic's is
-// ANTHROPIC_API_KEY unless key_env names another.
-func (c *cli) keyEnv(ctx *orpheus.Context, res secrets.Resolver) (string, error) {
-	kind, err := c.providerKind(ctx, res)
-	if err != nil {
-		return "", err
-	}
-	own, err := c.ownEndpoint(ctx, res)
-	switch {
-	case err != nil:
-		return "", err
-	case own:
-		return c.roleKeyEnv(kind), nil
-	case kind != providerAnthropic:
-		return c.flagString(ctx, "key-env"), nil
-	case ctx.GlobalFlagChanged("key-env"):
-		return ctx.GetGlobalFlagString("key-env"), nil
-	}
-	// The file's key_env is its provider's, as its base is.
-	if f := c.conf(); f.Provider == providerAnthropic && f.KeyEnv != "" {
-		return f.KeyEnv, nil
-	}
-	return anthropicKey, nil
-}
-
-// roleKeyEnv is the key of a role's own endpoint: its key_env, or for
-// Anthropic ANTHROPIC_API_KEY; none for another endpoint without one.
-func (c *cli) roleKeyEnv(kind string) string {
-	if c.role.KeyEnv == "" && kind == providerAnthropic {
-		return anthropicKey
-	}
-	return c.role.KeyEnv
 }
 
 // embedModel is the embedding model to use: the role's at the role's own
@@ -245,17 +193,14 @@ func (c *cli) embedModel(ctx *orpheus.Context, res secrets.Resolver) (string, er
 	if own, err := c.ownEndpoint(ctx, res); err != nil || own {
 		return c.role.EmbedModel, err
 	}
-	kind, err := c.providerKind(ctx, res)
-	if err != nil || kind != providerAnthropic {
+	ep, err := c.runEndpoint(ctx, res)
+	if err != nil || ep.kind == providerOpenAI {
 		return c.setting(ctx, res, "embed-model", "RINGIL_EMBED_MODEL")
 	}
-	// RINGIL_EMBED_MODEL is the OpenAI-compatible endpoint's, as its base
-	// is: for Anthropic only --embed-model, or the file's when the file
-	// says provider: anthropic, count (and are refused: it has none).
-	if f := c.conf(); ctx.GlobalFlagChanged("embed-model") || f.Provider == providerAnthropic {
-		return c.flagString(ctx, "embed-model"), nil
-	}
-	return "", nil
+	// RINGIL_EMBED_MODEL is for an OpenAI-compatible provider: on another
+	// the memory works by words and the run goes on (found live 21/11:
+	// it stopped). --embed-model and the file's count, and are refused.
+	return c.flagString(ctx, "embed-model"), nil
 }
 
 // instructions are what the operator adds to the agent's prompt: the

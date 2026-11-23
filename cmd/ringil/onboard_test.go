@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -83,7 +84,7 @@ func TestSetupFromNothing(t *testing.T) {
 	}
 	h, bot := setupHarness(t, []string{
 		"2", "frase lunga davvero", "frase lunga davvero", // an encrypted file
-		"6", base, "y", // another OpenAI-compatible server, which needs a key
+		"5", "7", base, "y", // another OpenAI-compatible server, which needs a key
 		"wrong", "good", // a refused key, then the right one
 		"1",                   // the first model listed (newest name first: model-b)
 		prompt, "1", "1", "y", // the system prompt, no embedding model, SQLite, a Telegram bot
@@ -101,7 +102,7 @@ func TestSetupFromNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = keys.(interface{ Close() error }).Close() })
-	for name, want := range map[string]string{"RINGIL_API_KEY": "good", "RINGIL_TELEGRAM_TOKEN": "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ"} {
+	for name, want := range map[string]string{keyNameOf(serverName(base)): "good", "RINGIL_TELEGRAM_TOKEN": "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ"} {
 		if v, _, err := keys.Lookup(context.Background(), name); err != nil || v != want {
 			t.Errorf("%s: %q %v", name, v, err)
 		}
@@ -112,7 +113,7 @@ func TestSetupFromNothing(t *testing.T) {
 func checkWritten(t *testing.T, dir, base, prompt string) {
 	t.Helper()
 	data, _ := os.ReadFile(filepath.Join(dir, "ringil", "ringil.yaml"))
-	for _, want := range []string{"provider: openai", "base: " + base, "model: model-a", "instructions: " + prompt, "kind: sqlite", "store: file", "- \"42\""} {
+	for _, want := range []string{"provider: " + serverName(base), "base: " + base, "key_env: " + keyNameOf(serverName(base)), "model: model-a", "instructions: " + prompt, "kind: sqlite", "store: file", "- \"42\""} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("ringil.yaml lacks %q:\n%s", want, data)
 		}
@@ -125,8 +126,8 @@ func checkWritten(t *testing.T, dir, base, prompt string) {
 // Run again, it updates what it asks and keeps the rest of the file
 // (profiles, comments), the old one beside it.
 func TestSetupKeepsTheRest(t *testing.T) {
-	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "n"}, map[string]string{})
-	h.c.ollama = "http://127.0.0.1:1/v1" // no Ollama there: the list fails, the name is asked
+	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n"}, map[string]string{})
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"} // no Ollama there: the list fails, the name is asked
 	old := "# my settings\nmodel: old-model\nprofiles:\n  writer: {model: big}  # the writer\nnotes: https://example.com/a/very/long/address/of/the/team/notes/that/goes/past/eighty/columns\n"
 	writeProfiles(t, h.dir, old)
 	if code := h.run("setup"); code != exitOK {
@@ -152,7 +153,7 @@ func TestSetupKeepsTheRest(t *testing.T) {
 // then the chat starts with what it wrote.
 func TestFirstRunOffersTheSetup(t *testing.T) {
 	base := modelServer(t)
-	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", base, "y", "good", "1", "", "1", "1", "n", "n", "/exit"},
+	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "7", base, "y", "good", "1", "", "1", "1", "n", "n", "/exit"},
 		map[string]string{}) // the passphrase is not in the environment: the chat goes on with the setup's (audit 22/11)
 	h.c.interactive = func() bool { return true }
 	if code := h.run(); code != exitOK {
@@ -174,7 +175,7 @@ func TestSetupEmbeddingModels(t *testing.T) {
 		_, _ = io.WriteString(w, `{"data":[{"id":"chat-model"},{"id":"text-embedding-3-small"}]}`)
 	}))
 	t.Cleanup(srv.Close)
-	h, _ := setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "6", srv.URL + "/v1", "y", "k", "1", "",
+	h, _ := setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "5", "7", srv.URL + "/v1", "y", "k", "1", "",
 		"3", "1", // a model of the same server: the one listed with "embed"
 		"3", "http://127.0.0.1:8000", "n"}, map[string]string{}) // Chroma, now offered
 	if code := h.run("setup"); code != exitOK {
@@ -186,9 +187,9 @@ func TestSetupEmbeddingModels(t *testing.T) {
 			t.Errorf("lacks %q:\n%s", want, data)
 		}
 	}
-	h, _ = setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "",
+	h, _ = setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "",
 		"2", "", "", "1", "n"}, map[string]string{}) // Ollama, its defaults
-	h.c.ollama = "http://127.0.0.1:1/v1"
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	if code := h.run("setup"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -201,9 +202,9 @@ func TestSetupEmbeddingModels(t *testing.T) {
 // Paths the user types go through argus's ValidateSecurePath: a system
 // file or a key directory is no system prompt.
 func TestSetupRefusesUnsafePaths(t *testing.T) {
-	h, _ := setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "5", "llama3",
+	h, _ := setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "6", "llama3",
 		"/etc/passwd", "~/.ssh/id_rsa", "../../etc/hosts"}, map[string]string{})
-	h.c.ollama = "http://127.0.0.1:1/v1"
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	if code := h.run("setup"); code == exitOK || strings.Count(h.err.String(), "not a path ringil reads") != 3 {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -216,12 +217,12 @@ func TestSetupServersAndKeys(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }))
 	t.Cleanup(srv.Close)
 	// No key: none is asked, none kept.
-	h, _ := setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "6", srv.URL + "/v1", "n", "m", "", "1", "1", "n"}, map[string]string{})
+	h, _ := setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "5", "7", srv.URL + "/v1", "n", "m", "", "1", "1", "n"}, map[string]string{})
 	if code := h.run("setup"); code != exitOK || strings.Contains(h.err.String(), "API key (not shown") {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
 	// Plain http to another host: refused, then allowed (allow_http).
-	h, _ = setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "6",
+	h, _ = setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "5", "7",
 		"http://ringil-test.invalid:8000/v1", "n", "http://ringil-test.invalid:8000/v1", "y", "n", "m", "", "1", "1", "n"}, map[string]string{})
 	h.run("setup")
 	data, _ := os.ReadFile(filepath.Join(h.dir, "ringil", "ringil.yaml"))
@@ -229,7 +230,7 @@ func TestSetupServersAndKeys(t *testing.T) {
 		t.Fatalf("%s\n%s", h.err, data)
 	}
 	// A key the server cannot check (404): asked whether to keep it.
-	h, _ = setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "6", srv.URL + "/v1", "y", "k", "y", "m", "", "1", "1", "n"}, map[string]string{})
+	h, _ = setupHarness(t, []string{"2", "frase lunga davvero", "frase lunga davvero", "5", "7", srv.URL + "/v1", "y", "k", "y", "m", "", "1", "1", "n"}, map[string]string{})
 	if code := h.run("setup"); code != exitOK || !strings.Contains(h.err.String(), "could not be checked") {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
@@ -239,9 +240,9 @@ func TestSetupServersAndKeys(t *testing.T) {
 // ask (Mem0's headers, a collection prefix, Vault's mount); a second run
 // overwrote the backup of the first.
 func TestSetupMergesAndKeepsEveryBackup(t *testing.T) {
-	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "n"}
+	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n"}
 	h, _ := setupHarness(t, answers, map[string]string{})
-	h.c.ollama = "http://127.0.0.1:1/v1"
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	writeProfiles(t, h.dir, "memory_store:\n  kind: mem0\n  url: http://m:8888\n  collection_prefix: acme\n  headers: {X-API-Key: x}\nsecrets:\n  store: vault\n  vault: {url: https://v, path: p, mount: kv}\n")
 	if code := h.run("setup"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
@@ -257,7 +258,7 @@ func TestSetupMergesAndKeepsEveryBackup(t *testing.T) {
 	}
 	time.Sleep(1100 * time.Millisecond)                                                                                                         // a second run, a second apart
 	h2, _ := setupHarness(t, append(append([]string(nil), answers[:5]...), append([]string{"llama4"}, answers[6:]...)...), map[string]string{}) // another model: a change, so a write and a backup
-	h2.c.configDir, h2.dir, h2.c.ollama = h.c.configDir, h.dir, "http://127.0.0.1:1/v1"
+	h2.c.configDir, h2.dir, h2.c.setupBases = h.c.configDir, h.dir, map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	if code := h2.run("setup"); code != exitOK {
 		t.Fatalf("second run: %s", h2.err)
 	}
@@ -282,9 +283,9 @@ func TestModelOrder(t *testing.T) {
 // kept in the store; ringil.yaml names it, and a browser sign-in left from
 // before gives way to the key.
 func TestSetupComposio(t *testing.T) {
-	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "n"}
+	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n"}
 	h, _ := setupHarness(t, append(answers, "y", "ck_wrong", "ck_right"), map[string]string{})
-	h.c.ollama = "http://127.0.0.1:1/v1"
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	var tried []string
 	h.c.checkComposio = func(_ context.Context, key string) (int, error) {
 		tried = append(tried, key)
@@ -320,9 +321,9 @@ func TestSetupComposio(t *testing.T) {
 
 // Composio out of reach: the key is kept when the user says so.
 func TestSetupComposioUnreachable(t *testing.T) {
-	answers := []string{"2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "n"}
+	answers := []string{"2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n"}
 	h2, _ := setupHarness(t, append(answers, "y", "ck_later", "y"), map[string]string{})
-	h2.c.ollama = "http://127.0.0.1:1/v1"
+	h2.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	h2.c.checkComposio = func(context.Context, string) (int, error) { return 0, errors.New(mcp.ErrConnect, "no network") }
 	if code := h2.run("setup"); code != exitOK {
 		t.Fatalf("unreachable: %s", h2.err)
@@ -366,13 +367,13 @@ func yamlHas(t *testing.T, dir string, want, not []string) {
 // Audit 22/11: Composio is optional, so giving up on it does not stop the
 // setup: three refused keys, or a key not kept, skip it.
 func TestSetupComposioSkipped(t *testing.T) {
-	answers := []string{"2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "n"}
+	answers := []string{"2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n"}
 	for name, more := range map[string][]string{
 		"refused thrice": {"y", "ck_a", "ck_b", "ck_c"},
 		"not kept":       {"y", "ck_a", "n"},
 	} {
 		h, _ := setupHarness(t, append(answers, more...), map[string]string{})
-		h.c.ollama = "http://127.0.0.1:1/v1"
+		h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 		h.c.checkComposio = func(context.Context, string) (int, error) {
 			if name == "not kept" {
 				return 0, errors.New(mcp.ErrConnect, "no network")
@@ -391,9 +392,9 @@ func TestSetupComposioSkipped(t *testing.T) {
 // stayed, the run then using the old value: it is refused, the file left
 // as it was.
 func TestSetupKeepsNumericOwnersAndRefusesAliases(t *testing.T) {
-	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "y", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "y", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
 	h, _ := setupHarness(t, answers, map[string]string{})
-	h.c.ollama = "http://127.0.0.1:1/v1"
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	writeProfiles(t, h.dir, "serve:\n  telegram:\n    owners: [111, 222]\n")
 	if code := h.run("setup"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
@@ -401,7 +402,7 @@ func TestSetupKeepsNumericOwnersAndRefusesAliases(t *testing.T) {
 	yamlHas(t, h.dir, []string{"111", "222", "\"42\""}, nil)
 
 	h2, _ := setupHarness(t, append(append([]string(nil), answers[:9]...), "n"), map[string]string{})
-	h2.c.ollama = "http://127.0.0.1:1/v1"
+	h2.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	const aliased = "x: &b http://old.example/v1\nbase: *b\n"
 	writeProfiles(t, h2.dir, aliased)
 	if code := h2.run("setup"); code == exitOK || !strings.Contains(h2.err.String(), "alias") {
@@ -413,9 +414,9 @@ func TestSetupKeepsNumericOwnersAndRefusesAliases(t *testing.T) {
 }
 
 func TestSetupFailedWriteKeepsOAuthToken(t *testing.T) {
-	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "5", "llama3", "", "1", "1", "n", "y", "ck_right"}
+	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n", "y", "ck_right"}
 	h, _ := setupHarness(t, answers, map[string]string{})
-	h.c.ollama = "http://127.0.0.1:1/v1"
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
 	h.c.checkComposio = func(context.Context, string) (int, error) { return 4, nil }
 	const aliased = "x: &b http://old.example/v1\nbase: *b\nmcp_servers:\n  composio:\n    url: https://connect.composio.dev/mcp\n    oauth: {}\n"
 	writeProfiles(t, h.dir, aliased)
@@ -431,5 +432,104 @@ func TestSetupFailedWriteKeepsOAuthToken(t *testing.T) {
 	}
 	if _, err := os.Stat(token); err != nil {
 		t.Fatalf("oauth token deleted even though ringil.yaml did not write: %v", err)
+	}
+}
+
+// 23/11: a service of the OpenAI-compatible list is written by its name,
+// its key kept under the provider's own secret; Google is offered too.
+func TestSetupBuiltinProviders(t *testing.T) {
+	for _, tc := range []struct {
+		answers []string
+		name    string
+	}{
+		{[]string{"5", "3"}, "deepseek"},
+		{[]string{"4"}, "google"},
+	} {
+		base := modelServer(t)
+		answers := append(append([]string{"2", "frase lunga davvero", "frase lunga davvero"}, tc.answers...), "good", "1", "", "1", "1", "n")
+		h, _ := setupHarness(t, answers, map[string]string{})
+		h.c.setupBases = map[string]string{tc.name: base}
+		if code := h.run("setup"); code != exitOK {
+			t.Fatalf("%s: exit %d: %s", tc.name, code, h.err)
+		}
+		data, _ := os.ReadFile(filepath.Join(h.dir, "ringil", "ringil.yaml"))
+		if !strings.Contains(string(data), "provider: "+tc.name+"\n") || !strings.Contains(string(data), "key_env: "+builtinProviders[tc.name].KeyEnv) {
+			t.Errorf("%s:\n%s", tc.name, data)
+		}
+		keys, err := store.Open(context.Background(), store.Config{Kind: store.File, File: filepath.Join(h.dir, "ringil", "secrets.enc"), PassphraseEnv: "P"}, secrets.Map{"P": "frase lunga davvero"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, _, err := keys.Lookup(context.Background(), builtinProviders[tc.name].KeyEnv); err != nil || v != "good" {
+			t.Errorf("%s: key %q %v", tc.name, v, err)
+		}
+		_ = keys.(interface{ Close() error }).Close()
+	}
+}
+
+// A server's provider is named after its host, and its key's secret name
+// is always one the store takes.
+func TestServerNames(t *testing.T) {
+	for base, want := range map[string]string{
+		"https://vllm.lan:8000/v1":   "vllm-lan-8000",
+		"http://10.0.0.5/v1":         "server-10-0-0-5",
+		"http://[::1]:8000/v1":       "server-1-8000",
+		"https://openai/v1":          "openai-own",
+		"https://gemini/v1":          "gemini-own",
+		"https://ringil/v1":          "ringil-own",
+		"https://Gate.Example.COM/x": "gate-example-com",
+	} {
+		got := serverName(base)
+		if got != want || !providerName.MatchString(got) || secrets.ValidateName(keyNameOf(got)) != nil {
+			t.Errorf("%s: %q (key %q)", base, got, keyNameOf(got))
+		}
+	}
+}
+
+// Audit 23/11: an old file's base or key_env in a profile was left there,
+// the setup said "set up", and the next run refused the file. The setup
+// refuses first, saying what to change; a built-in chosen at its own
+// address drops the file's entry that sent its key elsewhere.
+func TestSetupOldEndpointsAndOverrides(t *testing.T) {
+	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n"}
+	h, _ := setupHarness(t, answers, map[string]string{})
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
+	writeProfiles(t, h.dir, "profiles:\n  w: {base: \"https://x.test/v1\", model: m}\n")
+	if code := h.run("setup"); code == exitOK || !strings.Contains(h.err.String(), "profiles.w: base and key_env are gone") {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	h, _ = setupHarness(t, answers, map[string]string{})
+	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
+	writeProfiles(t, h.dir, "providers:\n  ollama: {base: \"http://gpu.lan:11434/v1\"}\n")
+	if code := h.run("setup"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(h.dir, "ringil", "ringil.yaml")); strings.Contains(string(data), "gpu.lan") {
+		t.Fatalf("the old address stayed:\n%s", data)
+	}
+}
+
+// Audit 23/11: a server added by the setup takes no key name already in
+// the file; a built-in chosen at its own address removes the file's entry
+// for it.
+func TestSetupNamesAndOverrides(t *testing.T) {
+	taken := map[string]bool{"VLLM_LAN_API_KEY": true, "VLLM_LAN_2_API_KEY": true}
+	if got := freeName("vllm-lan", taken); got != "vllm-lan-3" {
+		t.Fatalf("%q", got)
+	}
+	if got := freeName("other", taken); got != "other" {
+		t.Fatalf("%q", got)
+	}
+	s := &setup{endpoint: endpoint{name: "deepseek", kind: providerOpenAI, base: builtinProviders["deepseek"].Base, keyName: "DEEPSEEK_API_KEY"}}
+	if !slices.Contains(s.settings(), keyValue{"providers.deepseek", ""}) {
+		t.Fatalf("the file's deepseek entry would stay: %v", s.settings())
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ringil.yaml")
+	if err := os.WriteFile(path, []byte("providers:\n  work: {base: \"https://work/v1\", key_env: VLLM_LAN_API_KEY}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := freeName(serverName("http://vllm.lan/v1"), (&setup{path: path}).takenNames()); got != "vllm-lan-2" {
+		t.Fatalf("%q", got)
 	}
 }

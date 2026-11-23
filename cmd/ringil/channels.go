@@ -6,7 +6,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"os"
 	"path/filepath"
@@ -202,36 +201,29 @@ func envOr(ctx *orpheus.Context, res secrets.Resolver, name, file string) (strin
 }
 
 // audioConfig is an audio model's endpoint: <prefix>_MODEL (or the file's
-// model) at <prefix>_BASE_URL (or the file's base), else at the chat
-// model's endpoint. The main key goes only to the main endpoint: another
-// one gets the file's key_env, else <prefix>_API_KEY, or no key. No model,
-// no config.
+// model) at <prefix>_PROVIDER (or the file's provider), else at the main
+// model's provider, with that provider's key and no other. No model, no
+// config.
 func (c *cli) audioConfig(ctx *orpheus.Context, res secrets.Resolver, prefix string, file audioConfig) (openai.Config, error) {
 	model, err := envOr(ctx, res, prefix+"_MODEL", file.Model)
 	if err != nil || model == "" {
 		return openai.Config{}, err
 	}
-	main, err := c.setting(ctx, res, "base", "RINGIL_BASE_URL")
+	name, err := envOr(ctx, res, prefix+"_PROVIDER", file.Provider)
+	if err == nil && name == "" {
+		name, err = c.mainProviderName(ctx, res)
+	}
 	if err != nil {
 		return openai.Config{}, err
 	}
-	base, err := envOr(ctx, res, prefix+"_BASE_URL", file.Base)
+	ep, err := c.conf().endpointNamed(name)
+	if err == nil && ep.kind != providerOpenAI {
+		err = errors.New(ErrUsage, prefix+"_MODEL: "+name+" has no audio models; give an OpenAI-compatible provider ("+prefix+"_PROVIDER)")
+	}
 	if err != nil {
 		return openai.Config{}, err
 	}
-	keyName := c.flagString(ctx, "key-env")
-	switch {
-	case base != "" && base != main:
-		keyName = cmp.Or(file.KeyEnv, prefix+"_API_KEY")
-	case main == "":
-		return openai.Config{}, errors.New(ErrUsage, prefix+"_MODEL needs "+prefix+"_BASE_URL, or RINGIL_BASE_URL")
-	default:
-		base = main
-	}
-	if err := validKeyName(keyName); err != nil {
-		return openai.Config{}, err
-	}
-	return openai.Config{BaseURL: base, Model: model, KeyFunc: keyFunc(res, keyName), AllowHTTP: c.flagBool(ctx, "allow-http")}, nil
+	return openai.Config{BaseURL: ep.base, Model: model, KeyFunc: keyFunc(res, ep.keyName), AllowHTTP: c.flagBool(ctx, "allow-http")}, nil
 }
 
 // inboxOf is the documents directory of a conversation's chat, when it

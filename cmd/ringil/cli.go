@@ -163,8 +163,9 @@ type cli struct {
 	interactive func() bool
 	// checkComposio tries a Composio key in the setup; tests replace it.
 	checkComposio func(ctx context.Context, key string) (int, error)
-	// ollama replaces Ollama's local address in the setup (tests).
-	ollama string
+	// setupBases replaces built-in providers' addresses in the setup
+	// (tests: no network, no Ollama of this machine).
+	setupBases map[string]string
 	// newTelegram makes the setup's bot; tests replace it.
 	newTelegram func(ctx context.Context, cfg telegram.Config) (telegramBot, error)
 	configEvery time.Duration
@@ -203,10 +204,8 @@ func (c *cli) app() *orpheus.App {
 	app := orpheus.New("ringil").
 		SetDescription("Run an AI agent from the terminal").
 		SetVersion(version).
-		AddGlobalFlag("base", "b", "", "API base URL (default: $RINGIL_BASE_URL)").
 		AddGlobalFlag("model", "m", "", "model name (default: $RINGIL_MODEL)").
-		AddGlobalFlag("key-env", "", "RINGIL_API_KEY", "name of the secret holding the API key (anthropic: ANTHROPIC_API_KEY)").
-		AddGlobalFlag("provider", "", "", "the API the model speaks: openai (OpenAI-compatible, default) or anthropic (or RINGIL_PROVIDER); anthropic needs no --base").
+		AddGlobalFlag("provider", "", "", "the model's provider, by name: a built-in one (anthropic, chatgpt, openai, google, openrouter, nvidia, deepseek, requesty, zai, moonshot, ollama) or one of ringil.yaml's providers (or RINGIL_PROVIDER)").
 		AddGlobalIntFlag("workflow-calls", "", 0, "most successful model calls one workflow may make, across resumes; 0 is no limit").
 		AddGlobalIntFlag("workflow-tokens", "", 0, "most tokens one workflow may use, across resumes; 0 is no limit").
 		AddGlobalFlag("embed-model", "", "", "embedding model for memory by meaning (or RINGIL_EMBED_MODEL); same endpoint and key as the chat model").
@@ -845,11 +844,7 @@ func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	kind, err := c.providerKind(ctx, res)
-	if err != nil {
-		return nil, err
-	}
-	base, err := c.baseFor(ctx, res, kind)
+	ep, err := c.runEndpoint(ctx, res)
 	if err != nil {
 		return nil, err
 	}
@@ -857,50 +852,25 @@ func (c *cli) provider(ctx *orpheus.Context) (agent.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := needModel(kind, base, model); err != nil {
-		return nil, err
+	if model == "" {
+		return nil, errors.New(ErrUsage, "set --model, or model in ringil.yaml (ringil setup offers the list)")
 	}
-	keyName, err := c.keyName(ctx, res)
-	if err != nil {
-		return nil, err
-	}
-	return c.newModel(ctx, res, kind, base, model, keyName)
+	return c.newModel(ctx, res, ep, model)
 }
 
-// needModel: a model, and an endpoint for an OpenAI-compatible one (the
-// other providers have theirs).
-func needModel(kind, base, model string) error {
-	switch {
-	case model == "" && kind != providerOpenAI:
-		return errors.New(ErrUsage, "set --model, or model in ringil.yaml (ringil setup offers the list)")
-	case model == "" || base == "" && kind == providerOpenAI:
-		return errors.New(ErrUsage, "set --base and --model, or RINGIL_BASE_URL and RINGIL_MODEL")
-	}
-	return nil
-}
-
-// keyName is keyEnv, checked to be a variable's name.
-func (c *cli) keyName(ctx *orpheus.Context, res secrets.Resolver) (string, error) {
-	name, err := c.keyEnv(ctx, res)
-	if err != nil {
-		return "", err
-	}
-	return name, validKeyName(name)
-}
-
-// newModel is the provider for model at base: Anthropic's API, or an
-// OpenAI-compatible one.
-func (c *cli) newModel(ctx *orpheus.Context, res secrets.Resolver, kind, base, model, keyName string) (agent.Provider, error) {
-	if kind == providerChatGPT {
-		return c.newChatGPT(ctx, model, base)
-	}
-	if kind == providerAnthropic {
-		return c.newAnthropic(anthropic.Config{BaseURL: base, Model: model, KeyFunc: keyFunc(res, keyName), AllowHTTP: c.flagBool(ctx, "allow-http")})
+// newModel is the provider for model at ep: Anthropic's API, ChatGPT's,
+// or an OpenAI-compatible one, with ep's key and no other.
+func (c *cli) newModel(ctx *orpheus.Context, res secrets.Resolver, ep endpoint, model string) (agent.Provider, error) {
+	switch ep.kind {
+	case providerChatGPT:
+		return c.newChatGPT(ctx, model, ep.base)
+	case providerAnthropic:
+		return c.newAnthropic(anthropic.Config{BaseURL: ep.base, Model: model, KeyFunc: keyFunc(res, ep.keyName), AllowHTTP: c.flagBool(ctx, "allow-http")})
 	}
 	return c.newProvider(openai.Config{
-		BaseURL:   base,
+		BaseURL:   ep.base,
 		Model:     model,
-		KeyFunc:   keyFunc(res, keyName),
+		KeyFunc:   keyFunc(res, ep.keyName),
 		AllowHTTP: c.flagBool(ctx, "allow-http"),
 		Images:    c.images(ctx.Context(), res),
 	})
@@ -912,14 +882,6 @@ func keyFunc(res secrets.Resolver, name string) func(context.Context) (string, e
 		return nil
 	}
 	return secrets.OptionalKeyFunc(res, name)
-}
-
-// validKeyName accepts a variable name, or "" for no key.
-func validKeyName(name string) error {
-	if name == "" {
-		return nil
-	}
-	return secrets.ValidateName(name)
 }
 
 // resolver is where settings and secrets come from: the environment first,

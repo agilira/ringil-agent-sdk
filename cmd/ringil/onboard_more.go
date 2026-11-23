@@ -64,7 +64,7 @@ func expandHome(c *cli, p string) string {
 // no embedding models).
 func (s *setup) chooseEmbedder() error {
 	options := []string{"no (the memory finds by words)", "Ollama on this machine"}
-	if s.provider.kind == "openai" {
+	if s.endpoint.kind == providerOpenAI {
 		options = append(options, "a model of the same server as the chat model")
 	}
 	i, err := s.choose("An embedding model too? The memory then finds by meaning (optional)", options)

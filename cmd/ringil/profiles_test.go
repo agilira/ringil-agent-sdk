@@ -35,12 +35,12 @@ func writeProfiles(t *testing.T, dir, body string) {
 
 func TestProfileOverridesModelAndPrompt(t *testing.T) {
 	h := newHarness(t, "", fake.Reply("ok"))
-	writeProfiles(t, h.dir, `{"profiles":{"writer":{"description":"writes","model":"big-model","base":"http://localhost:2/v1","key_env":"WRITER_KEY","instructions":"writer.md"}}}`)
+	writeProfiles(t, h.dir, `{"providers":{"writers":{"base":"http://localhost:2/v1","key_env":"WRITER_KEY"}},"profiles":{"writer":{"description":"writes","model":"big-model","provider":"writers","instructions":"writer.md"}}}`)
 	if err := os.WriteFile(filepath.Join(h.dir, "ringil", "writer.md"), []byte("You write prose.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	h.c.getenv = func(k string) string {
-		return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "WRITER_KEY": "wk"}[k]
+		return map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "m", "OPENAI_API_KEY": "main", "WRITER_KEY": "wk"}[k]
 	}
 	if code := h.run("--profile", "writer", "--no-tools", "run", "hi"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.err)
@@ -95,7 +95,8 @@ func TestProfilesRefused(t *testing.T) {
 	for _, body := range []string{
 		`{"profiles":{"default":{}}}`,
 		`{"profiles":{"bad name":{}}}`,
-		`{"profiles":{"w":{"key_env":"no spaces allowed"}}}`,
+		`{"profiles":{"w":{"key_env":"K"}}}`,
+		`{"profiles":{"w":{"provider":"nowhere"}}}`,
 		`{"profiles":{"w":{"temperature":1}}}`,
 		`{"profiles":{"w":{"max_turns":-1}}}`,
 	} {
@@ -121,36 +122,31 @@ func probe(t *testing.T, c *cli, args []string, fn func(ctx *orpheus.Context) er
 	}
 }
 
-// Audit 18/11 (1): a role with its own base and no key_env got the main
-// key. It gets none; and key_env without base is refused.
+// Audit 18/11 (1): a role with its own endpoint and no key got the main
+// key. A provider without key_env gets none.
 func TestRoleNeverGetsTheMainKey(t *testing.T) {
 	h := newHarness(t, "", fake.Reply("ok"))
-	writeProfiles(t, h.dir, `{"profiles":{"other":{"base":"http://localhost:9/v1"}}}`)
+	writeProfiles(t, h.dir, `{"providers":{"lan":{"base":"http://localhost:9/v1"}},"profiles":{"other":{"provider":"lan"}}}`)
 	if code := h.run("--profile", "other", "--no-tools", "run", "hi"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
 	if h.config.KeyFunc != nil || h.config.BaseURL != "http://localhost:9/v1" {
 		t.Fatalf("base %s, a key is sent", h.config.BaseURL)
 	}
-	h = newHarness(t, "", fake.Reply("ok"))
-	writeProfiles(t, h.dir, `{"profiles":{"other":{"key_env":"OTHER_KEY"}}}`)
-	if code := h.run("--profile", "other", "--no-tools", "run", "hi"); code == 0 {
-		t.Fatal("a role's key would go to the main endpoint")
-	}
 }
 
 // Audit 18/11 (2): memory embeddings went to the main endpoint with the
-// main key. Under a role with its own base they use its base, key and
-// embed_model, or none.
+// main key. Under a role on another provider they use its endpoint, key
+// and embed_model, or none.
 func TestRoleEmbeddings(t *testing.T) {
 	for body, want := range map[string]string{
-		`{"profiles":{"local":{"base":"http://localhost:9/v1","key_env":"LOCAL_KEY","embed_model":"le"}}}`: "http://localhost:9/v1 le lk",
-		`{"profiles":{"local":{"base":"http://localhost:9/v1","key_env":"LOCAL_KEY"}}}`:                    "none",
+		`{"providers":{"lan":{"base":"http://localhost:9/v1","key_env":"LOCAL_KEY"}},"profiles":{"local":{"provider":"lan","embed_model":"le"}}}`: "http://localhost:9/v1 le lk",
+		`{"providers":{"lan":{"base":"http://localhost:9/v1","key_env":"LOCAL_KEY"}},"profiles":{"local":{"provider":"lan"}}}`:                    "none",
 	} {
 		h := newHarness(t, "", fake.Reply("ok"))
 		writeProfiles(t, h.dir, body)
 		h.c.getenv = func(k string) string {
-			return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "RINGIL_API_KEY": "main", "LOCAL_KEY": "lk", "RINGIL_EMBED_MODEL": "e"}[k]
+			return map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "m", "OPENAI_API_KEY": "main", "LOCAL_KEY": "lk", "RINGIL_EMBED_MODEL": "e"}[k]
 		}
 		got := "none"
 		h.c.newEmbedder = func(cfg openai.Config) (agent.Embedder, error) {

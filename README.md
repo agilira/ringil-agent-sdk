@@ -38,7 +38,7 @@ make chat                                   # chat con l'endpoint del .env (RING
 ./cmd/ringil/ringil sandbox --mount ~/dati -- python3 script.py               # esecuzione isolata
 ```
 
-Flag principali: `--base`, `--model`, `--key-env`, `--instructions`, `--max-turns`,
+Flag principali: `--provider`, `--model`, `--instructions`, `--max-turns`,
 `--allow-http`, `--no-tools`, `--session`/`-S`, `--sessions-dir`, `--config`/`-c`.
 
 ### ringil.yaml
@@ -46,10 +46,19 @@ Flag principali: `--base`, `--model`, `--key-env`, `--instructions`, `--max-turn
 Tutta la configurazione sta in un file, `<config>/ringil/ringil.yaml` (o `--config`):
 impostazioni, profili, server MCP, agenti remoti e `serve`. Le chiavi sono i nomi dei
 flag con `_` al posto di `-`; un flag vince sul file per quel comando, e
-`RINGIL_MODEL`, `RINGIL_BASE_URL`, `RINGIL_EMBED_MODEL` nell'ambiente pure. I segreti
+`RINGIL_PROVIDER`, `RINGIL_MODEL`, `RINGIL_EMBED_MODEL` nell'ambiente pure. I segreti
 non ci stanno mai: `key_env` e `${NOME}` dicono quale variabile li contiene. Il file
 dev'essere tuo e non scrivibile da altri; i percorsi relativi delle istruzioni e di
 `sessions_dir` partono dalla sua cartella. Esempio completo: `docs/ringil.example.yaml`.
+
+Il modello si sceglie per nome del provider (`provider:`, `--provider`, `RINGIL_PROVIDER`).
+Pronti senza configurazione, con il segreto della chiave: `anthropic` (`ANTHROPIC_API_KEY`),
+`chatgpt` (abbonamento, `ringil login chatgpt`), `openai` (`OPENAI_API_KEY`), `google`
+(Gemini, `GEMINI_API_KEY`), `openrouter`, `nvidia` (NIM), `deepseek`, `requesty`, `zai`,
+`moonshot` (`<NOME>_API_KEY`), `ollama` (questa macchina, senza chiave). Altri, quanti se ne
+vuole, nella sezione `providers:` con un nome, l'indirizzo e il segreto della chiave; una
+voce con il nome di uno pronto ne cambia indirizzo o segreto. Profili e modelli audio
+scelgono il loro provider per nome. Ogni chiave va solo al suo provider.
 
 Una chiave sconosciuta è un errore, non un default silenzioso. Il file, i file di
 istruzioni che nomina e le skill installate si leggono insieme, come una revisione
@@ -136,12 +145,8 @@ p, err := anthropic.New(anthropic.Config{Model: "claude-opus-5-5", APIKey: os.Ge
 ```
 
 Nella CLI: `--provider anthropic` (o `RINGIL_PROVIDER`, o `provider:` in `ringil.yaml`),
-`--model claude-haiku-5-5`; la chiave è `ANTHROPIC_API_KEY`. `RINGIL_BASE_URL` e
-`RINGIL_EMBED_MODEL` sono dell'endpoint compatibile OpenAI e non valgono per Anthropic;
-`base` e `key_env` di `ringil.yaml` valgono solo se il file dice anche `provider: anthropic`
-(`--base` e `--key-env` sempre): una chiave non va mai all'endpoint dell'altra. Un
-profilo con `provider: anthropic` è un endpoint a sé: usa solo la sua chiave. Anthropic
-non ha modelli di embedding: per la memoria per significato, `embedder` con `kind: ollama`.
+`--model claude-haiku-5-5`; la chiave è `ANTHROPIC_API_KEY`. Anthropic non ha modelli di
+embedding: per la memoria per significato, `embedder` con `kind: ollama`.
 `make live-anthropic` prova il provider con `claude-haiku-5-5`.
 
 `provider/chatgpt` usa i modelli di un abbonamento ChatGPT (Plus, Pro, Business) al posto

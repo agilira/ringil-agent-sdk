@@ -1,23 +1,40 @@
 # ringil.yaml: the whole setup of ringil, in <config>/ringil/ringil.yaml
 # (or --config FILE). Keys are the global flags' names with _ for -; a
-# flag given wins over the file for that command, and RINGIL_MODEL,
-# RINGIL_BASE_URL and RINGIL_EMBED_MODEL in the environment win too.
+# flag given wins over the file for that command, and RINGIL_PROVIDER,
+# RINGIL_MODEL and RINGIL_EMBED_MODEL in the environment win too.
 # No secret is ever written here: key_env and ${NAME} name the variables
 # (environment or --env-file) that hold them. Relative paths of the
 # instructions and sessions_dir are from this file's directory. A key
 # ringil does not know is an error.
 
-# The model: an OpenAI-compatible endpoint (provider: openai, the
-# default), Claude (provider: anthropic: no base needed, the key in
-# ANTHROPIC_API_KEY unless key_env names another; RINGIL_BASE_URL does not
-# apply to it), or a ChatGPT subscription (provider: chatgpt: no base and
-# no key, `ringil login chatgpt` signs in and keeps the sign-in in the
-# secrets store).
-provider: openai
-base: https://api.example.com/v1
+# The model's provider, by name. Built in, with the secret holding the key:
+# anthropic (ANTHROPIC_API_KEY), chatgpt (a subscription: no key, `ringil
+# login chatgpt` signs in), openai (OPENAI_API_KEY), google (Gemini,
+# GEMINI_API_KEY), openrouter (OPENROUTER_API_KEY), nvidia (NIM,
+# NVIDIA_API_KEY), deepseek (DEEPSEEK_API_KEY), requesty
+# (REQUESTY_API_KEY), zai (ZAI_API_KEY), moonshot (MOONSHOT_API_KEY),
+# ollama (this machine, no key). Each key goes to its own provider and to
+# no other.
+provider: work
 model: example-model
-key_env: RINGIL_API_KEY        # the variable holding the key
 embed_model: example-embed     # memory by meaning; leave out for words
+
+# Providers of your own, as many as you like, each with a name: kind
+# openai (compatible, the default) or anthropic, the endpoint, and the
+# variable holding the key (none without key_env; never a built-in's). An
+# entry named as a built-in changes its key_env, or its base with its
+# key_env (a regional endpoint): the key goes where the file says.
+providers:
+  work:
+    base: https://llm.example.com/v1
+    key_env: WORK_API_KEY
+  gateway:
+    kind: anthropic
+    base: https://gateway.example.com
+    key_env: GATEWAY_KEY
+  moonshot:                    # another address for a built-in: its key_env too
+    base: https://api.moonshot.cn/v1
+    key_env: MOONSHOT_CN_API_KEY    # the China platform's keys
 
 # Instructions added after the base prompt, for every profile: tone,
 # procedures, what the agent is for. The base prompt and its rules stay.
@@ -78,17 +95,15 @@ secrets:
   # passphrase_env: RINGIL_SECRETS_PASSPHRASE
 
 # Voice in the chats: a model that hears voice messages and one that
-# speaks the answers. RINGIL_TRANSCRIBE_* and RINGIL_SPEECH_* in the
-# environment win. At another endpoint than the chat model's each gets
-# only its own key: key_env, default RINGIL_TRANSCRIBE_API_KEY and
-# RINGIL_SPEECH_API_KEY.
+# speaks the answers, at an OpenAI-compatible provider: the main model's,
+# or provider. RINGIL_TRANSCRIBE_MODEL and _PROVIDER (and RINGIL_SPEECH_*)
+# in the environment win.
 transcribe:
   model: example-whisper
 speech:
   model: example-tts
   voice: alloy
-  # base: https://speech.example.com/v1
-  # key_env: SPEECH_KEY
+  provider: openai
 
 # Every revision of this file, of its instructions and of the skills is
 # recorded here, by name and hash, never their text; each run of serve
@@ -98,7 +113,7 @@ speech:
 # audit_file: /var/log/ringil/audit.db   # default <config>/ringil/audit.db
 no_audit: false
 
-# Profiles: roles with their own model, endpoint, key, instructions,
+# Profiles: roles with their own provider and model, instructions,
 # tools and memory. --profile NAME picks one; serve offers them all.
 profiles:
   support:
@@ -108,13 +123,12 @@ profiles:
     memory: chat               # each chat its own; "off" none
     max_turns: 10
   local:
-    base: http://localhost:11434/v1   # its own endpoint: only its own key
+    provider: ollama           # another provider: its own endpoint and key
     model: local-model
-    key_env: LOCAL_KEY
     images: true
   claude:
-    provider: anthropic        # another provider: its own endpoint and key
-    model: claude-haiku-5-5    # key in ANTHROPIC_API_KEY (or key_env)
+    provider: anthropic
+    model: claude-haiku-5-5
 
 # MCP servers, with the keys of the common format: a server's entry in
 # JSON from a vendor's page goes here as it is (JSON is YAML).

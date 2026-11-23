@@ -68,8 +68,8 @@ func secretsCommand(t *testing.T, dir, input string, vars map[string]string, arg
 // winning for one run.
 func TestSecretsInTheStore(t *testing.T) {
 	dir := t.TempDir()
-	writeProfiles(t, dir, `{"secrets":{"store":"file"},"key_env":"MY_KEY"}`)
-	vars := map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "RINGIL_SECRETS_PASSPHRASE": "frase lunga"}
+	writeProfiles(t, dir, `{"secrets":{"store":"file"},"provider":"mine","providers":{"mine":{"base":"https://llm.example.com/v1","key_env":"MY_KEY"}}}`)
+	vars := map[string]string{"RINGIL_MODEL": "m", "RINGIL_SECRETS_PASSPHRASE": "frase lunga"}
 	if out := secretsCommand(t, dir, "sk-from-store\n", vars, "set", "MY_KEY"); !strings.Contains(out, "saved MY_KEY in the file store") {
 		t.Fatalf("%s", out)
 	}
@@ -120,7 +120,7 @@ func TestSecretsSectionChecked(t *testing.T) {
 		`{"secrets":{"store":"file","passphrase_env":"a-b"}}`: "secrets:",
 	} {
 		writeProfiles(t, dir, body)
-		h := storeHarness(t, dir, "", map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m"}, fake.Reply("ok"))
+		h := storeHarness(t, dir, "", map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "m"}, fake.Reply("ok"))
 		if code := h.run("--no-tools", "run", "hi"); code == exitOK || !strings.Contains(h.err.String(), want) {
 			t.Errorf("%s: exit %d %s", body, code, h.err)
 		}
@@ -134,7 +134,7 @@ func TestSecretsSectionChecked(t *testing.T) {
 func TestSettingsAreNotSecrets(t *testing.T) {
 	dir := t.TempDir()
 	writeProfiles(t, dir, `{"secrets":{"store":"file"},"model":"from-yaml"}`)
-	vars := map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_SECRETS_PASSPHRASE": "p", "RINGIL_API_KEY": "k"}
+	vars := map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_SECRETS_PASSPHRASE": "p", "OPENAI_API_KEY": "k"}
 	secretsCommand(t, dir, "planted-model\n", vars, "set", "RINGIL_MODEL")
 	h := storeHarness(t, dir, "", vars, fake.Reply("ok"))
 	if code := h.run("--no-tools", "run", "hi"); code != exitOK || h.config.Model != "from-yaml" {
@@ -143,7 +143,7 @@ func TestSettingsAreNotSecrets(t *testing.T) {
 	// A Vault no one answers at: the run, its key in the environment,
 	// goes on.
 	writeProfiles(t, dir, `{"secrets":{"store":"vault","vault":{"url":"http://127.0.0.1:1","path":"x"}}}`)
-	h = storeHarness(t, dir, "", map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "RINGIL_API_KEY": "k"}, fake.Reply("ok"))
+	h = storeHarness(t, dir, "", map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "m", "OPENAI_API_KEY": "k"}, fake.Reply("ok"))
 	if code := h.run("--no-tools", "run", "hi"); code != exitOK {
 		t.Fatalf("a store that cannot answer stopped the run: %s", h.err)
 	}
@@ -153,8 +153,8 @@ func TestSettingsAreNotSecrets(t *testing.T) {
 // line break; an empty one is refused.
 func TestSecretsSetValues(t *testing.T) {
 	dir := t.TempDir()
-	writeProfiles(t, dir, `{"secrets":{"store":"file"},"key_env":"MY_KEY"}`)
-	vars := map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "RINGIL_MODEL": "m", "RINGIL_SECRETS_PASSPHRASE": "p"}
+	writeProfiles(t, dir, `{"secrets":{"store":"file"},"provider":"mine","providers":{"mine":{"base":"https://llm.example.com/v1","key_env":"MY_KEY"}}}`)
+	vars := map[string]string{"RINGIL_MODEL": "m", "RINGIL_SECRETS_PASSPHRASE": "p"}
 	pem := "-----BEGIN KEY-----\nabc\n-----END KEY-----"
 	secretsCommand(t, dir, pem+"\r\n", vars, "set", "MY_KEY")
 	f, err := store.Open(context.Background(), store.Config{Kind: store.File, File: filepath.Join(dir, "ringil", "secrets.enc"), PassphraseEnv: "P"}, secrets.Map{"P": "p"})

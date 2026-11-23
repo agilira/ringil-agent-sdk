@@ -30,7 +30,9 @@ import (
 
 const fullConfig = `
 model: file-model
-key_env: ACME_KEY
+provider: acme
+providers:
+  acme: {base: "https://llm.acme.example/v1", key_env: ACME_KEY}
 instructions: company.md
 max_turns: 7
 allow_domains: [pypi.org, "*.github.com"]
@@ -91,6 +93,7 @@ func loaded(t *testing.T, c *cli, args []string, fn func(ctx *orpheus.Context) e
 
 func TestConfigIsRead(t *testing.T) {
 	h := newHarness(t, "")
+	env(h, map[string]string{})
 	writeConfig(t, h.dir, fullConfig)
 	loaded(t, h.c, nil, func(ctx *orpheus.Context) error {
 		f := h.c.conf()
@@ -143,10 +146,10 @@ func TestFlagsAndEnvironmentWin(t *testing.T) {
 	}
 	h = newHarness(t, "", fake.Reply("ok"))
 	h.c.getenv = func(k string) string {
-		return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1", "ACME_KEY": "k"}[k]
+		return map[string]string{"ACME_KEY": "k"}[k]
 	}
 	writeConfig(t, h.dir, fullConfig)
-	if code := h.run("--no-tools", "run", "hi"); code != 0 || h.config.Model != "file-model" {
+	if code := h.run("--no-tools", "run", "hi"); code != 0 || h.config.Model != "file-model" || h.config.BaseURL != "https://llm.acme.example/v1" || h.key(t) != "k" {
 		t.Fatalf("the file's model: %d %q %s", code, h.config.Model, h.err)
 	}
 	h = newHarness(t, "", fake.Reply("ok"))
@@ -195,7 +198,7 @@ func TestConfigFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.c.settings = nil
-	h.c.getenv = func(k string) string { return map[string]string{"RINGIL_BASE_URL": "http://localhost:1/v1"}[k] }
+	h.c.getenv = func(k string) string { return map[string]string{"RINGIL_PROVIDER": "openai"}[k] }
 	if code := h.run("--config", other, "--no-tools", "run", "hi"); code != 0 || h.config.Model != "acme-model" {
 		t.Errorf("--config: %d %q %s", code, h.config.Model, h.err)
 	}
@@ -537,8 +540,8 @@ func TestPatternsAreNotInstructionsPaths(t *testing.T) {
 			t.Errorf("accepted %+v", f)
 		}
 	}
-	if err := (&config{Speech: audioConfig{KeyEnv: "no spaces"}}).Validate(); err == nil {
-		t.Error("a bad speech key_env")
+	if err := (&config{Speech: audioConfig{Provider: "anthropic"}}).Validate(); err == nil {
+		t.Error("speech at a provider without audio models")
 	}
 }
 
@@ -744,6 +747,6 @@ func TestChatCollectionNames(t *testing.T) {
 
 func keyEnvOf(c *cli, ctx *orpheus.Context) string {
 	res, _ := c.resolver(ctx)
-	name, _ := c.keyEnv(ctx, res)
-	return name
+	ep, _ := c.runEndpoint(ctx, res)
+	return ep.keyName
 }

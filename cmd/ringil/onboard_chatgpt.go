@@ -16,7 +16,7 @@ import (
 // askCredential is the provider's credential: a sign-in for a ChatGPT
 // subscription, else a key.
 func (s *setup) askCredential() error {
-	if s.provider.kind == providerChatGPT {
+	if s.endpoint.kind == providerChatGPT {
 		return s.signInChatGPT()
 	}
 	return s.askKey()

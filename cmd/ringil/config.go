@@ -20,15 +20,21 @@ import (
 )
 
 // config is ringil.yaml. A setting given as a flag wins for that command;
-// the model, base and embedding model in the environment (RINGIL_MODEL,
-// RINGIL_BASE_URL, RINGIL_EMBED_MODEL) win over the file. Keys are the
-// global flags' names with _ for -. Secrets are never in it: key_env and
-// ${NAME} name the variables that hold them.
+// the provider, model and embedding model in the environment
+// (RINGIL_PROVIDER, RINGIL_MODEL, RINGIL_EMBED_MODEL) win over the file.
+// Keys are the global flags' names with _ for -. Secrets are never in it:
+// key_env and ${NAME} name the variables that hold them.
 type config struct {
-	Model          string   `argus:"model"`
-	Base           string   `argus:"base"`
-	Provider       string   `argus:"provider"`
-	KeyEnv         string   `argus:"key_env"`
+	Model string `argus:"model"`
+	// Provider is the main model's provider, by name: a built-in one or
+	// one of Providers.
+	Provider  string                   `argus:"provider"`
+	Providers map[string]providerEntry `argus:"providers"`
+	// OldBase and OldKeyEnv are the endpoint settings of before named
+	// providers, read only to say where they went: a file that has them
+	// is refused.
+	OldBase        string   `argus:"base"`
+	OldKeyEnv      string   `argus:"key_env"`
 	EmbedModel     string   `argus:"embed_model"`
 	Instructions   string   `argus:"instructions"`
 	MaxTurns       int      `argus:"max_turns"`
@@ -131,14 +137,16 @@ func (m memoryStore) check() error {
 }
 
 // audioConfig is a model that hears voice messages (transcribe) or speaks
-// the answers (speech): RINGIL_TRANSCRIBE_* and RINGIL_SPEECH_* in the
-// environment win over it. At another endpoint than the chat model's it
-// gets only its own key, KeyEnv (default <PREFIX>_API_KEY).
+// the answers (speech), at an OpenAI-compatible provider: its own, by
+// name, else the main model's. RINGIL_TRANSCRIBE_MODEL and _PROVIDER (and
+// RINGIL_SPEECH_*) in the environment win over it.
 type audioConfig struct {
-	Model  string `argus:"model"`
-	Base   string `argus:"base"`
-	KeyEnv string `argus:"key_env"`
-	Voice  string `argus:"voice"` // speech only
+	Model    string `argus:"model"`
+	Provider string `argus:"provider"`
+	Voice    string `argus:"voice"` // speech only
+	// OldBase and OldKeyEnv: as config's.
+	OldBase   string `argus:"base"`
+	OldKeyEnv string `argus:"key_env"`
 }
 
 // serveConfig is what `ringil serve` does beside running agents.
@@ -215,8 +223,7 @@ func (s serveConfig) newAfter() string {
 	return s.NewAfter
 }
 
-// checkPaths refuses an instructions path that would read as a pattern,
-// and an audio key_env that is no variable name.
+// checkPaths refuses an instructions path that would read as a pattern.
 func (f *config) checkPaths() error {
 	paths := []string{f.Instructions}
 	for _, name := range names(f.Profiles) {
@@ -230,11 +237,6 @@ func (f *config) checkPaths() error {
 			if err := argus.ValidateSecurePath(p); err != nil {
 				return errors.New(ErrUsage, "an instructions file's path is not one ringil reads: "+p)
 			}
-		}
-	}
-	for _, a := range []audioConfig{f.Transcribe, f.Speech} {
-		if a.KeyEnv != "" && validKeyName(a.KeyEnv) != nil {
-			return errors.New(ErrUsage, "transcribe and speech: key_env is not a valid variable name: "+a.KeyEnv)
 		}
 	}
 	return nil
@@ -263,7 +265,7 @@ func (s serveConfig) fixed() serveConfig {
 // Validate is what a file must be to be applied at all: a reload that
 // fails it is refused and the last good file stays.
 func (f *config) Validate() error {
-	checks := []func() error{f.checkProvider, f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check, f.Secrets.check}
+	checks := []func() error{f.checkGone, f.checkProviders, f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check, f.Secrets.check}
 	for _, check := range checks {
 		if err := check(); err != nil {
 			return err
@@ -342,8 +344,8 @@ func restartFor(old, next *config) string {
 	if !reflect.DeepEqual(old.Serve.fixed(), next.Serve.fixed()) {
 		changed = append(changed, "serve")
 	}
-	if old.AllowHTTP != next.AllowHTTP || old.KeyEnv != next.KeyEnv {
-		changed = append(changed, "allow_http and key_env for the chats' voice")
+	if old.AllowHTTP != next.AllowHTTP || !reflect.DeepEqual(old.Providers, next.Providers) || old.Provider != next.Provider {
+		changed = append(changed, "allow_http, provider and providers for the chats' voice")
 	}
 	if !sameKeys(old.Profiles, next.Profiles) {
 		changed = append(changed, "the list of profiles")
@@ -395,12 +397,8 @@ func (f *config) stringOf(name string) string {
 	switch name {
 	case "model":
 		return f.Model
-	case "base":
-		return f.Base
 	case "provider":
 		return f.Provider
-	case "key-env":
-		return f.KeyEnv
 	case "embed-model":
 		return f.EmbedModel
 	case "instructions":
