@@ -37,6 +37,15 @@ type manifest struct {
 	// Agent marks a skill the agent wrote (create_skill): the only kind
 	// it may replace.
 	Agent bool `json:"agent,omitempty"`
+	// Source is where an installed skill came from, such as
+	// github.com/owner/repo/path@commit; empty for a local directory.
+	Source string `json:"source,omitempty"`
+}
+
+// origin is who made a skill and where it came from.
+type origin struct {
+	agent  bool
+	source string
 }
 
 func checksum(data []byte) string {
@@ -50,6 +59,10 @@ func checksum(data []byte) string {
 // hidden entries (.git, .DS_Store) are left out. An installed skill is
 // never overwritten: Remove it first to update it.
 func Install(ctx context.Context, from, dir string) (Info, error) {
+	return install(ctx, from, dir, "")
+}
+
+func install(ctx context.Context, from, dir, source string) (Info, error) {
 	src, err := os.OpenRoot(from)
 	if err != nil {
 		return Info{}, errors.Wrap(err, ErrIO, "cannot open the skill directory")
@@ -68,7 +81,7 @@ func Install(ctx context.Context, from, dir string) (Info, error) {
 		return Info{}, err
 	}
 	defer closeQuietly(root)
-	return info, publish(ctx, src, root, info, false)
+	return info, publish(ctx, src, root, info, origin{source: source})
 }
 
 // openCatalog opens the catalog directory, creating it private.
@@ -131,7 +144,7 @@ func restore(root *os.Root, aside string) {
 
 // publish copies into a staging directory and renames it into place, so
 // the catalog only ever shows complete skills.
-func publish(ctx context.Context, src, root *os.Root, info Info, byAgent bool) error {
+func publish(ctx context.Context, src, root *os.Root, info Info, by origin) error {
 	if _, err := root.Lstat(info.Name); err == nil {
 		return errors.New(ErrExists, "skill "+info.Name+" is already installed; remove it first")
 	}
@@ -139,7 +152,7 @@ func publish(ctx context.Context, src, root *os.Root, info Info, byAgent bool) e
 	if err := root.Mkdir(stage, 0o700); err != nil {
 		return errors.Wrap(err, ErrIO, "cannot stage the skill")
 	}
-	err := stageSkill(ctx, src, root, stage, info, byAgent)
+	err := stageSkill(ctx, src, root, stage, info, by)
 	if err == nil {
 		err = root.Rename(stage, info.Name)
 	}
@@ -163,13 +176,13 @@ func installError(err error) *errors.Error {
 	return errors.Wrap(err, ErrIO, "cannot install the skill")
 }
 
-func stageSkill(ctx context.Context, src, root *os.Root, stage string, info Info, byAgent bool) error {
+func stageSkill(ctx context.Context, src, root *os.Root, stage string, info Info, by origin) error {
 	dst, err := root.OpenRoot(stage)
 	if err != nil {
 		return err
 	}
 	defer closeQuietly(dst)
-	m := manifest{Version: 1, Info: info, Files: map[string]string{}, Agent: byAgent}
+	m := manifest{Version: 1, Info: info, Files: map[string]string{}, Agent: by.agent, Source: by.source}
 	walkErr := fs.WalkDir(src.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

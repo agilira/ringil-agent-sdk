@@ -50,6 +50,16 @@ FEATURES
   - cmd/ringil: chat and one-shot run on any OpenAI-compatible endpoint,
     streaming, built-in read-only tools (now, calculate), saved sessions
     (--session, sessions, sessions rm).
+  - skills.InstallGitHub and the install_skill tool: install a skill from
+    a GitHub link the user gives (a repository, a folder, a SKILL.md, or
+    owner/repo/folder@ref). The ref is resolved to its commit and that
+    archive installed; a folder with several skills is refused with their
+    links, for the user to pick one. The source is recorded in the
+    manifest (Catalog.Source).
+  - mcp.Entry, mcp.AddFunc and the add_mcp_server tool: the agent adds the
+    MCP server the user asked for, read from its documentation; the host
+    saves and connects it (Adder) and reports its tools and the secrets
+    still to set.
 
 SECURITY
 
@@ -75,5 +85,11 @@ SECURITY
     os.Root, symlinks refused, 0600 files in a 0700 directory, damaged or
     edited lines reported as SESSION_CORRUPT.
   - The CLI strips terminal control sequences from model and tool output.
+  - install_skill and add_mcp_server are destructive: the default policy
+    asks. Unpacking a skill stays in its folder (no "..", absolute path,
+    drive, colon or link) within bounds of download, files and bytes.
+    An MCP entry that does not print in full is refused, a remote one is
+    HTTPS, and a header holds a secret only as ${NAME}.
+  - Fuzz targets for GitHub links and MCP entries.
   - Fuzz targets for the SSE decoder, the response parser, the argument
     validator, typed tool calls and the session file loader.

@@ -57,7 +57,7 @@ func Create(ctx context.Context, dir string, info Info, instructions string, rep
 	}
 	defer closeQuietly(root)
 	if !replace {
-		return publish(ctx, srcRoot, root, info, true)
+		return publish(ctx, srcRoot, root, info, origin{agent: true})
 	}
 	return republish(ctx, srcRoot, root, info)
 }
@@ -96,7 +96,7 @@ func skillText(info Info, instructions string) string {
 // the new one is staged, the old one moved aside, the new one renamed in.
 func republish(ctx context.Context, src, root *os.Root, info Info) error {
 	if _, err := root.Lstat(info.Name); err != nil {
-		return publish(ctx, src, root, info, true)
+		return publish(ctx, src, root, info, origin{agent: true})
 	}
 	if err := agentsOwn(root, info.Name); err != nil {
 		return err
@@ -105,7 +105,7 @@ func republish(ctx context.Context, src, root *os.Root, info Info) error {
 	if err := root.Rename(info.Name, old); err != nil {
 		return errors.Wrap(err, ErrIO, "cannot replace the skill")
 	}
-	if err := publish(ctx, src, root, info, true); err != nil {
+	if err := publish(ctx, src, root, info, origin{agent: true}); err != nil {
 		if rerr := root.Rename(old, info.Name); rerr != nil {
 			return installError(err).WithContext("restore_error", rerr.Error())
 		}
