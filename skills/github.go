@@ -198,6 +198,11 @@ var (
 // parseLink reads the link forms InstallGitHub accepts.
 func parseLink(link, host string) (ghRef, error) {
 	link = strings.TrimSpace(link)
+	if host == defaultHost {
+		if r, ok, err := parseRaw(link); ok {
+			return r, err
+		}
+	}
 	rest, ref, err := splitHost(link, host)
 	if err != nil {
 		return ghRef{}, err
@@ -230,6 +235,30 @@ func (r *ghRef) web(tail []string) ([]string, error) {
 		tail = tail[:len(tail)-1]
 	}
 	return tail, nil
+}
+
+// rawHost serves a file of a repository as it is: the link people copy
+// from a SKILL.md's "Raw" button.
+const rawHost = "raw.githubusercontent.com"
+
+// parseRaw reads https://raw.githubusercontent.com/owner/repo/ref/path/
+// SKILL.md as the skill in path at ref; ok is false for another host.
+func parseRaw(link string) (ghRef, bool, error) {
+	u, err := url.Parse(link)
+	if err != nil || !strings.EqualFold(u.Host, rawHost) {
+		return ghRef{}, false, nil
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if u.Scheme != "https" || u.User != nil || len(parts) < 3 {
+		return ghRef{}, true, badLink()
+	}
+	r := ghRef{owner: parts[0], repo: parts[1], ref: parts[2]}
+	tail := parts[3:]
+	if len(tail) > 0 && tail[len(tail)-1] == skillFile {
+		tail = tail[:len(tail)-1]
+	}
+	r.path = strings.Join(tail, "/")
+	return r, true, r.check()
 }
 
 // splitHost drops the scheme, the host, a query and a fragment, and an

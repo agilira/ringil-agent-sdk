@@ -51,8 +51,8 @@ FEATURES
     streaming, built-in read-only tools (now, calculate), saved sessions
     (--session, sessions, sessions rm).
   - skills.InstallGitHub and the install_skill tool: install a skill from
-    a GitHub link the user gives (a repository, a folder, a SKILL.md, or
-    owner/repo/folder@ref). The ref is resolved to its commit and that
+    a GitHub link the user gives (a repository, a folder, a SKILL.md, its
+    raw.githubusercontent.com link, or owner/repo/folder@ref). The ref is resolved to its commit and that
     archive installed; a folder with several skills is refused with their
     links, for the user to pick one. The source is recorded in the
     manifest (Catalog.Source).

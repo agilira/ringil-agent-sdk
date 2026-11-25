@@ -181,6 +181,7 @@ func TestInstallGitHubFolderLinks(t *testing.T) {
 		"github.com/o/r/skills/pdf@main",
 		"o/r/skills/pdf@main",
 		"https://github.com/o/r/tree/main/skills/pdf/?tab=readme#top",
+		"https://raw.githubusercontent.com/o/r/main/skills/pdf/SKILL.md",
 	} {
 		t.Run(link, func(t *testing.T) {
 			f := newFake(t, multiRepo(t))
@@ -381,7 +382,8 @@ func TestParseLink(t *testing.T) {
 		"", "o", "https://gitlab.com/o/r", "http://github.com/o/r", "https://user:pw@github.com/o/r",
 		"https://github.com.evil.com/o/r", "ftp://github.com/o/r", "../r", "o/..", "o/r/../../etc",
 		"o/r@../main", "o/r@bad ref", "o/r/a\\b", "https://github.com/o/r/tree", "o/r/tree/main/x@v1",
-		"https://github.com/o/r/tree/main/%2e%2e/x", "my.org/r", "evil.com/o/r", "o/r/tree", "o r/x",
+		"https://github.com/o/r/tree/main/%2e%2e/x", "my.org/r", "http://raw.githubusercontent.com/o/r/main/SKILL.md",
+		"https://raw.githubusercontent.com/o/r", "https://raw.githubusercontent.com/o/r/main/../../x/SKILL.md", "evil.com/o/r", "o/r/tree", "o r/x",
 	}
 	for _, link := range bad {
 		if got, err := parseLink(link, "github.com"); err == nil {
