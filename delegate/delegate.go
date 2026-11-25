@@ -17,6 +17,7 @@ package delegate
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 
@@ -333,7 +334,21 @@ func (c *Crew) body(res *agent.Result) string {
 
 // costLine says what a worker's turn cost.
 func costLine(res *agent.Result) string {
-	return "\n[worker: " + strconv.Itoa(res.Turns) + " model calls, " + strconv.Itoa(res.Usage.Input) + " in / " + strconv.Itoa(res.Usage.Output) + " out tokens; stop: " + string(res.Stop) + "]"
+	usd := ""
+	if res.Usage.Cost > 0 {
+		usd = ", $" + dollars(res.Usage.Cost)
+	}
+	return "\n[worker: " + strconv.Itoa(res.Turns) + " model calls, " + strconv.Itoa(res.Usage.Input) + " in / " + strconv.Itoa(res.Usage.Output) + " out tokens" + usd + "; stop: " + string(res.Stop) + "]"
+}
+
+// dollars is an amount in cents, or in its first two significant digits
+// when it is less than a cent.
+func dollars(v float64) string {
+	decimals := 2
+	if v < 0.01 {
+		decimals = min(1-int(math.Floor(math.Log10(v))), 10)
+	}
+	return strconv.FormatFloat(v, 'f', decimals, 64)
 }
 
 func firstPositive(vs ...int) int {

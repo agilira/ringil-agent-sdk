@@ -91,6 +91,9 @@ var families = []metricFamily{
 			sample(b, "ringil_tokens_total", []string{"profile", p, "kind", t.kind}, float64(t.n))
 		}
 	}},
+	{"ringil_cost_usd_total", "counter", "What the model calls cost in US dollars, for the models with a price (package price).", func(b *bytes.Buffer, p string, c *counts) {
+		sample(b, "ringil_cost_usd_total", []string{"profile", p}, c.tokens.Cost)
+	}},
 	{"ringil_compactions_total", "counter", "Model calls sent a shortened conversation.", func(b *bytes.Buffer, p string, c *counts) {
 		sample(b, "ringil_compactions_total", []string{"profile", p}, float64(c.compactions))
 	}},

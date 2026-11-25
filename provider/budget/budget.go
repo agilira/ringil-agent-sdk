@@ -3,8 +3,8 @@
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-// Package budget caps how many model calls and tokens a group of providers
-// may spend. One [Budget] can wrap several providers (the main agent, its
+// Package budget caps how many model calls, tokens and dollars a group of
+// providers may spend. One [Budget] can wrap several providers (the main agent, its
 // workers, a summarizer) so they draw from the same allowance.
 //
 // A call is counted before it is sent: a request that fails may still have
@@ -12,10 +12,14 @@
 // crosses the token cap is delivered and the next one is refused.
 //
 // Wrap the budget inside the retry decorator, so every attempt is counted.
+// A dollar cap reads Usage.Cost: wrap a provider priced by the price
+// package (budget.Wrap(price.Wrap(p, pr))); the call that crosses it is
+// delivered and the next one is refused, as with tokens.
 package budget
 
 import (
 	"context"
+	"math"
 	"sync"
 
 	"github.com/agilira/go-errors"
@@ -28,12 +32,15 @@ import (
 const (
 	ErrCalls  errors.ErrorCode = "BUDGET_CALLS"
 	ErrTokens errors.ErrorCode = "BUDGET_TOKENS"
+	ErrCost   errors.ErrorCode = "BUDGET_COST"
 )
 
 // Limits caps spending. A zero field means no cap.
 type Limits struct {
 	Calls  int
 	Tokens int64
+	// Cost is in US dollars.
+	Cost float64
 }
 
 // Spent is what the providers have consumed so far.
@@ -42,10 +49,16 @@ type Spent struct {
 	// Input, Output, CacheRead and CacheWrite are the totals the
 	// providers reported.
 	Input, Output, CacheRead, CacheWrite int64
+	// Cost is the dollars the calls cost.
+	Cost float64
 	// Unreported counts calls that ended without usage: failed calls and
 	// servers that do not report tokens. Their tokens are not in the totals,
 	// so with a token cap the real spending can be higher.
 	Unreported int
+	// Unpriced counts calls that reported tokens but no cost: a model
+	// without a price, or one priced at zero (a local model). With a
+	// dollar cap the real spending can be higher.
+	Unpriced int
 }
 
 // Tokens is the input plus output total.
@@ -63,7 +76,7 @@ type Budget interface {
 
 // New returns a budget with the given caps.
 func New(limits Limits) (Budget, error) {
-	if limits.Calls < 0 || limits.Tokens < 0 {
+	if limits.Calls < 0 || limits.Tokens < 0 || !(limits.Cost >= 0) || math.IsInf(limits.Cost, 0) {
 		return nil, errors.New(agent.ErrProviderConfig, "budget limits cannot be negative")
 	}
 	return &budget{limits: limits}, nil
@@ -95,6 +108,9 @@ func (b *budget) reserve() error {
 	if b.limits.Tokens > 0 && b.spent.Tokens() >= b.limits.Tokens {
 		return errors.New(ErrTokens, "token budget exhausted")
 	}
+	if b.limits.Cost > 0 && b.spent.Cost >= b.limits.Cost {
+		return errors.New(ErrCost, "cost budget exhausted")
+	}
 	b.spent.Calls++
 	return nil
 }
@@ -110,6 +126,11 @@ func (b *budget) settle(resp *agent.Response, err error) {
 	b.spent.Output += int64(max(resp.Usage.Output, 0))
 	b.spent.CacheRead += int64(max(resp.Usage.CacheRead, 0))
 	b.spent.CacheWrite += int64(max(resp.Usage.CacheWrite, 0))
+	if resp.Usage.Cost > 0 && !math.IsInf(resp.Usage.Cost, 0) {
+		b.spent.Cost += resp.Usage.Cost
+	} else {
+		b.spent.Unpriced++
+	}
 }
 
 type provider struct {

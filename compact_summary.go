@@ -112,7 +112,9 @@ func prefixHashes(msgs []Message) []string {
 func (c *compactor) summaryRequest(prev cachedSummary, msgs []Message, budget int) *Request {
 	var head strings.Builder
 	if prev.n > 0 {
-		head.WriteString("Summary so far:\n" + prev.body + "\n\n")
+		head.WriteString("Summary so far:\n")
+		head.WriteString(prev.body)
+		head.WriteString("\n\n")
 	}
 	head.WriteString("Conversation since then:\n")
 	tail := "\n\n" + cmp.Or(c.cfg.SummaryTask, summaryTask)
@@ -129,12 +131,22 @@ func transcript(msgs []Message) string {
 	for _, m := range msgs {
 		switch m.Role {
 		case RoleTool:
-			b.WriteString("Tool result: " + clip(m.Result.Content, transcriptTool) + "\n")
+			b.WriteString("Tool result: ")
+			b.WriteString(clip(m.Result.Content, transcriptTool))
+			b.WriteByte('\n')
 		default:
-			b.WriteString(label(m.Role) + ": " + clip(m.Text(), transcriptText) + imagesNote(m) + "\n")
+			b.WriteString(label(m.Role))
+			b.WriteString(": ")
+			b.WriteString(clip(m.Text(), transcriptText))
+			b.WriteString(imagesNote(m))
+			b.WriteByte('\n')
 		}
 		for _, call := range m.Calls {
-			b.WriteString("Assistant called " + call.Name + " with " + clip(string(call.Input), transcriptTool) + "\n")
+			b.WriteString("Assistant called ")
+			b.WriteString(call.Name)
+			b.WriteString(" with ")
+			b.WriteString(clip(string(call.Input), transcriptTool))
+			b.WriteByte('\n')
 		}
 	}
 	return b.String()

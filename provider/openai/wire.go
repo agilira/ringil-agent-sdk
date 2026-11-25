@@ -99,10 +99,14 @@ type wireToolDef struct {
 }
 
 type wireUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	Cost             float64 `json:"cost"`
 	Details          *struct {
 		CachedTokens int `json:"cached_tokens"`
+		// CacheWriteTokens: the models that charge for writing the
+		// cache (GPT-5.6 and later) report it.
+		CacheWriteTokens int `json:"cache_write_tokens"`
 	} `json:"prompt_tokens_details"`
 }
 
@@ -352,9 +356,10 @@ func decodeUsage(u *wireUsage) agent.Usage {
 	if u == nil {
 		return agent.Usage{}
 	}
-	usage := agent.Usage{Input: max(u.PromptTokens, 0), Output: max(u.CompletionTokens, 0)}
+	usage := agent.Usage{Input: max(u.PromptTokens, 0), Output: max(u.CompletionTokens, 0), Cost: u.Cost}
 	if u.Details != nil {
 		usage.CacheRead = max(u.Details.CachedTokens, 0)
+		usage.CacheWrite = max(u.Details.CacheWriteTokens, 0)
 	}
 	return usage
 }

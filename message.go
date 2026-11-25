@@ -7,6 +7,7 @@ package agent
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -222,7 +223,8 @@ func (m Message) ModelText() string {
 	for _, part := range m.Parts {
 		switch part.Type {
 		case PartContext:
-			ctx.WriteString(part.Text + "\n\n")
+			ctx.WriteString(part.Text)
+			ctx.WriteString("\n\n")
 		case PartText:
 			text.WriteString(part.Text)
 		}
@@ -278,6 +280,10 @@ type Usage struct {
 	Output     int `json:"output"`
 	CacheRead  int `json:"cache_read,omitempty"`
 	CacheWrite int `json:"cache_write,omitempty"`
+	// Cost is what the call cost in US dollars: a provider whose API
+	// states it fills it, otherwise the price package computes it from
+	// the model's price. Zero means not known.
+	Cost float64 `json:"cost,omitempty"`
 }
 
 // Add returns the sum of u and other.
@@ -287,7 +293,15 @@ func (u Usage) Add(other Usage) Usage {
 		Output:     u.Output + other.Output,
 		CacheRead:  u.CacheRead + other.CacheRead,
 		CacheWrite: u.CacheWrite + other.CacheWrite,
+		Cost:       validCost(u.Cost) + validCost(other.Cost),
 	}
+}
+
+func validCost(v float64) float64 {
+	if v > 0 && !math.IsInf(v, 0) {
+		return v
+	}
+	return 0
 }
 
 // StopReason says why a model call or a run ended.
@@ -300,6 +314,7 @@ const (
 	StopMaxTokens StopReason = "max_tokens" // the output token limit was reached
 	StopFiltered  StopReason = "filtered"   // the provider withheld content
 	StopMaxTurns  StopReason = "max_turns"  // the host's turn limit was reached
+	StopMaxCost   StopReason = "max_cost"   // the host's cost limit was reached
 	StopCancelled StopReason = "cancelled"  // the context was cancelled
 	StopLoop      StopReason = "loop"       // the loop detector stopped the run (LoopStop)
 	StopDenied    StopReason = "denied"     // the host's approval stopped the run (Decision.Stop)

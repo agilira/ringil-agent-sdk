@@ -8,6 +8,7 @@ package budget
 import (
 	"context"
 	stderrors "errors"
+	"math"
 	"sync"
 	"testing"
 
@@ -169,5 +170,55 @@ func TestConcurrentCallsNeverExceedCap(t *testing.T) {
 	wg.Wait()
 	if ok != limit || b.Spent().Calls != limit {
 		t.Fatalf("%d calls succeeded, %d counted, cap %d", ok, b.Spent().Calls, limit)
+	}
+}
+
+func priced(input, output int, usd float64) fake.Step {
+	return fake.Step{Chunks: []string{"x"}, Usage: agent.Usage{Input: input, Output: output, Cost: usd}}
+}
+
+func TestCostCapStopsTheNextCall(t *testing.T) {
+	b := mustNew(t, Limits{Cost: 1})
+	p := b.Wrap(fake.New(priced(10, 10, 0.6), priced(10, 10, 0.6), priced(1, 1, 0.1)))
+	for i := range 2 {
+		if err := call(p); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if err := call(p); !errors.HasCode(err, ErrCost) {
+		t.Fatalf("call after the cap: %v", err)
+	}
+	if s := b.Spent(); s.Cost != 1.2 || s.Unpriced != 0 {
+		t.Fatalf("spent %+v", s)
+	}
+}
+
+// A model without a price spends tokens and no dollars: it is counted,
+// so a host with a dollar cap can see it.
+func TestUnpricedCallsCounted(t *testing.T) {
+	b := mustNew(t, Limits{Cost: 1})
+	if err := call(b.Wrap(fake.New(used(10, 10)))); err != nil {
+		t.Fatal(err)
+	}
+	if s := b.Spent(); s.Unpriced != 1 || s.Cost != 0 || s.Unreported != 0 {
+		t.Fatalf("spent %+v", s)
+	}
+}
+
+func TestNewRejectsBadCost(t *testing.T) {
+	for _, c := range []float64{-1, math.NaN(), math.Inf(1)} {
+		if _, err := New(Limits{Cost: c}); !errors.HasCode(err, agent.ErrProviderConfig) {
+			t.Errorf("cost %v accepted: %v", c, err)
+		}
+	}
+}
+
+func TestInfCostCountedUnpriced(t *testing.T) {
+	b := mustNew(t, Limits{Cost: 1})
+	if err := call(b.Wrap(fake.New(priced(10, 10, math.Inf(1))))); err != nil {
+		t.Fatal(err)
+	}
+	if s := b.Spent(); s.Unpriced != 1 || s.Cost != 0 {
+		t.Fatalf("spent %+v", s)
 	}
 }

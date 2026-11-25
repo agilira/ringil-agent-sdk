@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"iter"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,9 @@ func TestNewValidates(t *testing.T) {
 	cases := []agent.Config{
 		{},
 		{Provider: fake.New(), MaxTurns: -1},
+		{Provider: fake.New(), MaxCost: -0.01},
+		{Provider: fake.New(), MaxCost: math.NaN()},
+		{Provider: fake.New(), MaxCost: math.Inf(1)},
 		{Provider: fake.New(), MaxTokens: -1},
 		{Provider: fake.New(), Instructions: strings.Repeat("x", agent.MaxInstructions+1)},
 	}
@@ -189,6 +193,20 @@ func TestMaxTurnsStopsCleanly(t *testing.T) {
 	last := res.Messages[len(res.Messages)-1]
 	if last.Role != agent.RoleTool {
 		t.Fatalf("history does not end at a complete turn: %+v", last)
+	}
+}
+
+// The call that crosses MaxCost is kept, its tools run, and the run ends
+// cleanly before the next call.
+func TestMaxCostStopsCleanly(t *testing.T) {
+	calls := 0
+	step := fake.Call("add", `{"a":1,"b":1}`)
+	step.Usage = agent.Usage{Input: 10, Output: 10, Cost: 0.6}
+	p := fake.New(step, step, fake.Reply("never"))
+	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), MaxCost: 1})
+	res, err := a.Run(context.Background(), nil, agent.UserText("loop"))
+	if err != nil || res.Stop != agent.StopMaxCost || res.Turns != 2 || calls != 2 || res.Usage.Cost != 1.2 || p.Remaining() != 1 {
+		t.Fatalf("res %+v err %v calls %d", res, err, calls)
 	}
 }
 

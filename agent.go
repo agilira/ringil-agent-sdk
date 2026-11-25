@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"iter"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -41,8 +42,8 @@ func (cfg Config) check() error {
 	switch {
 	case cfg.Provider == nil:
 		return errors.New(ErrAgentConfig, "a provider is required")
-	case cfg.MaxTurns < 0 || cfg.MaxTokens < 0 || cfg.ContextWindow < 0:
-		return errors.New(ErrAgentConfig, "max turns, max tokens and context window cannot be negative")
+	case cfg.MaxTurns < 0 || cfg.MaxTokens < 0 || cfg.ContextWindow < 0 || badCost(cfg.MaxCost):
+		return errors.New(ErrAgentConfig, "max turns, max cost, max tokens and context window cannot be negative")
 	case len(cfg.Instructions) > MaxInstructions:
 		return errors.New(ErrAgentConfig, "the instructions are at most 64 KiB")
 	case cfg.Format != nil && cfg.Format.node == nil:
@@ -50,6 +51,8 @@ func (cfg Config) check() error {
 	}
 	return cfg.Loop.validate()
 }
+
+func badCost(v float64) bool { return !(v >= 0) || math.IsInf(v, 0) }
 
 // system is the prompt the model gets: System (or DefaultSystem), then
 // the Instructions.
@@ -80,6 +83,12 @@ type Config struct {
 	// MaxTurns stops the run after this many model calls; zero means no
 	// limit. A run stopped this way ends cleanly with StopMaxTurns.
 	MaxTurns int
+	// MaxCost stops the run once its model calls have cost this many US
+	// dollars, from Usage.Cost (a provider priced by the price package);
+	// zero means no limit. The call that crosses it is kept: the run ends
+	// cleanly with StopMaxCost and can be continued. The workers' runs
+	// count apart (delegate, workflow budgets).
+	MaxCost float64
 	// MaxTokens is passed to every model call; zero leaves it to the
 	// provider.
 	MaxTokens int
@@ -599,10 +608,22 @@ func (r *run) emit(ev Event) error {
 	return nil
 }
 
+// limit is the host's limit the run has reached before its next model
+// call, or "".
+func (r *run) limit() StopReason {
+	switch {
+	case r.cfg.MaxTurns > 0 && r.result.Turns >= r.cfg.MaxTurns:
+		return StopMaxTurns
+	case r.cfg.MaxCost > 0 && r.result.Usage.Cost >= r.cfg.MaxCost:
+		return StopMaxCost
+	}
+	return ""
+}
+
 func (r *run) execute(ctx context.Context) error {
 	for {
-		if r.cfg.MaxTurns > 0 && r.result.Turns >= r.cfg.MaxTurns {
-			return r.finish(StopMaxTurns)
+		if stop := r.limit(); stop != "" {
+			return r.finish(stop)
 		}
 		resp, err := r.callModel(ctx)
 		if err != nil {

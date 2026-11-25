@@ -94,6 +94,9 @@ func usage(ev agent.Event) []slog.Attr {
 	}
 	if u != (agent.Usage{}) {
 		a = append(a, slog.Int("in", u.Input), slog.Int("out", u.Output), slog.Int("cache_read", u.CacheRead), slog.Int("cache_write", u.CacheWrite))
+		if u.Cost > 0 {
+			a = append(a, slog.Float64("usd", u.Cost))
+		}
 	}
 	return a
 }
@@ -137,7 +140,7 @@ func tool(ev agent.Event) []slog.Attr {
 // stop is a stop reason the agent defines; a provider may pass anything.
 func stop(s agent.StopReason) string {
 	switch s {
-	case agent.StopEnd, agent.StopToolUse, agent.StopMaxTokens, agent.StopFiltered, agent.StopMaxTurns, agent.StopCancelled, agent.StopLoop:
+	case agent.StopEnd, agent.StopToolUse, agent.StopMaxTokens, agent.StopFiltered, agent.StopMaxTurns, agent.StopMaxCost, agent.StopCancelled, agent.StopLoop, agent.StopDenied:
 		return string(s)
 	}
 	return "(other)"

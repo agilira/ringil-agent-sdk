@@ -141,3 +141,21 @@ func TestEveryRunEnds(t *testing.T) {
 	}
 	has(t, scrape(t, m), `ringil_runs_active{profile="p"} 0`, `ringil_runs_finished_total{profile="p",status="failed",reason="AGENT_STOPPED"} 1`)
 }
+
+func TestCostIsCounted(t *testing.T) {
+	m := New()
+	p := fake.New(
+		fake.Step{Chunks: []string{"a"}, Usage: agent.Usage{Input: 10, Output: 5, Cost: 0.25}},
+		fake.Step{Chunks: []string{"b"}, Usage: agent.Usage{Input: 10, Output: 5, Cost: 0.25}},
+	)
+	a, err := agent.New(agent.Config{Provider: p, Observers: []agent.Observer{m.Observer("writer")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := a.Run(context.Background(), nil, agent.UserText("hi")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	has(t, scrape(t, m), `ringil_cost_usd_total{profile="writer"} 0.5`)
+}

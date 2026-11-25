@@ -84,6 +84,18 @@ FEATURES
     MCP server the user asked for, read from its documentation; the host
     saves and connects it (Adder) and reports its tools and the secrets
     still to set.
+  - price: the cost of every model call in US dollars (Usage.Cost). No
+    price is in the code: Catalog downloads OpenRouter's public list (every
+    vendor it serves), keeps it on disk a day and falls back to the saved
+    copy; Table.Over puts the host's prices on top. Cache reads and writes
+    and long-prompt tiers priced apart; names found as each provider spells
+    them. The cost reaches events, results, workers' reports, the
+    workflows' journal, the event log and the metrics
+    (ringil_cost_usd_total). openai.Config.StatesCost takes the cost an API
+    states (OpenRouter); OpenAI cache writes read from usage.
+  - Dollar limits: Config.MaxCost stops a run cleanly (StopMaxCost),
+    budget.Limits.Cost refuses calls past it (BUDGET_COST, Unpriced counts
+    calls with no price), workflow.Budget.Cost.
 
 SECURITY
 

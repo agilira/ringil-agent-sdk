@@ -7,6 +7,7 @@ package agent
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -75,9 +76,14 @@ func TestCloneKeepsNil(t *testing.T) {
 }
 
 func TestUsageAdd(t *testing.T) {
-	got := Usage{1, 2, 3, 4}.Add(Usage{10, 20, 30, 40})
-	if got != (Usage{11, 22, 33, 44}) {
+	got := Usage{1, 2, 3, 4, 0.5}.Add(Usage{10, 20, 30, 40, 0.25})
+	if got != (Usage{11, 22, 33, 44, 0.75}) {
 		t.Fatalf("Add = %+v", got)
+	}
+	for _, bad := range []float64{-1, math.NaN(), math.Inf(1)} {
+		if sum := (Usage{Cost: 1}).Add(Usage{Cost: bad}); sum.Cost != 1 {
+			t.Errorf("bad cost %v poisoned Add: %+v", bad, sum)
+		}
 	}
 }
 

@@ -252,3 +252,11 @@ func TestWorkerSystemAndTeamConfig(t *testing.T) {
 		t.Fatalf("system %q, max tokens %d", req.System, req.MaxTokens)
 	}
 }
+
+func TestDollars(t *testing.T) {
+	for v, want := range map[float64]string{0.25: "0.25", 12: "12.00", 0.004: "0.0040", 0.0000183: "0.000018"} {
+		if got := dollars(v); got != want {
+			t.Errorf("dollars(%v) = %s, want %s", v, got, want)
+		}
+	}
+}

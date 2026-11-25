@@ -166,15 +166,20 @@ func fields(spec ToolSpec, lead string) string {
 		req[r] = true
 	}
 	var b strings.Builder
-	b.WriteString(" " + lead)
+	b.WriteByte(' ')
+	b.WriteString(lead)
 	for _, n := range names {
 		mark := "optional"
 		if req[n] {
 			mark = "required"
 		}
-		b.WriteString(" " + n + " (" + mark)
+		b.WriteByte(' ')
+		b.WriteString(n)
+		b.WriteString(" (")
+		b.WriteString(mark)
 		if d := firstLine(sch.Properties[n].Description, 80); d != "" {
-			b.WriteString(": " + d)
+			b.WriteString(": ")
+			b.WriteString(d)
 		}
 		b.WriteString(");")
 	}
