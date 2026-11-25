@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -427,5 +428,33 @@ func TestInstallToolAsksUnderDefaultPolicy(t *testing.T) {
 	plan := &agent.Policy{Mode: agent.ModePlan}
 	if got := plan.Effect(call, tool.Spec()); got != agent.EffectDeny {
 		t.Fatalf("plan mode effect %v, want deny", got)
+	}
+}
+
+// A catalog opened before an install sees the skill after Reload, and
+// load_skill finds it: no new session needed.
+func TestReloadSeesInstalledSkill(t *testing.T) {
+	f := newFake(t, archive(t, file("SKILL.md", skillMD("late"))))
+	dir := filepath.Join(t.TempDir(), "skills")
+	c, err := Open(dir)
+	must(t, err)
+	tool := InstallTool(dir, f.gh(), func(Installed) { must(t, c.Reload()) })
+	if _, err := tool.Call(bg, json.RawMessage(`{"link":"o/r"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.List()) != 1 || !strings.Contains(c.Instructions(), "late") {
+		t.Fatalf("after reload: %v", c.List())
+	}
+	if _, err := c.loadForModel("late"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		return // permission bits: checked on Unix
+	}
+	// A failed reload keeps what the catalog held.
+	must(t, os.Chmod(dir, 0o777))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := c.Reload(); err == nil || len(c.List()) != 1 {
+		t.Fatalf("reload of a directory writable by others: %v, %v", err, c.List())
 	}
 }

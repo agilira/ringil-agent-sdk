@@ -56,6 +56,12 @@ FEATURES
     archive installed; a folder with several skills is refused with their
     links, for the user to pick one. The source is recorded in the
     manifest (Catalog.Source).
+  - LiveRegistry: tools the host changes while the agent runs. A run takes
+    the tools of the moment before each model call, rebuilding the
+    tool_search catalog when they changed; the calls of a turn run on the
+    tools the model was shown. Catalog.Reload reads the skills again.
+    Together: what install_skill and add_mcp_server install works in the
+    same conversation, at the next model call.
   - mcp.Entry, mcp.AddFunc and the add_mcp_server tool: the agent adds the
     MCP server the user asked for, read from its documentation; the host
     saves and connects it (Adder) and reports its tools and the secrets

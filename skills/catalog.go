@@ -13,15 +13,22 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/agilira/go-errors"
 
 	"github.com/agilira/ringil-agent-sdk/internal/lockfile"
 )
 
-// Catalog is a directory of installed skills.
+// Catalog is a directory of installed skills. It is safe for concurrent
+// use: Reload swaps what it holds at once.
 type Catalog struct {
-	dir    string
+	dir   string
+	state atomic.Pointer[catalogState]
+}
+
+// catalogState is what one reading of the directory found.
+type catalogState struct {
 	skills map[string]manifest
 	broken map[string]error
 }
@@ -32,10 +39,30 @@ type Catalog struct {
 // directory must be the user's own and not writable by others: whoever
 // writes it chooses what the agent is told.
 func Open(dir string) (*Catalog, error) {
-	c := &Catalog{dir: dir, skills: map[string]manifest{}, broken: map[string]error{}}
+	c := &Catalog{dir: dir}
+	if err := c.Reload(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// Reload reads the directory again, so a skill installed or removed since
+// is listed, loaded and run from now on. On an error the catalog keeps
+// what it held.
+func (c *Catalog) Reload() error {
+	st, err := readCatalog(c.dir)
+	if err != nil {
+		return err
+	}
+	c.state.Store(st)
+	return nil
+}
+
+func readCatalog(dir string) (*catalogState, error) {
+	st := &catalogState{skills: map[string]manifest{}, broken: map[string]error{}}
 	if err := checkDir(dir); err != nil {
 		if os.IsNotExist(err) {
-			return c, nil
+			return st, nil
 		}
 		return nil, err
 	}
@@ -54,17 +81,19 @@ func Open(dir string) (*Catalog, error) {
 		}
 		m, err := readManifest(root, e.Name())
 		if err != nil {
-			c.broken[e.Name()] = err
+			st.broken[e.Name()] = err
 			continue
 		}
-		c.skills[e.Name()] = m
+		st.skills[e.Name()] = m
 	}
-	return c, nil
+	return st, nil
 }
+
+func (c *Catalog) skills() map[string]manifest { return c.state.Load().skills }
 
 // Broken returns the skills left out because they are damaged, with the
 // reason; reinstalling fixes them.
-func (c *Catalog) Broken() map[string]error { return c.broken }
+func (c *Catalog) Broken() map[string]error { return c.state.Load().broken }
 
 // checkDir refuses a catalog that is a symbolic link, someone else's, or
 // writable by others.
@@ -95,8 +124,8 @@ func readManifest(root *os.Root, name string) (manifest, error) {
 
 // List returns the installed skills by name.
 func (c *Catalog) List() []Info {
-	out := make([]Info, 0, len(c.skills))
-	for _, m := range c.skills {
+	out := make([]Info, 0, len(c.skills()))
+	for _, m := range c.skills() {
 		out = append(out, m.Info)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -106,14 +135,14 @@ func (c *Catalog) List() []Info {
 // Source is where an installed skill came from (github.com/owner/repo/
 // path@commit), empty for one installed from a local directory or
 // written by the agent, or not installed.
-func (c *Catalog) Source(name string) string { return c.skills[name].Source }
+func (c *Catalog) Source(name string) string { return c.skills()[name].Source }
 
 // Instructions is the block to append to the system prompt: the skills'
 // names and descriptions, one JSON object per line so that no description
 // can break out of the block, and how to use them. Empty when no skill is
 // installed.
 func (c *Catalog) Instructions() string {
-	if len(c.skills) == 0 {
+	if len(c.skills()) == 0 {
 		return ""
 	}
 	var b strings.Builder
@@ -159,7 +188,7 @@ func (c *Catalog) Load(name string) (string, error) {
 
 // Files lists a skill's files, SKILL.md included.
 func (c *Catalog) Files(name string) ([]string, error) {
-	m, ok := c.skills[name]
+	m, ok := c.skills()[name]
 	if !ok {
 		return nil, notFound(name)
 	}
@@ -174,7 +203,7 @@ func (c *Catalog) Files(name string) ([]string, error) {
 // resolve returns the path of file in skill name: the path itself, or the
 // only file with that last component.
 func (c *Catalog) resolve(name, file string) string {
-	m, ok := c.skills[name]
+	m, ok := c.skills()[name]
 	if !ok {
 		return file
 	}
@@ -213,7 +242,7 @@ func listFiles(files []string) string {
 // ReadFile returns a file of a skill after checking it against the hash
 // recorded at installation.
 func (c *Catalog) ReadFile(name, file string) ([]byte, error) {
-	m, ok := c.skills[name]
+	m, ok := c.skills()[name]
 	if !ok {
 		return nil, notFound(name)
 	}

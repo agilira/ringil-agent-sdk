@@ -360,6 +360,9 @@ type run struct {
 	seenIDs    map[string]bool
 	result     Result
 	tools      Registry      // the configured tools, plus tool_search and read_history
+	live       *LiveRegistry // the host's live tools, nil when fixed
+	liveAt     uint64        // the version of live that cfg.Tools holds
+	baseSystem string        // the system prompt before the catalog of the tools
 	disc       *discovery    // nil when every schema is sent
 	histMu     sync.Mutex    // guards msgs against read_history running in parallel
 	compacted  bool          // the view has left messages out: read_history is offered
@@ -372,7 +375,12 @@ type run struct {
 }
 
 func newRun(cfg Config, conv Conversation, events *eventer) *run {
-	r := &run{cfg: cfg, conv: conv, events: events, seenIDs: map[string]bool{}, system: cfg.System, loops: newLoopDetector(cfg.Loop, cfg.Tools)}
+	live, _ := cfg.Tools.(*LiveRegistry)
+	var at uint64
+	if live != nil {
+		cfg.Tools, at = live.snapshot() // the run sees one set of tools at a time
+	}
+	r := &run{live: live, liveAt: at, cfg: cfg, conv: conv, events: events, seenIDs: map[string]bool{}, system: cfg.System, loops: newLoopDetector(cfg.Loop, cfg.Tools)}
 	r.msgs = conv.Messages()
 	for _, msg := range r.msgs {
 		for _, call := range msg.Calls {
@@ -380,18 +388,48 @@ func newRun(cfg Config, conv Conversation, events *eventer) *run {
 		}
 	}
 	r.start = len(r.msgs)
-	r.tools = cfg.Tools
-	if offersHistory(cfg) {
+	r.compacted = calledHistory(r.msgs)
+	r.setTools()
+	return r
+}
+
+// setTools derives the run's tools from cfg.Tools: read_history when
+// compaction offers it, tool_search when the schemas are many.
+func (r *run) setTools() {
+	r.tools, r.disc = r.cfg.Tools, nil
+	if r.hist == nil && offersHistory(r.cfg) {
 		r.hist = r.historyTool() // run by the loop itself: the host's registry stays as it is
-		r.compacted = calledHistory(r.msgs)
 	}
-	if d := newDiscovery(cfg, r.msgs); d != nil {
+	if d := newDiscovery(r.cfg, r.msgs); d != nil {
 		// A host tool already named tool_search keeps every schema visible.
 		if reg, err := r.tools.With(d.searchTool()); err == nil {
 			r.tools, r.disc = reg, d
 		}
 	}
-	return r
+	if r.loops != nil {
+		r.loops.canon = nil
+		if c, ok := r.cfg.Tools.(argsCanonicalizer); ok {
+			r.loops.canon = c.canonicalArgs
+		}
+	}
+}
+
+// refreshTools takes the host's live tools when they changed since the
+// last model call, with the catalog of the system prompt to match.
+func (r *run) refreshTools() {
+	if r.live == nil {
+		return
+	}
+	reg, at := r.live.snapshot()
+	if at == r.liveAt {
+		return
+	}
+	r.cfg.Tools, r.liveAt = reg, at
+	r.setTools()
+	r.system = r.baseSystem
+	if r.disc != nil {
+		r.system += r.disc.block()
+	}
 }
 
 // begin closes an interrupted turn, then records the input.
@@ -419,6 +457,7 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	if err := r.add(ctx, input); err != nil {
 		return err
 	}
+	r.baseSystem = r.system
 	if r.disc != nil {
 		r.system += r.disc.block() // the same at every turn: the catalog of the tools
 	}
@@ -586,6 +625,7 @@ func (r *run) execute(ctx context.Context) error {
 }
 
 func (r *run) callModel(ctx context.Context) (*Response, error) {
+	r.refreshTools()
 	r.modelStart = time.Now()
 	resp, err := r.request(ctx, r.system)
 	if err == nil && empty(resp) && !r.cfg.NoEmptyRetry && r.cfg.Tools != nil && len(r.toolSpecs()) > 0 {
