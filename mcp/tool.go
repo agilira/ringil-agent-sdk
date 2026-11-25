@@ -107,13 +107,20 @@ func (t *tool) Call(ctx context.Context, input json.RawMessage) (agent.ToolOutpu
 	return agent.ToolOutput{Content: text, Images: images(res)}, nil
 }
 
-// images are the result's images a model API takes; the others stay
-// named in the text.
+// images are the result's images and PDFs (an embedded resource) a model
+// API takes; the others stay named in the text.
 func images(res *sdk.CallToolResult) []agent.Part {
 	var out []agent.Part
 	for _, c := range res.Content {
-		if v, ok := c.(*sdk.ImageContent); ok && agent.CheckImage(v.MIMEType, v.Data) == nil {
-			out = append(out, agent.Part{Type: agent.PartImage, MIME: v.MIMEType, Data: v.Data})
+		switch v := c.(type) {
+		case *sdk.ImageContent:
+			if agent.CheckImage(v.MIMEType, v.Data) == nil {
+				out = append(out, agent.Part{Type: agent.PartImage, MIME: v.MIMEType, Data: v.Data})
+			}
+		case *sdk.EmbeddedResource:
+			if r := v.Resource; r != nil && agent.CheckDocument(r.MIMEType, r.Blob) == nil {
+				out = append(out, agent.Part{Type: agent.PartDocument, MIME: r.MIMEType, Data: r.Blob})
+			}
 		}
 	}
 	return out
@@ -172,6 +179,9 @@ func embedded(r *sdk.EmbeddedResource) string {
 	}
 	if r.Resource.Text != "" {
 		return r.Resource.Text
+	}
+	if agent.CheckDocument(r.Resource.MIMEType, r.Resource.Blob) == nil {
+		return "[PDF " + r.Resource.URI + ", attached]"
 	}
 	return "[resource " + r.Resource.URI + " not shown]"
 }

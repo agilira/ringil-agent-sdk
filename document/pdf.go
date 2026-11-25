@@ -21,17 +21,18 @@ const maxPages = 2000
 // pdfDoc is Read for a PDF.
 func pdfDoc(r io.ReaderAt, size int64, limits Limits) (Doc, error) {
 	out := &writer{max: limits.withDefaults().Text}
-	if err := readPDF(r, size, out); err != nil && !errors.HasCode(err, errFull) {
+	scans, err := readPDF(r, size, out)
+	if err != nil && !errors.HasCode(err, errFull) {
 		return Doc{}, err
 	}
-	return Doc{Kind: PDF, Text: out.String(), Cut: out.cut}, nil
+	return Doc{Kind: PDF, Text: out.String(), Cut: out.cut, Scans: scans}, nil
 }
 
 // readPDF: the text of each page, in order, under "## Page N". A scanned
 // page has no text: it is named as such, for the host to send the page
 // to a model that reads images. The library reports a damaged file by
 // panicking: that is turned into an error here (it starts no goroutine).
-func readPDF(r io.ReaderAt, size int64, out *writer) (err error) {
+func readPDF(r io.ReaderAt, size int64, out *writer) (scans int, err error) {
 	defer func() {
 		if v := recover(); v != nil {
 			err = errors.New(ErrFormat, "a damaged PDF ("+short(v)+")")
@@ -39,7 +40,7 @@ func readPDF(r io.ReaderAt, size int64, out *writer) (err error) {
 	}()
 	rd, err := openPDF(r, size)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	return writePages(rd, out)
 }
@@ -55,8 +56,9 @@ func openPDF(r io.ReaderAt, size int64) (*pdf.Reader, error) {
 	return nil, errors.New(ErrFormat, "not a valid PDF")
 }
 
-// writePages writes each page's text, at most maxPages.
-func writePages(rd *pdf.Reader, out *writer) error {
+// writePages writes each page's text, at most maxPages, and counts the
+// pages without text.
+func writePages(rd *pdf.Reader, out *writer) (int, error) {
 	pages, empty := rd.NumPage(), 0
 	for n := 1; n <= pages && n <= maxPages; n++ {
 		text, err := pageText(rd, n)
@@ -68,16 +70,16 @@ func writePages(rd *pdf.Reader, out *writer) error {
 			text = "[no text on this page: a scan or an image]"
 		}
 		if err := out.write("## Page " + strconv.Itoa(n) + "\n" + strings.Trim(text, "\n") + "\n\n"); err != nil {
-			return err
+			return empty, err
 		}
 	}
 	switch {
 	case pages > maxPages:
-		return out.write("[" + strconv.Itoa(pages-maxPages) + " more pages not read]\n")
+		return empty, out.write("[" + strconv.Itoa(pages-maxPages) + " more pages not read]\n")
 	case pages > 0 && empty == pages:
-		return out.write("[no page has text: the PDF is scanned; a model that reads images can read its pages]\n")
+		return empty, out.write("[no page has text: the PDF is scanned]\n")
 	}
-	return nil
+	return empty, nil
 }
 
 // pageText is one page's text; a page the library cannot read is an

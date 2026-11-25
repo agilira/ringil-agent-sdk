@@ -25,9 +25,10 @@ type Tool interface {
 	Call(ctx context.Context, input json.RawMessage) (ToolOutput, error)
 }
 
-// ToolOutput is what a tool returns to the model: text, and images (parts
-// of type PartImage, checked by CheckImage), such as a screenshot or what
-// an MCP server returns.
+// ToolOutput is what a tool returns to the model: text, and images and
+// PDFs (parts of type PartImage, checked by CheckImage, and PartDocument,
+// checked by CheckDocument), such as a screenshot, a scanned document or
+// what an MCP server returns.
 type ToolOutput struct {
 	Content string
 	Images  []Part

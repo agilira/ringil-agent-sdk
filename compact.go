@@ -157,15 +157,15 @@ const imageTokens = 1600
 func requestBytes(req *Request) int {
 	r := *req
 	r.Messages = make([]Message, len(req.Messages))
-	images := 0
+	tokens := 0
 	for i, m := range req.Messages {
-		r.Messages[i], images = withoutImageData(m), images+m.Images()
+		r.Messages[i], tokens = withoutImageData(m), tokens+attachmentTokens(m)
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
 		return 0 // unmeasurable: the retry then compacts as hard as it can
 	}
-	return len(data) + images*imageTokens*bytesPerToken
+	return len(data) + tokens*bytesPerToken
 }
 
 // withoutImageData is m with its images' bytes left out, for measuring.
@@ -427,8 +427,36 @@ func messageBytes(msg Message) int {
 	if err != nil {
 		return 0
 	}
-	return len(data) + 1 + msg.Images()*imageTokens*bytesPerToken
+	return len(data) + 1 + attachmentTokens(msg)*bytesPerToken
 }
+
+// attachmentTokens estimates what msg's images and documents cost: an
+// image a fixed amount, a PDF by its size (a page is a few thousand
+// tokens, as text and as an image).
+func attachmentTokens(msg Message) int {
+	n := 0
+	count := func(p Part) {
+		switch p.Type {
+		case PartImage:
+			n += imageTokens
+		case PartDocument:
+			n += max(imageTokens, len(p.Data)/documentBytesPerToken)
+		}
+	}
+	for _, p := range msg.Parts {
+		count(p)
+	}
+	if msg.Result != nil {
+		for _, p := range msg.Result.Images {
+			count(p)
+		}
+	}
+	return n
+}
+
+// documentBytesPerToken: a PDF page of 50-100 KB costs about 1,500-3,000
+// tokens.
+const documentBytesPerToken = 32
 
 func (v *sized) resize(i int) {
 	v.total -= v.sizes[i]

@@ -218,12 +218,15 @@ func TestImagesInResults(t *testing.T) {
 		&sdk.TextContent{Text: "a chart"},
 		&sdk.ImageContent{MIMEType: "image/png", Data: png},
 		&sdk.ImageContent{MIMEType: "image/png", Data: []byte("not a png")},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///scan.pdf", MIMEType: "application/pdf", Blob: []byte("%PDF-1.4 scan")}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///fake.pdf", MIMEType: "application/pdf", Blob: []byte("not a pdf")}},
 	}}
 	imgs := images(res)
-	if len(imgs) != 1 || imgs[0].MIME != "image/png" || string(imgs[0].Data) != string(png) {
-		t.Fatalf("%+v", imgs)
+	if len(imgs) != 2 || imgs[0].MIME != "image/png" || string(imgs[0].Data) != string(png) || imgs[1].Type != agent.PartDocument {
+		t.Fatalf("%d attachments", len(imgs))
 	}
-	if text := render(res); !strings.Contains(text, "attached") || !strings.Contains(text, "not shown") {
+	text := render(res)
+	if !strings.Contains(text, "[image image/png, attached]") || !strings.Contains(text, "[PDF file:///scan.pdf, attached]") || !strings.Contains(text, "fake.pdf not shown") {
 		t.Fatalf("%q", text)
 	}
 }

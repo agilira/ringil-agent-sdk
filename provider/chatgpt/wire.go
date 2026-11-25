@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 
 	agent "github.com/agilira/ringil-agent-sdk"
 )
@@ -150,15 +151,28 @@ func userContent(text string, parts []agent.Part) []wireContent {
 	if text != "" {
 		c = append(c, wireContent{Type: "input_text", Text: text})
 	}
+	docs := 0
 	for _, part := range parts {
-		if part.Type == agent.PartImage {
+		switch part.Type {
+		case agent.PartImage:
 			c = append(c, image(part))
+		case agent.PartDocument:
+			docs++
 		}
+	}
+	if docs > 0 {
+		c = append(c, wireContent{Type: "input_text", Text: noDocuments(docs)})
 	}
 	if len(c) == 0 {
 		c = append(c, wireContent{Type: "input_text", Text: ""})
 	}
 	return c
+}
+
+// noDocuments: the subscription's backend takes no files, so a PDF is
+// named and not sent; a tool's text of it still goes.
+func noDocuments(n int) string {
+	return "[" + strconv.Itoa(n) + " PDF documents here, which this model cannot see: say so.]"
 }
 
 func image(part agent.Part) wireContent {
@@ -200,11 +214,7 @@ func toolOutput(r agent.ToolResult) json.RawMessage {
 	}
 	var v any = text
 	if len(r.Images) > 0 {
-		c := []wireContent{{Type: "input_text", Text: text}}
-		for _, img := range r.Images {
-			c = append(c, image(img))
-		}
-		v = c
+		v = userContent(text, r.Images)
 	}
 	data, _ := json.Marshal(v) // strings and content always encode
 	return data

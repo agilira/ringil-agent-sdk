@@ -264,28 +264,33 @@ func (s *Server) StartFrom(source, profile, conversation string, input agent.Mes
 	return j.snapshot(), nil
 }
 
-// checkInput accepts a user message with text or images, its images as
-// the model APIs would take them.
+// checkInput accepts a user message with text, images, or PDFs, its
+// attachments as the model APIs would take them.
 func checkInput(input agent.Message) error {
 	switch {
 	case input.Role != agent.RoleUser || len(input.Calls) > 0 || input.Result != nil:
 		return fail(ErrInput, "the input must be a user message")
 	case input.Text() == "" && input.Images() == 0:
 		return fail(ErrInput, "the input is empty")
-	case !imagesOK(input):
-		return fail(ErrInput, "an image is too large or not JPEG, PNG, GIF or WebP")
 	}
-	return nil
+	return checkAttachments(input)
 }
 
-// imagesOK checks the input's images as the model APIs would.
-func imagesOK(m agent.Message) bool {
+// checkAttachments checks the input's images and documents as the model APIs would.
+func checkAttachments(m agent.Message) error {
 	for _, p := range m.Parts {
-		if p.Type == agent.PartImage && agent.CheckImage(p.MIME, p.Data) != nil {
-			return false
+		switch p.Type {
+		case agent.PartImage:
+			if agent.CheckImage(p.MIME, p.Data) != nil {
+				return fail(ErrInput, "an image is too large or not JPEG, PNG, GIF or WebP")
+			}
+		case agent.PartDocument:
+			if agent.CheckDocument(p.MIME, p.Data) != nil {
+				return fail(ErrInput, "a document must be a PDF up to 32 MiB")
+			}
 		}
 	}
-	return true
+	return nil
 }
 
 func (s *Server) admit(conversation string) error {

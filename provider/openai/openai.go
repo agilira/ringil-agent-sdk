@@ -65,6 +65,11 @@ type Config struct {
 	// read them (a vision model). Without it, the model is told the user
 	// sent images it cannot see.
 	Images bool
+	// Documents sends PDFs (of user messages and tool results) as files,
+	// for an API that reads them (OpenAI, OpenRouter). Without it, the
+	// model is told there is a PDF it cannot read; a tool's text of it
+	// still goes.
+	Documents bool
 	// Headers are added to every request (e.g. OpenRouter's HTTP-Referer).
 	// They cannot replace Authorization, Content-Type, Accept or Host.
 	Headers map[string]string

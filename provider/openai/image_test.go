@@ -50,3 +50,22 @@ func TestTextOnlyUserMessageStaysAString(t *testing.T) {
 		t.Fatalf("%s", data)
 	}
 }
+
+// A PDF goes as a file where the API reads them, else it is named.
+func TestDocuments(t *testing.T) {
+	pdf := agent.Part{Type: agent.PartDocument, MIME: "application/pdf", Data: []byte("%PDF-1")}
+	res := agent.ToolResult{CallID: "c1", Content: "text", Images: []agent.Part{pdf}}
+	calls := agent.Message{Role: agent.RoleAssistant, Calls: []agent.ToolCall{{ID: "c1", Name: "read_document", Input: json.RawMessage(`{}`)}}}
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("leggi"), calls, agent.ToolMessage(res)}}
+	for _, docs := range []bool{true, false} {
+		data, err := (&provider{cfg: Config{Model: "m", Documents: docs}}).encode(req, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(data)
+		file := strings.Contains(got, `"type":"file"`) && strings.Contains(got, `"file_data":"data:application/pdf;base64,JVBERi0x"`)
+		if docs != file || docs == strings.Contains(got, "cannot see") {
+			t.Fatalf("documents %v: %s", docs, got)
+		}
+	}
+}

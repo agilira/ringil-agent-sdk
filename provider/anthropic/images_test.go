@@ -64,3 +64,19 @@ func TestImagesWithinTheAPILimit(t *testing.T) {
 		}
 	}
 }
+
+func TestFitImagesTrimsUserDocuments(t *testing.T) {
+	doc := agent.Part{Type: agent.PartDocument, MIME: "application/pdf", Data: []byte("%PDF-1.4\nx")}
+	msgs := make([]agent.Message, maxImages+5)
+	for i := range msgs {
+		msgs[i] = agent.UserMessage("read", doc)
+	}
+	got := fitImages(msgs)
+	k := images(got)
+	if k > maxImages || k <= maxImages-imageStep {
+		t.Fatalf("kept %d attachments", k)
+	}
+	if got[0].Images() != 0 || !strings.Contains(got[0].Text(), "no longer shown") || got[len(got)-1].Images() != 1 {
+		t.Fatalf("oldest=%d (%q) newest=%d", got[0].Images(), got[0].Text(), got[len(got)-1].Images())
+	}
+}

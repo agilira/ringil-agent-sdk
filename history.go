@@ -72,7 +72,7 @@ type historyLine struct {
 	N      int      `json:"n"`
 	Role   Role     `json:"role"`
 	Text   string   `json:"text,omitempty"`
-	Images int      `json:"images,omitempty"`
+	Images int      `json:"images,omitempty"` // images and documents
 	Calls  []string `json:"calls,omitempty"`
 	Result string   `json:"result,omitempty"`
 	Error  bool     `json:"error,omitempty"`

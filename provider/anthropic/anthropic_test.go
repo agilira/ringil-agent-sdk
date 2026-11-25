@@ -547,3 +547,18 @@ func TestThinkingStaysWithItsModel(t *testing.T) {
 		t.Fatal("the API's own address is not named")
 	}
 }
+
+// A tool's PDF goes to Claude as a document block in the tool result.
+func TestToolResultDocument(t *testing.T) {
+	f, url := newFake(t, text("una scansione"))
+	pdf := []byte("%PDF-1.4\nscan")
+	calls := agent.Message{Role: agent.RoleAssistant, Calls: []agent.ToolCall{{ID: "toolu_1", Name: "read_document", Input: json.RawMessage(`{}`)}}}
+	res := agent.ToolResult{CallID: "toolu_1", Content: "text", Images: []agent.Part{{Type: agent.PartDocument, MIME: "application/pdf", Data: pdf}}}
+	req := &agent.Request{Messages: []agent.Message{agent.UserMessage("leggi", agent.Part{Type: agent.PartDocument, MIME: "application/pdf", Data: pdf}), calls, agent.ToolMessage(res)}}
+	if _, err := open(t, url, Config{}).Generate(t.Context(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(f.sent(0), `"type":"document"`) != 2 || !has(f.sent(0), `"media_type":"application/pdf"`, `"type":"tool_result"`) {
+		t.Fatalf("%s", f.sent(0))
+	}
+}

@@ -58,7 +58,7 @@ func withoutImages(m agent.Message, n int) (agent.Message, int) {
 	}
 	parts, gone := make([]agent.Part, 0, len(m.Parts)+1), 0
 	for _, part := range m.Parts {
-		if part.Type == agent.PartImage && taken < n {
+		if (part.Type == agent.PartImage || part.Type == agent.PartDocument) && taken < n {
 			taken, gone = taken+1, gone+1
 			continue
 		}
@@ -72,7 +72,7 @@ func withoutImages(m agent.Message, n int) (agent.Message, int) {
 
 func plural(n int) string {
 	if n == 1 {
-		return "1 image"
+		return "1 image or document"
 	}
-	return strconv.Itoa(n) + " images"
+	return strconv.Itoa(n) + " images or documents"
 }

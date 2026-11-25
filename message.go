@@ -62,6 +62,12 @@ const (
 	// PartImage is an image a user sent: MIME and Data. It is kept whole
 	// in the conversation; [CheckImage] says which ones are accepted.
 	PartImage PartType = "image"
+	// PartDocument is a PDF: MIME and Data, checked by [CheckDocument].
+	// It travels where images do (a tool's result, a user's message) and
+	// is counted with them: kept for the latest turns, a note after.
+	// Adapters whose model reads PDFs send it; the others leave it out
+	// with a note.
+	PartDocument PartType = "document"
 	// PartContext is text the host added to a user message, not the
 	// user's words: the memories recalled for it and the run's context
 	// (Config.Context). It goes to the model with the message and stays in
@@ -118,6 +124,29 @@ func (m Message) Reasoning(source string) []Part {
 // APIs.
 const MaxImageBytes = 5 << 20
 
+// MaxDocumentBytes bounds a PDF: the request limit of the main model APIs.
+const MaxDocumentBytes = 32 << 20
+
+// CheckDocument accepts a PDF the model APIs take: at most
+// MaxDocumentBytes, and a PDF by its bytes, whatever its label says.
+func CheckDocument(mime string, data []byte) error {
+	switch {
+	case len(data) == 0 || len(data) > MaxDocumentBytes:
+		return errors.New(ErrImage, "a document must be 1 byte to 32 MiB")
+	case mime != "application/pdf" || !strings.HasPrefix(string(data[:min(len(data), 5)]), "%PDF-"):
+		return errors.New(ErrImage, "documents must be PDF")
+	}
+	return nil
+}
+
+// Document returns a document part, checked by CheckDocument.
+func Document(data []byte) (Part, error) {
+	if err := CheckDocument("application/pdf", data); err != nil {
+		return Part{}, err
+	}
+	return Part{Type: PartDocument, MIME: "application/pdf", Data: data}, nil
+}
+
 // imageTypes are the image formats the model APIs take.
 var imageTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true}
 
@@ -147,7 +176,7 @@ func Image(data []byte) (Part, error) {
 }
 
 // UserMessage returns a user message holding text and images (parts of
-// type PartImage); text may be empty when there are images.
+// type PartImage or PartDocument); text may be empty when there are some.
 func UserMessage(text string, images ...Part) Message {
 	var parts []Part
 	if text != "" {
@@ -160,7 +189,7 @@ func UserMessage(text string, images ...Part) Message {
 func (m Message) Images() int {
 	n := 0
 	for _, part := range m.Parts {
-		if part.Type == PartImage {
+		if part.Type == PartImage || part.Type == PartDocument {
 			n++
 		}
 	}
@@ -188,7 +217,8 @@ type ToolResult struct {
 	CallID  string `json:"call_id"`
 	Content string `json:"content"`
 	IsError bool   `json:"is_error,omitempty"`
-	// Images are the result's images (parts of type PartImage).
+	// Images are the result's images and documents (parts of type
+	// PartImage and PartDocument).
 	Images []Part `json:"images,omitempty"`
 }
 
@@ -350,19 +380,19 @@ func imagesAsNote(m Message, n int) Message {
 	if m.Result != nil && len(m.Result.Images) > 0 { // a tool's images
 		res := *m.Result
 		res.Images = nil
-		res.Content += "\n[" + strconv.Itoa(len(m.Result.Images)) + " images the tool returned here are no longer shown]"
+		res.Content += "\n[" + strconv.Itoa(len(m.Result.Images)) + " images or documents the tool returned here are no longer shown]"
 		m.Result = &res
 		return m
 	}
 	parts := make([]Part, 0, len(m.Parts)+1)
 	for _, p := range m.Parts {
-		if p.Type != PartImage {
+		if p.Type != PartImage && p.Type != PartDocument {
 			parts = append(parts, p)
 		}
 	}
-	note := "[an image sent here earlier is no longer shown]"
+	note := "[an image or document sent here earlier is no longer shown]"
 	if n > 1 {
-		note = "[" + strconv.Itoa(n) + " images sent here earlier are no longer shown]"
+		note = "[" + strconv.Itoa(n) + " images or documents sent here earlier are no longer shown]"
 	}
 	m.Parts = append(parts, Part{Type: PartText, Text: "\n" + note})
 	return m

@@ -80,6 +80,9 @@ type Doc struct {
 	Text string
 	// Cut: the text stopped at Limits.Text.
 	Cut bool
+	// Scans counts a PDF's pages without text: scans or images, which a
+	// model that reads PDFs can see.
+	Scans int
 }
 
 // Kind returns the kind of document name is by its extension, or "".
