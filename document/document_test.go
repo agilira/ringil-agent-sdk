@@ -178,7 +178,7 @@ func TestPathsAndControls(t *testing.T) {
 }
 
 func TestKind(t *testing.T) {
-	if Kind("A.DOCX") != Word || Kind("x.ods") != Spreadsheet || Kind("x.pdf") != "" {
+	if Kind("A.DOCX") != Word || Kind("x.ods") != Spreadsheet || Kind("x.pdf") != PDF {
 		t.Error("kinds")
 	}
 }
