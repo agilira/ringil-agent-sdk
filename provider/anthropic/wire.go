@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 
 	"github.com/agilira/go-errors"
 	"github.com/anthropics/anthropic-sdk-go/v2"
@@ -301,7 +302,7 @@ func (p *provider) encodeAssistant(msg agent.Message) []anthropic.BetaContentBlo
 	}
 	var out []anthropic.BetaContentBlockParamUnion
 	if !p.cfg.NoThinking {
-		out = append(out, encodeReasoning(msg.Reasoning(reasoningSource))...)
+		out = append(out, encodeReasoning(msg.Reasoning(p.source()))...)
 	}
 	if text := msg.Text(); text != "" {
 		out = append(out, anthropic.NewBetaTextBlock(text))
@@ -316,8 +317,17 @@ func (p *provider) encodeAssistant(msg agent.Message) []anthropic.BetaContentBlo
 	return out
 }
 
-// reasoningSource marks the reasoning parts Claude made.
-const reasoningSource = "anthropic"
+// source marks the reasoning parts this model made, at this endpoint:
+// thinking goes back only to the model and the service that wrote it (a
+// fallback to another model, or to an Anthropic-compatible service, gets
+// none of it, and the signatures it could not check).
+func (p *provider) source() string {
+	base := strings.TrimRight(p.cfg.BaseURL, "/")
+	if base == "" || base == DefaultBaseURL {
+		return "anthropic:" + p.cfg.Model
+	}
+	return "anthropic:" + p.cfg.Model + "@" + base
+}
 
 func encodeReasoning(parts []agent.Part) []anthropic.BetaContentBlockParamUnion {
 	out := make([]anthropic.BetaContentBlockParamUnion, 0, len(parts))
@@ -367,9 +377,9 @@ func (p *provider) decode(msg *anthropic.BetaMessage) *agent.Response {
 		case anthropic.BetaToolUseBlock:
 			calls = append(calls, decodeCall(b.ID, b.Name, json.RawMessage(b.JSON.Input.Raw())))
 		case anthropic.BetaThinkingBlock:
-			reasoning = append(reasoning, agent.Part{Type: agent.PartReasoning, Text: b.Thinking, Signature: b.Signature, Source: reasoningSource})
+			reasoning = append(reasoning, agent.Part{Type: agent.PartReasoning, Text: b.Thinking, Signature: b.Signature, Source: p.source()})
 		case anthropic.BetaRedactedThinkingBlock:
-			reasoning = append(reasoning, agent.Part{Type: agent.PartReasoning, Signature: b.Data, Redacted: true, Source: reasoningSource})
+			reasoning = append(reasoning, agent.Part{Type: agent.PartReasoning, Signature: b.Data, Redacted: true, Source: p.source()})
 		}
 		turn = append(turn, block.ToParam())
 	}

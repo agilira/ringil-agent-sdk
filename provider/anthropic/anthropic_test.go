@@ -100,7 +100,7 @@ func thinkingRound(t *testing.T, sink agent.TextSink) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := first.Message.Reasoning("anthropic"); len(r) != 1 || r[0].Signature != "sig-round" || first.Message.Text() != "" {
+	if r := first.Message.Reasoning("anthropic:claude-test@" + url); len(r) != 1 || r[0].Signature != "sig-round" || first.Message.Text() != "" {
 		t.Fatalf("reasoning %+v", first.Message.Parts)
 	}
 	req.Messages = append(req.Messages, first.Message, agent.ToolMessage(agent.ToolResult{CallID: "toolu_1", Content: "trovato"}))
@@ -525,5 +525,25 @@ func TestOutputFormat(t *testing.T) {
 	body, _ := json.Marshal(f.body(0))
 	if !has(string(body), `"effort":"low"`, `"format":{"schema":{`, `"type":"json_schema"`, `"additionalProperties":false`) {
 		t.Fatalf("body %s", body)
+	}
+}
+
+// Claude's thinking goes back only to the same model at the same
+// endpoint: a fallback to another Claude, or to a compatible service,
+// gets none of it.
+func TestThinkingStaysWithItsModel(t *testing.T) {
+	_, url := newFake(t, text("ok"))
+	msg := agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{
+		{Type: agent.PartReasoning, Text: "mine", Signature: "s", Source: "anthropic:claude-test@" + url},
+		{Type: agent.PartReasoning, Text: "other", Signature: "s2", Source: "anthropic:claude-other"},
+		{Type: agent.PartText, Text: "hi"},
+	}}
+	p := open(t, url, Config{}).(*provider)
+	blocks := p.encodeAssistant(msg)
+	if len(blocks) != 2 || blocks[0].OfThinking == nil || blocks[0].OfThinking.Thinking != "mine" {
+		t.Fatalf("blocks %+v", blocks)
+	}
+	if (&provider{cfg: Config{Model: "m"}}).source() != "anthropic:m" || (&provider{cfg: Config{Model: "m", BaseURL: DefaultBaseURL + "/"}}).source() != "anthropic:m" {
+		t.Fatal("the API's own address is not named")
 	}
 }

@@ -525,6 +525,21 @@ a, _ := agent.New(agent.Config{Provider: p, MaxCost: 0.50}) // si ferma pulito: 
 Un'API che dichiara il costo di ogni chiamata (OpenRouter) lo mette in `Usage.Cost` con
 `openai.Config{StatesCost: true}`, e `price.Wrap` lo tiene.
 
+## Fallback
+
+`fallback.New` prova i provider in ordine: quando uno non risponde (server giù, rate
+limit, risposta interrotta o malformata, chiave rifiutata, circuito aperto) risponde il
+successivo, subito; il caduto si salta per `Cooldown` (1 minuto, doppio a ogni caduta di
+fila, fino a 15) e poi si torna a lui. Gli errori della richiesta (`PROVIDER_INPUT`,
+`PROVIDER_CONTEXT`) non passano a un altro modello. Il testo già mostrato non si ripete:
+senza `OnRestart` una chiamata che ha già scritto non passa; `OnSwitch` dice quale modello
+risponde ora. Con un solo provider `New` lo restituisce com'è.
+
+```go
+chain, _ := fallback.New([]agent.Provider{price.Wrap(a, pa), price.Wrap(b, pb)}, fallback.Config{})
+model := retry.Wrap(chain, retry.Config{}) // il retry aspetta solo quando nessuno ha risposto
+```
+
 ## Decoratori
 
 Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,
