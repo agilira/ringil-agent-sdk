@@ -6,6 +6,7 @@
 package files
 
 import (
+	"github.com/agilira/ringil-agent-sdk/dirs"
 	"path"
 	"path/filepath"
 	"strings"
@@ -83,6 +84,7 @@ var templateSuffixes = []string{".example", ".sample", ".template", ".dist"}
 type policy struct {
 	patterns [][]namePattern // each pattern split into lower-cased components
 	longest  int             // components in the longest pattern
+	roots    []string        // whole directories, by their real path
 }
 
 func newPolicy(patterns []string) (policy, error) {
@@ -107,6 +109,9 @@ func newPolicy(patterns []string) (policy, error) {
 // excluded reports whether the absolute path p matches a pattern anywhere
 // along it.
 func (p policy) excluded(abs string) bool {
+	if p.inRoot(abs) {
+		return true
+	}
 	parts := components(abs)
 	for i := range parts {
 		for _, pat := range p.patterns {
@@ -121,6 +126,9 @@ func (p policy) excluded(abs string) bool {
 // excludedLeaf reports whether a pattern ends at the last component of
 // abs: enough during a walk, where every ancestor was checked already.
 func (p policy) excludedLeaf(abs string) bool {
+	if p.inRoot(abs) {
+		return true
+	}
 	parts := tail(abs, p.longest)
 	for _, pat := range p.patterns {
 		if len(pat) <= len(parts) && matchAt(pat, parts[len(parts)-len(pat):]) {
@@ -128,6 +136,31 @@ func (p policy) excludedLeaf(abs string) bool {
 		}
 	}
 	return false
+}
+
+// inRoot: abs is one of the whole directories excluded, or inside one.
+func (p policy) inRoot(abs string) bool {
+	for _, r := range p.roots {
+		if dirs.Within(abs, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// withRoots adds whole directories to p, by their real path where they
+// exist.
+func (p policy) withRoots(roots []string) policy {
+	for _, r := range roots {
+		if r == "" || !filepath.IsAbs(r) {
+			continue
+		}
+		if real, err := filepath.EvalSymlinks(r); err == nil {
+			r = real
+		}
+		p.roots = append(p.roots, filepath.Clean(r))
+	}
+	return p
 }
 
 func matchAt(pat []namePattern, parts []string) bool {

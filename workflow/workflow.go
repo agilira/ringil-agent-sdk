@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	"github.com/agilira/ringil-agent-sdk/delegate"
+	"github.com/agilira/ringil-agent-sdk/dirs"
 )
 
 // Error codes.
@@ -175,8 +177,11 @@ type Locker interface {
 // Runner runs plans on a crew.
 type Runner struct {
 	Crew *delegate.Crew
-	// Journal, when set, makes runs resumable.
-	Journal Journal
+	// Journal makes runs resumable. Nil is a FileJournal in the program's
+	// state (dirs.Program().State, "workflows"), made at the first run;
+	// NoJournal keeps runs in memory, not resumable after a restart.
+	Journal   Journal
+	NoJournal bool
 	// Parallel bounds the steps running at once; default 4.
 	Parallel int
 	// OnStep reports progress: a step started, done or failed.
@@ -186,6 +191,26 @@ type Runner struct {
 	// run is within it, and spending is counted when a step ends: the
 	// steps already running may go past it by their own cost.
 	Budget Budget
+
+	once sync.Once
+}
+
+// defaultJournal gives the runner its journal, once, when the host set
+// none and did not ask for none. A journal that cannot be made leaves the
+// runs in memory: they still run.
+func (r *Runner) defaultJournal() {
+	r.once.Do(func() {
+		if r.Journal != nil || r.NoJournal {
+			return
+		}
+		d, err := dirs.Program()
+		if err != nil {
+			return
+		}
+		if j, err := NewFileJournal(filepath.Join(d.State, "workflows")); err == nil {
+			r.Journal = j
+		}
+	})
 }
 
 // Budget limits a run.
@@ -206,6 +231,7 @@ type Result struct {
 
 // Run runs plan with id; resume continues a run the journal holds.
 func (r *Runner) Run(ctx context.Context, id string, plan Plan, brief string, resume bool) (*Result, error) {
+	r.defaultJournal()
 	if r.Crew == nil {
 		return nil, errors.New(ErrPlan, "the runner has no crew")
 	}

@@ -53,7 +53,7 @@ func TestAutomateRunsAreLabelled(t *testing.T) {
 	}
 	t.Cleanup(srv.Close)
 	app := newApp()
-	b, err := NewBridge(Config{Channel: app, Server: srv, Owners: []string{me}})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: app, Server: srv, Owners: []string{me}})
 	if err != nil {
 		t.Fatal(err)
 	}

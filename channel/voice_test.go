@@ -53,7 +53,7 @@ func newVoiceRig(t *testing.T, cfg Config, steps ...fake.Step) *voiceRig {
 	cfg.Channel, cfg.Server, cfg.Owners = v.app, r.srv, []string{me}
 	cfg.Transcriber = &ear{}
 	cfg.OnEvent = func(e Event) { v.events <- e }
-	b, err := NewBridge(cfg)
+	b, err := NewBridge(ephemeral(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}

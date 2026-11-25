@@ -82,7 +82,7 @@ func teamBridge(t *testing.T, cfg Config) (*Bridge, *chatApp, *profiled, chan Ev
 	cfg.Channel, cfg.Server = app, p.srv
 	cfg.Owners = []string{me}
 	cfg.OnEvent = func(e Event) { events <- e }
-	b, err := NewBridge(cfg)
+	b, err := NewBridge(ephemeral(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestMembersNeedTheirProfile(t *testing.T) {
 		{Channel: newApp(), Server: p.srv, Members: []string{worker}},
 		{Channel: newApp(), Server: p.srv, IsMember: func(context.Context, string) (bool, error) { return true, nil }},
 	} {
-		if _, err := NewBridge(cfg); err == nil {
+		if _, err := NewBridge(ephemeral(cfg)); err == nil {
 			t.Error("members without a profile")
 		}
 	}
@@ -288,7 +288,7 @@ func TestAuthorize(t *testing.T) {
 			}
 			return Stranger, errors.New("directory down")
 		}}
-	b, err := NewBridge(cfg)
+	b, err := NewBridge(ephemeral(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestAuthorize(t *testing.T) {
 			break
 		}
 	}
-	if _, err := NewBridge(Config{Channel: app, Server: p.srv, Owners: []string{me}, Authorize: cfg.Authorize}); err == nil {
+	if _, err := NewBridge(Config{Ephemeral: true, Channel: app, Server: p.srv, Owners: []string{me}, Authorize: cfg.Authorize}); err == nil {
 		t.Fatal("Authorize and Owners together")
 	}
 }

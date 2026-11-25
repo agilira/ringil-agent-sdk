@@ -24,7 +24,7 @@ func (a phoneApp) AskPhone(ctx context.Context, chat, text, _ string) error {
 func phoneBridge(t *testing.T, file string, phones ...string) (*Bridge, phoneApp, chan Event) {
 	t.Helper()
 	p, app, events := newProfiled(t), phoneApp{newApp()}, make(chan Event, 16)
-	b, err := NewBridge(Config{Channel: app, Server: p.srv, Owners: []string{me}, MemberProfile: "team",
+	b, err := NewBridge(Config{Ephemeral: true, Channel: app, Server: p.srv, Owners: []string{me}, MemberProfile: "team",
 		MemberPhones: phones, SharedPhones: file, OnEvent: func(e Event) { events <- e }})
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestPhoneConfig(t *testing.T) {
 		"cannot ask": {Channel: newApp(), Server: p.srv, MemberProfile: "team", MemberPhones: []string{"+393331234567"}},
 		"no profile": {Channel: phoneApp{newApp()}, Server: p.srv, MemberPhones: []string{"+393331234567"}},
 	} {
-		if _, err := NewBridge(cfg); err == nil {
+		if _, err := NewBridge(ephemeral(cfg)); err == nil {
 			t.Error(name)
 		}
 	}
@@ -154,7 +154,7 @@ func TestDamagedPhonesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := newProfiled(t)
-	_, err := NewBridge(Config{Channel: phoneApp{newApp()}, Server: p.srv, MemberProfile: "team", MemberPhones: []string{"+393331234567"}, SharedPhones: file})
+	_, err := NewBridge(Config{Ephemeral: true, Channel: phoneApp{newApp()}, Server: p.srv, MemberProfile: "team", MemberPhones: []string{"+393331234567"}, SharedPhones: file})
 	if err == nil {
 		t.Fatal("damaged file read")
 	}
@@ -175,7 +175,7 @@ func TestOwnersSharingTheirPhoneStayOwners(t *testing.T) {
 
 func TestPublicBotAsksAtStart(t *testing.T) {
 	p, app := newProfiled(t), phoneApp{newApp()}
-	b, err := NewBridge(Config{Channel: app, Server: p.srv, MemberProfile: "team", PublicProfile: "public", MemberPhones: []string{"+393331234567"}})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: app, Server: p.srv, MemberProfile: "team", PublicProfile: "public", MemberPhones: []string{"+393331234567"}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -30,6 +30,7 @@ package bash
 
 import (
 	"context"
+	"github.com/agilira/ringil-agent-sdk/dirs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -136,8 +137,10 @@ type Config struct {
 	// that needs it.
 	Confirm func(ctx context.Context, req Request) (bool, error)
 	// Never are host paths no sandbox may be granted: the agent's own
-	// settings and sessions.
-	Never []string
+	// settings and sessions. Empty, the program's own places
+	// (dirs.Program().Own()); NoNever grants them like any other path.
+	Never   []string
+	NoNever bool
 	// Limits are the sandbox's per-process limits; zero values take the
 	// tool's defaults (more processes and CPU time than the sandbox's own,
 	// for builds and test runs).
@@ -235,6 +238,11 @@ func newTool(cfg Config) (*tool, error) {
 
 // defaults fills what cfg leaves to the tool.
 func defaults(cfg *Config) {
+	if len(cfg.Never) == 0 && !cfg.NoNever {
+		if d, err := dirs.Program(); err == nil {
+			cfg.Never = d.Own()
+		}
+	}
 	if cfg.MaxOutput <= 0 {
 		cfg.MaxOutput = DefaultMaxOutput
 	}

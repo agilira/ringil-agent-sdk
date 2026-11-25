@@ -8,6 +8,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"github.com/agilira/ringil-agent-sdk/internal/testhome"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -151,7 +152,7 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	testhome.Main(m)
 }
 
 func TestStdioServerInSandbox(t *testing.T) {

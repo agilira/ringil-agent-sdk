@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +22,7 @@ import (
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/delegate"
+	"github.com/agilira/ringil-agent-sdk/dirs"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 	"github.com/agilira/ringil-agent-sdk/session/file"
 )
@@ -35,6 +38,7 @@ type api struct {
 func newAPI(t *testing.T, cfg Config) *api {
 	t.Helper()
 	cfg.Token = token
+	cfg.NoStore = cfg.Store == nil // a test without a store wants none, not the default
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -588,5 +592,30 @@ func TestSourceOf(t *testing.T) {
 	}
 	if s := <-got; s != "" {
 		t.Fatalf("an API run labelled %q", s)
+	}
+}
+
+// Left alone, a server keeps its conversations in files in the program's
+// state, as coding agents do: naming one continues it after a restart.
+func TestDefaultStoreKeepsConversations(t *testing.T) {
+	p := profile(t, "default", agent.Config{Provider: fake.New(fake.Reply("one"), fake.Reply("two"))})
+	s, err := New(Config{Token: token, Profiles: []Profile{p}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	run, err := s.Start("default", "c1", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Wait(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	d, err := dirs.Program()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(d.State, "sessions")); err != nil || len(entries) == 0 {
+		t.Fatalf("nothing kept in %s: %v", d.State, err)
 	}
 }
