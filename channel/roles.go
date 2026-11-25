@@ -201,13 +201,19 @@ func (b *Bridge) profileFor(r role, group bool) string {
 	return b.people().publicProfile
 }
 
-// groupProfile is PublicProfile when there is one, else MemberProfile;
-// "" when neither: then the Bridge does not talk in groups.
+// groupProfile is PublicProfile when there is one, else MemberProfile:
+// a group shares one conversation, so it talks with the profile of the
+// least trusted who may write there. With neither, only the owners are
+// heard in a group, and it talks with the owners' Profile, as in their
+// own chats (a channel works with no setting, as people expect).
 func (b *Bridge) groupProfile() string {
 	if b.people().publicProfile != "" {
 		return b.people().publicProfile
 	}
-	return b.people().memberProfile
+	if b.people().memberProfile != "" {
+		return b.people().memberProfile
+	}
+	return b.cfg.Profile
 }
 
 // within records a message of a member, public or stranger sender and

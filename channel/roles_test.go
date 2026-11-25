@@ -236,11 +236,16 @@ func TestAGroupTalksWithTheLeastTrusted(t *testing.T) {
 	if got := app.nextIn(t, office).Text; got != "public" {
 		t.Fatalf("owner in a group with a public bot: %q", got)
 	}
+	// With no members' or public profile (25/11, Slack: a channel worked
+	// only after setting one), the owners talk in a group as in their own
+	// chats, and no one else is heard.
 	owners, oapp, _, _ := teamBridge(t, Config{})
 	owners.handle(context.Background(), Message{Chat: office, From: me, Group: true, Addressed: true, Text: "hi"})
-	if got := oapp.nextIn(t, office).Text; !strings.Contains(got, "not set up to talk in groups") {
+	if got := oapp.nextIn(t, office).Text; got != "default" {
 		t.Fatalf("owners only: %q", got)
 	}
+	owners.handle(context.Background(), Message{Chat: office, From: outsider, Group: true, Addressed: true, Text: "hi"})
+	oapp.quiet(t) // someone else is not answered
 }
 
 func TestGroupCommands(t *testing.T) {
