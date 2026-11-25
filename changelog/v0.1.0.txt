@@ -108,6 +108,11 @@ FEATURES
     order, table cells by " | "), read in pages like read_file and under
     its policy. Bounded against zip bombs, repeated cells and deep XML;
     password-protected and old binary files named as such.
+  - PDF in read_document, page by page (github.com/agilira/pdf, a fork of
+    ledongthuc/pdf): a page without text is named a scan, a damaged file
+    is an error, never a panic. The fork bounds five reference cycles that
+    looped forever or overflowed the stack on a crafted file; the fix is
+    proposed upstream (ledongthuc/pdf#109).
 
 SECURITY
 

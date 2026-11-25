@@ -3,9 +3,10 @@
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
 
-// Package document reads the text of office documents with the standard
-// library alone: Word (.docx), Excel (.xlsx), PowerPoint (.pptx) and
-// OpenDocument (.odt, .ods, .odp). They are zip files of XML; the text
+// Package document reads the text of office documents: Word (.docx),
+// Excel (.xlsx), PowerPoint (.pptx) and OpenDocument (.odt, .ods, .odp)
+// with the standard library alone, and PDF (github.com/agilira/pdf, a fork of ledongthuc/pdf with reference cycles fixed,
+// page by page). The office formats are zip files of XML; the text
 // comes out in reading order, with the structure a reader needs: the
 // sheets and their rows with cell references, the slides in their order,
 // table cells separated by " | ".
@@ -70,6 +71,7 @@ const (
 	Text         = "OpenDocument text"
 	Spreadsheet  = "OpenDocument spreadsheet"
 	Presentation = "OpenDocument presentation"
+	PDF          = "PDF document"
 )
 
 // Doc is a document's text.
@@ -84,7 +86,7 @@ type Doc struct {
 func Kind(name string) string {
 	return map[string]string{
 		".docx": Word, ".docm": Word, ".xlsx": Excel, ".xlsm": Excel, ".pptx": PowerPoint, ".pptm": PowerPoint,
-		".odt": Text, ".ods": Spreadsheet, ".odp": Presentation,
+		".odt": Text, ".ods": Spreadsheet, ".odp": Presentation, ".pdf": PDF,
 	}[strings.ToLower(path.Ext(name))]
 }
 
@@ -94,6 +96,9 @@ func Read(r io.ReaderAt, size int64, name string, limits Limits) (Doc, error) {
 	kind := Kind(name)
 	if kind == "" {
 		return Doc{}, unsupported(name)
+	}
+	if kind == PDF {
+		return pdfDoc(r, size, limits)
 	}
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
@@ -139,10 +144,8 @@ func unsupported(name string) error {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".doc", ".xls", ".ppt":
 		return errors.New(ErrFormat, "an old binary Office file ("+path.Ext(name)+"): save it as "+path.Ext(name)+"x, or as PDF")
-	case ".pdf":
-		return errors.New(ErrFormat, "a PDF")
 	}
-	return errors.New(ErrFormat, "not an office document (.docx, .xlsx, .pptx, .odt, .ods, .odp)")
+	return errors.New(ErrFormat, "not an office document (.docx, .xlsx, .pptx, .odt, .ods, .odp, .pdf)")
 }
 
 // maxZipFiles bounds the directory entries indexed from one zip archive.
