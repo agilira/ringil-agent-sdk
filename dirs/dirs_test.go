@@ -59,6 +59,11 @@ func TestMacAndWindows(t *testing.T) {
 	if d.Config != `C:\Users\u\AppData\Roaming\app` || d.Data != `C:\Users\u\AppData\Local\app\data` {
 		t.Fatalf("%+v", d)
 	}
+	// AppData and LocalAppData the same: the data stays out of the rest.
+	d = forSystem("windows", "app", `C:\Users\u`, envOf(map[string]string{"AppData": `C:\h`, "LocalAppData": `C:\h`}))
+	if d.Config != `C:\h\app\config` || d.State != `C:\h\app\state` || d.Data != `C:\h\app\data` {
+		t.Fatalf("%+v", d)
+	}
 }
 
 func TestPlacesAreApart(t *testing.T) {

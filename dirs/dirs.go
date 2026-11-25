@@ -66,7 +66,7 @@ func forSystem(goos, app, home string, env func(string) string) Dirs {
 	case "windows":
 		roaming := absOr(env("AppData"), filepath.Join(home, "AppData", "Roaming"))
 		local := absOr(env("LocalAppData"), filepath.Join(home, "AppData", "Local"))
-		return Dirs{Config: filepath.Join(roaming, app), State: filepath.Join(local, app, "state"), Data: filepath.Join(local, app, "data")}
+		return apart(Dirs{Config: filepath.Join(roaming, app), State: filepath.Join(local, app, "state"), Data: filepath.Join(local, app, "data")})
 	}
 	return apart(Dirs{
 		Config: filepath.Join(absOr(env("XDG_CONFIG_HOME"), filepath.Join(home, ".config")), app),
@@ -75,15 +75,24 @@ func forSystem(goos, app, home string, env func(string) string) Dirs {
 	})
 }
 
-// apart keeps the three places from nesting when the XDG variables name
-// the same directory: each then gets its own folder in it, so the data
-// never falls inside the agent's own places.
+// apart keeps the three places from nesting when the variables name the
+// same directory (XDG ones on Linux, AppData and LocalAppData on
+// Windows): the configuration then gets a folder of its own, and so do
+// the state and the data if they still meet, so the data never falls
+// inside the agent's own places.
 func apart(d Dirs) Dirs {
-	if Within(d.Data, d.Config) || Within(d.Data, d.State) || Within(d.State, d.Config) || Within(d.Config, d.State) {
-		return Dirs{Config: filepath.Join(d.Config, "config"), State: filepath.Join(d.State, "state"), Data: filepath.Join(d.Data, "data")}
+	if !nested(d.Data, d.Config) && !nested(d.Data, d.State) && !nested(d.State, d.Config) {
+		return d
+	}
+	d.Config = filepath.Join(d.Config, "config")
+	if nested(d.State, d.Data) {
+		d.State, d.Data = filepath.Join(d.State, "state"), filepath.Join(d.Data, "data")
 	}
 	return d
 }
+
+// nested: one of a and b is the other or inside it.
+func nested(a, b string) bool { return Within(a, b) || Within(b, a) }
 
 // absOr is v when it is an absolute path, as the XDG rules want; else def.
 func absOr(v, def string) string {
