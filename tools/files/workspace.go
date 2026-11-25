@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Package files gives an agent tools for the directories the host grants:
-// read_file, list_directory, glob and grep to read, write_file and
-// edit_file to change.
+// read_file, read_document, list_directory, glob and grep to read,
+// write_file and edit_file to change.
 //
 // Changes follow three rules. A file is changed only if the model read it
 // and it has not changed since (someone else's edit is never lost). A
@@ -96,7 +96,7 @@ func ownOf(own []string) []string {
 
 // Workspace is a set of granted directories.
 type Workspace interface {
-	// ReadTools returns read_file, list_directory, glob and grep.
+	// ReadTools returns read_file, read_document, list_directory, glob and grep.
 	ReadTools() []agent.Tool
 	// WriteTools returns write_file and edit_file. Hosts usually confirm
 	// these calls (the CLI does unless --accept-edits).
@@ -364,5 +364,5 @@ func excludedError() error {
 
 // ReadTools implements Workspace.
 func (w *workspace) ReadTools() []agent.Tool {
-	return []agent.Tool{w.readTool(), w.listTool(), w.globTool(), w.grepTool()}
+	return []agent.Tool{w.readTool(), w.documentTool(), w.listTool(), w.globTool(), w.grepTool()}
 }

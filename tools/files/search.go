@@ -183,7 +183,9 @@ func (p *page) add(item, extra string) {
 		p.full = true
 		return
 	}
-	p.out.WriteString(extra + item + "\n")
+	p.out.WriteString(extra)
+	p.out.WriteString(item)
+	p.out.WriteByte('\n')
 	p.shown++
 }
 

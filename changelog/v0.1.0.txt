@@ -102,6 +102,12 @@ FEATURES
     doubles, then tried again. Request errors stay; streamed text is never
     repeated (OnRestart); OnSwitch tells which model answers. One provider
     is returned as it is.
+  - document and the read_document tool: the text of Word, Excel,
+    PowerPoint and OpenDocument files with the standard library alone,
+    in reading order (sheets with rows and cell columns, slides in their
+    order, table cells by " | "), read in pages like read_file and under
+    its policy. Bounded against zip bombs, repeated cells and deep XML;
+    password-protected and old binary files named as such.
 
 SECURITY
 
