@@ -36,7 +36,7 @@ func TestLogsMetadataNeverContent(t *testing.T) {
 	var buf bytes.Buffer
 	l := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	p := fake.New(fake.Step{Chunks: []string{"thinking " + secret}, Calls: []agent.ToolCall{{Name: "search", Input: json.RawMessage(`{"q":"` + secret + `"}`)}}},
-		fake.Call(secret+" bad name!", `{}`), fake.Reply("answer "+secret))
+		fake.Call(secret+" bad name!", `{}`), fake.Step{Chunks: []string{"answer " + secret}, Usage: agent.Usage{Input: 3, Output: 1, Cost: 0.25}})
 	a, err := agent.New(agent.Config{Provider: p, Tools: reg, Observers: []agent.Observer{eventlog.Slog(l)}, System: "system " + secret})
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestLogsMetadataNeverContent(t *testing.T) {
 	if strings.Contains(out, secret) {
 		t.Fatalf("content in the log:\n%s", out)
 	}
-	for _, want := range []string{`"msg":"agent.started"`, `"msg":"agent.tool_end"`, `"tool":"search"`, `"error":"SEARCH_DOWN"`, `"is_error":true`, `"tool":"(unknown tool)"`, `"msg":"agent.done"`, `"turns":3`, `"seq":1`} {
+	for _, want := range []string{`"msg":"agent.started"`, `"msg":"agent.tool_end"`, `"tool":"search"`, `"error":"SEARCH_DOWN"`, `"is_error":true`, `"tool":"(unknown tool)"`, `"msg":"agent.done"`, `"turns":3`, `"seq":1`, `"usd":0.25`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %s in\n%s", want, out)
 		}
@@ -80,7 +80,8 @@ func TestStopReasonsAreTheAgents(t *testing.T) {
 	text := func(ev agent.Event) string {
 		var b strings.Builder
 		for _, a := range eventlog.Attrs(ev) {
-			b.WriteString(a.String() + " ")
+			b.WriteString(a.String())
+			b.WriteByte(' ')
 		}
 		return b.String()
 	}

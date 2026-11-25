@@ -6,10 +6,13 @@
 package workflow
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/agilira/go-errors"
+
+	agent "github.com/agilira/ringil-agent-sdk"
 )
 
 func TestBudgetStopsAndResumeKeepsCounting(t *testing.T) {
@@ -61,5 +64,34 @@ func TestBudgetReachedByTheLastStep(t *testing.T) {
 	one := Plan{Steps: []Step{{Name: "a", Worker: "w", Task: "A"}}, Output: "a"}
 	if res, err := r.Run(bg, "x", one, "", false); err != nil || res == nil {
 		t.Fatalf("complete run: %v", err)
+	}
+}
+
+// costly adds a cost to every answer of next.
+type costly struct {
+	agent.Provider
+	usd float64
+}
+
+func (c costly) Generate(ctx context.Context, req *agent.Request, sink agent.TextSink) (*agent.Response, error) {
+	resp, err := c.Provider.Generate(ctx, req, sink)
+	if resp != nil {
+		resp.Usage = agent.Usage{Input: 10, Output: 10, Cost: c.usd}
+	}
+	return resp, err
+}
+
+// A dollar budget stops the run like the others, and the journal keeps
+// the dollars for the resume.
+func TestBudgetInDollars(t *testing.T) {
+	j := &memJournal{}
+	r := runner(t, costly{&echo{}, 0.5}, j)
+	r.Budget = Budget{Cost: 1}
+	if _, err := r.Run(bg, "usd", diamond, "", false); !errors.HasCode(err, ErrBudget) {
+		t.Fatalf("over budget: %v", err)
+	}
+	st, err := j.Load(bg, "usd")
+	if err != nil || st.Spent.Usage.Cost != 1.5 || st.Steps["d"] != nil {
+		t.Fatalf("spent %+v", st.Spent)
 	}
 }

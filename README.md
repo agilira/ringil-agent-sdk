@@ -299,9 +299,10 @@ passaggio avviato e non finito ferma la ripresa (`WORKFLOW_UNCERTAIN`), perché 
 effetti potrebbero esserci già: si verifica e si registra l'esito con `workflow.Resolve`.
 Il journal non riesegue mai nulla di sua iniziativa.
 
-`Runner.Budget` limita chiamate e token di un workflow nel suo insieme: la spesa di ogni
-passaggio si salva nel journal, quindi la ripresa continua a contare; un passaggio parte
-solo finché il budget non è esaurito. CLI: `--workflow-calls`, `--workflow-tokens`.
+`Runner.Budget` limita chiamate, token e dollari di un workflow nel suo insieme: la spesa
+di ogni passaggio si salva nel journal, quindi la ripresa continua a contare; un passaggio
+parte solo finché il budget non è esaurito. CLI: `--workflow-calls`, `--workflow-tokens`,
+`--workflow-cost`.
 
 `Runner.Tool()` dà al modello `run_workflow`, per i piani che scrive lui: è marcato
 distruttivo, quindi l'host mostra il piano prima di eseguirlo.
@@ -503,13 +504,34 @@ http.Handle("/metrics", auth(m.Handler())) // dietro l'autenticazione dell'host
 Docker o un bilanciatore. `ringil serve` conta ogni profilo e monta `GET /metrics` dietro
 il suo token (in Prometheus: `authorization: {credentials_file: ...}` con il file del token).
 
+## Costi
+
+`price.Wrap` mette il costo in dollari di ogni chiamata in `Usage.Cost`, che arriva a
+eventi, `Result`, rapporti dei worker, journal dei workflow, log e `/metrics`
+(`ringil_cost_usd_total`). I prezzi non sono nel codice: `price.Catalog` scarica il
+listino pubblico di OpenRouter (Anthropic, OpenAI, Google, xAI, Mistral, Moonshot, Z.ai,
+DeepSeek, Qwen e gli altri; senza chiave), lo tiene su disco e lo riscarica dopo
+`MaxAge` (24 ore); se la rete manca usa la copia salvata. Prezzi della cache e dei prompt
+lunghi compresi. L'host mette i suoi prezzi sopra con `Table.Over`.
+
+```go
+list, _ := (&price.Catalog{}).Load(ctx)   // <state>/prices.json
+if pr, ok := list.Lookup(p.Info().Name); ok { // "grok-4.7", "anthropic/claude-opus-5.5", con la data
+	p = price.Wrap(p, pr)
+}
+a, _ := agent.New(agent.Config{Provider: p, MaxCost: 0.50}) // si ferma pulito: StopMaxCost
+```
+
+Un'API che dichiara il costo di ogni chiamata (OpenRouter) lo mette in `Usage.Cost` con
+`openai.Config{StatesCost: true}`, e `price.Wrap` lo tiene.
+
 ## Decoratori
 
 Tutti opzionali; un campo a zero vuol dire nessun limite. Ordine consigliato,
 dall'esterno all'interno:
 
 ```go
-spend, _ := budget.New(budget.Limits{Calls: 500, Tokens: 2_000_000})
+spend, _ := budget.New(budget.Limits{Calls: 500, Tokens: 2_000_000, Cost: 20}) // dollari: p prezzato con price.Wrap
 pace, _ := ratelimit.New(ratelimit.Config{RequestsPerMinute: 60, MaxConcurrent: 4})
 guard, _ := circuit.New(circuit.Config{})
 

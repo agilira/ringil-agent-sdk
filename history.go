@@ -58,7 +58,9 @@ func renderHistory(msgs []Message, from, to int) string {
 	for n := from; n <= to; n++ {
 		line := encodeMessage(n, msgs[n-1], maxHistoryPart)
 		if n > from && b.Len()+len(line) > maxHistory {
-			b.WriteString(`{"stopped_at":` + strconv.Itoa(n) + `,"note":"ask again from this number"}` + "\n")
+			b.WriteString(`{"stopped_at":`)
+			b.WriteString(strconv.Itoa(n))
+			b.WriteString(`,"note":"ask again from this number"}` + "\n")
 			break
 		}
 		b.WriteString(line)

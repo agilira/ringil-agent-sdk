@@ -56,6 +56,11 @@ type Config struct {
 	// require (NVIDIA NIM's embedding models refuse requests without it).
 	// Chat requests ignore it.
 	EmbedInputType bool
+	// StatesCost: the API puts what a call cost, in US dollars, in
+	// usage.cost (OpenRouter does); it fills Usage.Cost, and price.Wrap
+	// keeps it. Off, a "cost" from the server is ignored: its unit is not
+	// known.
+	StatesCost bool
 	// Images sends the images of user messages to the model, which must
 	// read them (a vision model). Without it, the model is told the user
 	// sent images it cannot see.

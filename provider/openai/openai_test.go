@@ -269,11 +269,12 @@ func TestDecodeUsage(t *testing.T) {
 	if (decodeUsage(nil) != agent.Usage{}) {
 		t.Fatal("nil usage")
 	}
-	u := &wireUsage{PromptTokens: 10, CompletionTokens: -3}
-	u.Details = &struct {
-		CachedTokens int `json:"cached_tokens"`
-	}{CachedTokens: 4}
-	if got := decodeUsage(u); got != (agent.Usage{Input: 10, Output: 0, CacheRead: 4}) {
+	var u wireUsage
+	raw := `{"prompt_tokens":10,"completion_tokens":-3,"prompt_tokens_details":{"cached_tokens":4,"cache_write_tokens":5}}`
+	if err := json.Unmarshal([]byte(raw), &u); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeUsage(&u); got != (agent.Usage{Input: 10, Output: 0, CacheRead: 4, CacheWrite: 5}) {
 		t.Fatalf("decodeUsage = %+v", got)
 	}
 }
@@ -409,5 +410,34 @@ func TestFormatFallbackSuppressesExtraFormat(t *testing.T) {
 	}
 	if _, has := bodies[1]["response_format"]; has {
 		t.Fatalf("Extra injected response_format into fallback: %v", bodies[1]["response_format"])
+	}
+}
+
+// A cost in usage is taken only from an API the host says states it, and
+// only as a finite amount not below zero.
+func TestStatedCost(t *testing.T) {
+	cost := `0.0123`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"cost":`+cost+`}}`)
+	}))
+	t.Cleanup(srv.Close)
+	req := &agent.Request{Messages: []agent.Message{agent.UserText("x")}}
+	for _, c := range []struct {
+		states bool
+		cost   string
+		want   float64
+	}{{true, "0.0123", 0.0123}, {false, "0.0123", 0}, {true, "-1", 0}, {true, "1e999", 0}} {
+		cost = c.cost
+		p := mustNew(t, Config{BaseURL: srv.URL, Model: "m", AllowHTTP: true, StatesCost: c.states})
+		resp, err := p.Generate(context.Background(), req, nil)
+		if c.cost == "1e999" {
+			if err == nil && resp.Usage.Cost != 0 {
+				t.Fatalf("an endless cost was kept: %+v", resp.Usage)
+			}
+			continue
+		}
+		if err != nil || resp.Usage.Cost != c.want {
+			t.Fatalf("%+v: %+v %v", c, resp, err)
+		}
 	}
 }

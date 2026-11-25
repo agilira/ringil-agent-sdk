@@ -12,8 +12,8 @@
 // Only metadata is kept, never content: no text, no tool input or
 // output. Labels are bounded: a profile, a tool's name (the first
 // MaxTools per profile; then "(other)"; a name the model invented is
-// "(unknown)"), an outcome. Money is not counted: prices are the host's to
-// know, from the tokens.
+// "(unknown)"), an outcome. Costs in US dollars are counted from Usage.Cost
+// when the host prices its providers with package price.
 package metrics
 
 import (
@@ -170,7 +170,7 @@ func (c *counts) toolName(name string) string {
 // host's may say anything, and labels must stay few.
 func stopReason(s agent.StopReason) string {
 	switch s {
-	case agent.StopEnd, agent.StopToolUse, agent.StopMaxTokens, agent.StopFiltered, agent.StopMaxTurns,
+	case agent.StopEnd, agent.StopToolUse, agent.StopMaxTokens, agent.StopFiltered, agent.StopMaxTurns, agent.StopMaxCost,
 		agent.StopCancelled, agent.StopLoop, agent.StopDenied:
 		return string(s)
 	}

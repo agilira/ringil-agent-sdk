@@ -217,10 +217,14 @@ func (r *Runner) defaultJournal() {
 type Budget struct {
 	Calls  int // model calls that succeeded (retries inside a provider are not counted)
 	Tokens int // input plus output tokens
+	// Cost is in US dollars, from Usage.Cost: the workers' providers are
+	// priced by the price package.
+	Cost float64
 }
 
 func (b Budget) exceeded(s delegate.Spend) bool {
-	return (b.Calls > 0 && s.Calls >= b.Calls) || (b.Tokens > 0 && s.Usage.Input+s.Usage.Output >= b.Tokens)
+	return (b.Calls > 0 && s.Calls >= b.Calls) || (b.Tokens > 0 && s.Usage.Input+s.Usage.Output >= b.Tokens) ||
+		(b.Cost > 0 && s.Usage.Cost >= b.Cost)
 }
 
 // Result is a finished run.

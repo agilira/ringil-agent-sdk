@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"io"
+	"math"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -47,8 +48,18 @@ func (p *provider) Generate(ctx context.Context, req *agent.Request, sink agent.
 	out, err := p.read(resp, sink, cancel)
 	if out != nil {
 		p.stamp(&out.Message)
+		out.Usage.Cost = p.statedCost(out.Usage.Cost)
 	}
 	return httpcall.Finish(ctx, out, err)
+}
+
+// statedCost is the cost the server put in usage, when the host says it
+// states one and it is an amount; else zero.
+func (p *provider) statedCost(v float64) float64 {
+	if !p.cfg.StatesCost || !(v >= 0) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
 }
 
 // formatRefused: the request asked structured output, and the server
