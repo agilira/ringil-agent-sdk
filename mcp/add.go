@@ -173,6 +173,9 @@ type Added struct {
 	// Missing are the ${NAME}s the host could not resolve yet: the server
 	// is saved and starts once the user sets them.
 	Missing []string
+	// NextSession: the tools come in the next session, as the host does
+	// not add servers to one under way.
+	NextSession bool
 }
 
 // Adder saves an entry where the host keeps its servers and connects it.
@@ -199,7 +202,7 @@ type addServerIn struct {
 	Env     []nameValue `json:"env,omitempty" desc:"For a local server: environment variables; put a secret as ${NAME}, never its value"`
 	URL     string      `json:"url,omitempty" desc:"For a remote server: its https URL"`
 	Headers []nameValue `json:"headers,omitempty" desc:"For a remote server: headers, each value a secret reference like ${API_KEY} or Bearer ${TOKEN}"`
-	Source  string      `json:"source,omitempty" desc:"The link the user gave, such as the GitHub repository"`
+	Source  string      `json:"source,omitempty" desc:"The link the user gave for this server (its repository or page), not one given for something else"`
 }
 
 // AddTool is add_mcp_server: the agent adds the MCP server the user
@@ -243,6 +246,9 @@ func (a Added) summary(e Entry) string {
 	}
 	if len(a.Tools) > 0 {
 		b.WriteString(" Its tools: " + strings.Join(a.Tools, ", ") + ".")
+	}
+	if a.NextSession {
+		b.WriteString(" They are available from the next session: tell the user to start one.")
 	}
 	return b.String()
 }

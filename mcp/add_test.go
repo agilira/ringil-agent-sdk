@@ -95,7 +95,7 @@ func TestAddToolCall(t *testing.T) {
 	var got Entry
 	tool := AddTool(func(_ context.Context, e Entry) (Added, error) {
 		got = e
-		return Added{Tools: []string{"github__search", "github__issue"}, Missing: []string{"GITHUB_TOKEN"}}, nil
+		return Added{Tools: []string{"github__search", "github__issue"}, Missing: []string{"GITHUB_TOKEN"}, NextSession: true}, nil
 	})
 	if spec := tool.Spec(); spec.Name != "add_mcp_server" || !spec.Annotations.Destructive || !spec.Annotations.OpenWorld {
 		t.Fatalf("spec %+v", spec)
@@ -109,7 +109,7 @@ func TestAddToolCall(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("host got %+v", got)
 	}
-	if text := "Added MCP server github. It starts once the user sets: GITHUB_TOKEN. Its tools: github__search, github__issue."; out.Content != text {
+	if text := "Added MCP server github. It starts once the user sets: GITHUB_TOKEN. Its tools: github__search, github__issue. They are available from the next session: tell the user to start one."; out.Content != text {
 		t.Fatalf("output %q", out.Content)
 	}
 }
