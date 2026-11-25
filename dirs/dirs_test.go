@@ -16,7 +16,17 @@ import (
 
 func envOf(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
+// unixPaths skips a test of slash paths on Windows, where filepath
+// writes them otherwise.
+func unixPaths(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("slash paths: checked on Linux and macOS")
+	}
+}
+
 func TestLinuxFollowsXDG(t *testing.T) {
+	unixPaths(t)
 	d := forSystem("linux", "app", "/home/u", envOf(nil))
 	if d.Config != "/home/u/.config/app" || d.State != "/home/u/.local/state/app" || d.Data != "/home/u/.local/share/app" {
 		t.Fatalf("%+v", d)
@@ -34,6 +44,7 @@ func TestLinuxFollowsXDG(t *testing.T) {
 
 // One directory for all three variables: each place gets its own folder.
 func TestSameXDGDirectoryStaysApart(t *testing.T) {
+	unixPaths(t)
 	d := forSystem("linux", "app", "/home/u", envOf(map[string]string{"XDG_CONFIG_HOME": "/x", "XDG_STATE_HOME": "/x", "XDG_DATA_HOME": "/x"}))
 	if d.Config != "/x/app/config" || d.State != "/x/app/state" || d.Data != "/x/app/data" {
 		t.Fatalf("%+v", d)
@@ -47,15 +58,19 @@ func TestSameXDGDirectoryStaysApart(t *testing.T) {
 	}
 }
 
-func TestMacAndWindows(t *testing.T) {
+func TestMac(t *testing.T) {
+	unixPaths(t)
 	d := forSystem("darwin", "app", "/Users/u", envOf(nil))
 	if d.Config != "/Users/u/Library/Application Support/app/config" || d.Data != "/Users/u/Library/Application Support/app/data" {
 		t.Fatalf("%+v", d)
 	}
+}
+
+func TestWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
-		return // Windows paths are absolute only there
+		t.Skip("Windows paths are absolute only there")
 	}
-	d = forSystem("windows", "app", `C:\Users\u`, envOf(map[string]string{"AppData": `C:\Users\u\AppData\Roaming`, "LocalAppData": `C:\Users\u\AppData\Local`}))
+	d := forSystem("windows", "app", `C:\Users\u`, envOf(map[string]string{"AppData": `C:\Users\u\AppData\Roaming`, "LocalAppData": `C:\Users\u\AppData\Local`}))
 	if d.Config != `C:\Users\u\AppData\Roaming\app` || d.Data != `C:\Users\u\AppData\Local\app\data` {
 		t.Fatalf("%+v", d)
 	}
