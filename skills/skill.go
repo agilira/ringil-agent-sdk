@@ -14,9 +14,11 @@
 // read_skill_file reads its reference files; run_skill_script runs its
 // scripts in the sandbox.
 //
-// Installing a skill with scripts or files is the user's act, never the
-// model's. The model may write a skill of instructions alone with
-// create_skill (CreateTool), which the host asks the user about. Install
+// Installing a skill with scripts or files is the user's act: with
+// Install, or by approving install_skill (InstallTool) for a GitHub link
+// the user gave, which fetches the exact commit (InstallGitHub). The
+// model may write a skill of instructions alone with create_skill
+// (CreateTool), which the host asks the user about. Install
 // and Create record a SHA-256 for every file, and every later read or
 // run checks it, so a skill changed after its approval is refused.
 package skills

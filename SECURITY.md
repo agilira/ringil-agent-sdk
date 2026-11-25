@@ -42,10 +42,19 @@ or outside the model; reports on them are welcome as improvements.
   only when the host trusts them. Remote MCP is HTTPS (plain http to a
   loopback address, or where the host allows it); redirects to another
   origin are never followed; calls and results are bounded.
-- **Skills are pinned.** The user installs them; the model can only write
+- **Skills are pinned.** The user installs them, or approves
+  `install_skill` for a GitHub link they gave; the model can only write
   skills of instructions alone, through `create_skill`, which asks, and
-  change only its own. Every file is pinned by SHA-256, a changed skill is
-  refused, and scripts run in the sandbox from the verified copy.
+  change only its own. A link is resolved to its commit and that commit's
+  archive is installed, recorded with its source; unpacking stays in its
+  folder (no `..`, absolute path, drive or link) within bounds of size and
+  files. Every file is pinned by SHA-256, a changed skill is refused, and
+  scripts run in the sandbox from the verified copy.
+- **Adding an MCP server asks.** `add_mcp_server` is destructive: the
+  default policy asks, showing the command or URL in full (a value that
+  does not print is refused), never through a shell; a remote one is
+  HTTPS (http to loopback); a header holds a secret only as `${NAME}`,
+  never in clear.
 - **Secrets stay secret.** The model never gets a resolver. Errors never
   carry a secret value or an upstream body. A failing secret source stops
   the lookup, with no fallback. A provider's key goes only to its
@@ -63,7 +72,8 @@ or outside the model; reports on them are welcome as improvements.
 - What it grants: directories, writable folders, allowed domains,
   `egress.Private`, trusted MCP annotations, the local MCP servers it runs
   without a sandbox (the default, as coding agents run the servers their
-  user configured), the remote MCP and A2A endpoints it connects.
+  user configured), the remote MCP and A2A endpoints it connects, and
+  where it saves the servers `add_mcp_server` hands it.
 - The lists it may replace: secrets files, protected paths.
 - Its secrets: the store, `store.Resolver` or `store.StoreOnly`, and which
   key goes to which provider's endpoint.

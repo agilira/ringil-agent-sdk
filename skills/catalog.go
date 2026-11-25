@@ -103,6 +103,11 @@ func (c *Catalog) List() []Info {
 	return out
 }
 
+// Source is where an installed skill came from (github.com/owner/repo/
+// path@commit), empty for one installed from a local directory or
+// written by the agent, or not installed.
+func (c *Catalog) Source(name string) string { return c.skills[name].Source }
+
 // Instructions is the block to append to the system prompt: the skills'
 // names and descriptions, one JSON object per line so that no description
 // can break out of the block, and how to use them. Empty when no skill is

@@ -134,3 +134,91 @@ func TestSecurityCreateCannotOverwriteUserOrScriptedSkill(t *testing.T) {
 		t.Fatalf("overwrote skill with scripts dir: %v", err)
 	}
 }
+
+// An archive entry may not leave the download folder, whatever its path.
+func TestInstallGitHubArchiveEscapes(t *testing.T) {
+	for _, name := range []string{"../evil", "a/../../evil", "/etc/evil", "C:/evil", "a\\..\\..\\evil"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t, archive(t, file("SKILL.md", skillMD("a")), file(name, "x")))
+			_, _, err := installLink(t, f, "o/r")
+			if !errors.HasCode(err, ErrInvalid) {
+				t.Fatalf("err %v", err)
+			}
+		})
+	}
+	// Under a folder link, the folder's own prefix cannot be climbed out of.
+	f := newFake(t, archive(t, file("s/SKILL.md", skillMD("a")), file("s/../../evil", "x")))
+	if _, _, err := installLink(t, f, "o/r/s@main"); !errors.HasCode(err, ErrInvalid) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// Too many files, too many bytes, a download over its bound: refused
+// before anything is installed.
+func TestInstallGitHubBounds(t *testing.T) {
+	big := archive(t, file("SKILL.md", skillMD("a")), file("blob.bin", strings.Repeat("x", 4096)))
+	many := []entry{file("SKILL.md", skillMD("a"))}
+	for i := range 20 {
+		many = append(many, file("f"+string(rune('a'+i)), "x"))
+	}
+	for _, c := range []struct {
+		name string
+		data []byte
+		set  func(*GitHub)
+	}{
+		{"bytes", big, func(g *GitHub) { g.MaxBytes = 1024 }},
+		{"files", archive(t, many...), func(g *GitHub) { g.MaxFiles = 10 }},
+		{"download", big, func(g *GitHub) { g.MaxDownload = 64 }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t, c.data)
+			g := f.gh()
+			c.set(&g)
+			dir := filepath.Join(t.TempDir(), "skills")
+			if _, err := InstallGitHub(bg, "o/r", dir, g); err == nil {
+				t.Fatal("installed")
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) > 0 {
+				t.Fatalf("left %v", entries)
+			}
+		})
+	}
+}
+
+// A highly compressed entry (a megabyte of zeros) is refused by its
+// declared size before it is written.
+func TestInstallGitHubDeclaredSizeIsTheBound(t *testing.T) {
+	f := newFake(t, archive(t, file("SKILL.md", skillMD("a")), file("zeros", strings.Repeat("\x00", 1<<20))))
+	g := f.gh()
+	g.MaxBytes = 1 << 19
+	if _, err := InstallGitHub(bg, "o/r", filepath.Join(t.TempDir(), "s"), g); !errors.HasCode(err, ErrFetch) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func FuzzParseLink(f *testing.F) {
+	for _, s := range []string{
+		"https://github.com/o/r/tree/main/a/b", "o/r/a@v1", "github.com/o/r/blob/x/SKILL.md",
+		"o/r/../x", "https://github.com/o/r/tree/main/%2e%2e", "o/r@a/../b", "o/r/a\\b", "o/r/\x00",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, link string) {
+		if r, err := parseLink(link, "github.com"); err == nil {
+			checkParsedLink(t, link, r)
+		}
+	})
+}
+
+func checkParsedLink(t *testing.T, link string, r ghRef) {
+	t.Helper()
+	if !ghOwner.MatchString(r.owner) || !ghName.MatchString(r.repo) || r.repo == ".." {
+		t.Fatalf("%q: repository %q/%q", link, r.owner, r.repo)
+	}
+	if r.path != "" && !fsLocal(r.path) {
+		t.Fatalf("%q: path %q escapes", link, r.path)
+	}
+	if strings.Contains(r.ref, "..") || strings.ContainsAny(r.ref, " \\\x00") {
+		t.Fatalf("%q: ref %q", link, r.ref)
+	}
+}
