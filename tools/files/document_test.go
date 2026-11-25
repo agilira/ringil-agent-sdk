@@ -8,11 +8,15 @@ package files
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	agent "github.com/agilira/ringil-agent-sdk"
 )
 
 // docx is a Word document with one paragraph per line given.
@@ -74,5 +78,57 @@ func TestReadDocumentSymlinkNoExt(t *testing.T) {
 	out := mustCall(t, r, "read_document", map[string]any{"path": "report.docx"})
 	if !strings.Contains(out, "(Word document)") || !strings.Contains(out, "linked") {
 		t.Fatalf("got %q", out)
+	}
+}
+
+// pdfDoc is a PDF with a page per content stream.
+func pdfDoc(contents ...string) string {
+	var b strings.Builder
+	var offs []int
+	obj := func(body string) {
+		offs = append(offs, b.Len())
+		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", len(offs), body)
+	}
+	b.WriteString("%PDF-1.4\n")
+	kids := make([]string, len(contents))
+	for i := range contents {
+		kids[i] = fmt.Sprintf("%d 0 R", 4+2*i)
+	}
+	obj("<< /Type /Catalog /Pages 2 0 R >>")
+	obj(fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(contents)))
+	obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+	for i, c := range contents {
+		obj(fmt.Sprintf("<< /Type /Page /Parent 2 0 R /Contents %d 0 R /Resources << /Font << /F1 3 0 R >> >> >>", 5+2*i))
+		obj(fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(c), c))
+	}
+	xref := b.Len()
+	fmt.Fprintf(&b, "xref\n0 %d\n0000000000 65535 f \n", len(offs)+1)
+	for _, o := range offs {
+		fmt.Fprintf(&b, "%010d 00000 n \n", o)
+	}
+	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(offs)+1, xref)
+	return b.String()
+}
+
+// A PDF with a scanned page comes whole with its text, once: on the read
+// that shows its first page. A PDF of text alone comes as text.
+func TestReadDocumentScans(t *testing.T) {
+	text := "BT /F1 12 Tf 72 700 Td (words) Tj ET"
+	literal := "BT /F1 12 Tf 72 700 Td (## Page 1) Tj ET"
+	dir := tree(t, map[string]string{"scan.pdf": pdfDoc(text, "q Q"), "literal.pdf": pdfDoc("q Q", literal), "text.pdf": pdfDoc(text)})
+	r := open(t, Config{Dirs: []string{dir}})
+	for _, c := range []struct {
+		path   string
+		offset int
+		want   int
+	}{{"scan.pdf", 1, 1}, {"scan.pdf", 4, 0}, {"literal.pdf", 4, 0}, {"text.pdf", 1, 0}} {
+		in, _ := json.Marshal(map[string]any{"path": c.path, "offset": c.offset})
+		res, err := r.Execute(context.Background(), agent.ToolCall{ID: "1", Name: "read_document", Input: in})
+		if err != nil || len(res.Images) != c.want {
+			t.Fatalf("%s offset %d: %d attachments, %v (%s)", c.path, c.offset, len(res.Images), err, res.Content)
+		}
+		if c.want == 1 && (res.Images[0].Type != agent.PartDocument || !strings.Contains(res.Content, "1 pages have no text")) {
+			t.Fatalf("%s: %q", c.path, res.Content)
+		}
 	}
 }

@@ -113,6 +113,13 @@ FEATURES
     is an error, never a panic. The fork bounds five reference cycles that
     looped forever or overflowed the stack on a crafted file; the fix is
     proposed upstream (ledongthuc/pdf#109).
+  - PartDocument: a PDF travels where images do (a tool's result, a
+    user's message), checked by CheckDocument (a PDF by its bytes, at most
+    32 MiB), counted with images (kept for the latest turns, a note
+    after), costed by its size in compaction. Claude reads it as a
+    document; openai.Config.Documents sends it as a file (OpenAI,
+    OpenRouter); other models and the ChatGPT subscription are told a PDF
+    is there. read_document attaches the PDF when pages have no text.
 
 SECURITY
 

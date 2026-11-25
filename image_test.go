@@ -87,7 +87,7 @@ func TestImagesAreCountedNotTheirBytes(t *testing.T) {
 	if d := messageBytes(UserMessage("hi", img)) - messageBytes(UserText("hi")); d > imageTokens*bytesPerToken+100 {
 		t.Fatalf("message: %d", d)
 	}
-	if !strings.Contains(transcript([]Message{UserMessage("hi", img, img)}), "[2 images]") {
+	if !strings.Contains(transcript([]Message{UserMessage("hi", img, img)}), "[2 images or documents]") {
 		t.Fatal("the transcript does not say there were images")
 	}
 }

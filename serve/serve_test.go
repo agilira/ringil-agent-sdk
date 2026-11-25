@@ -512,6 +512,8 @@ func TestStartMessageChecksTheInput(t *testing.T) {
 	img := agent.Part{Type: agent.PartImage, MIME: "image/png", Data: []byte("not a png")}
 	bad := []agent.Message{
 		agent.UserMessage("look", img),
+		agent.UserMessage("", agent.Part{Type: agent.PartDocument, MIME: "application/pdf", Data: []byte("not a pdf")}),
+		agent.UserMessage("read", agent.Part{Type: agent.PartDocument, MIME: "image/png", Data: []byte("%PDF-1.4")}),
 		{Role: agent.RoleUser},
 		agent.AssistantText("hi"),
 	}
@@ -519,6 +521,13 @@ func TestStartMessageChecksTheInput(t *testing.T) {
 		if _, err := a.srv.StartMessage("default", "", m); err == nil {
 			t.Errorf("input %d accepted", i)
 		}
+	}
+	doc, err := agent.Document([]byte("%PDF-1.4\nbody"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.srv.StartMessage("default", "", agent.UserMessage("", doc)); err != nil {
+		t.Fatalf("valid PDF rejected: %v", err)
 	}
 }
 

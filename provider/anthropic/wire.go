@@ -257,17 +257,32 @@ func (p *provider) encodeMessage(msg agent.Message) []anthropic.BetaContentBlock
 	}
 }
 
-// toolResult is a tool's result: its text, and its images after it.
+// toolResult is a tool's result: its text, and its images and documents
+// after it.
 func toolResult(res agent.ToolResult) anthropic.BetaContentBlockParamUnion {
 	block := anthropic.NewBetaToolResultBlock(res.CallID, res.Content, res.IsError)
-	for _, img := range res.Images {
-		block.OfToolResult.Content = append(block.OfToolResult.Content, anthropic.BetaToolResultBlockParamContentUnion{
-			OfImage: &anthropic.BetaImageBlockParam{Source: anthropic.BetaImageBlockParamSourceUnion{OfBase64: &anthropic.BetaBase64ImageSourceParam{
-				Data: base64.StdEncoding.EncodeToString(img.Data), MediaType: anthropic.BetaBase64ImageSourceMediaType(img.MIME),
-			}}},
-		})
+	for _, part := range res.Images {
+		c := anthropic.BetaToolResultBlockParamContentUnion{}
+		switch part.Type {
+		case agent.PartImage:
+			c.OfImage = &anthropic.BetaImageBlockParam{Source: anthropic.BetaImageBlockParamSourceUnion{OfBase64: &anthropic.BetaBase64ImageSourceParam{
+				Data: base64.StdEncoding.EncodeToString(part.Data), MediaType: anthropic.BetaBase64ImageSourceMediaType(part.MIME),
+			}}}
+		case agent.PartDocument:
+			c.OfDocument = pdfBlock(part)
+		default:
+			continue
+		}
+		block.OfToolResult.Content = append(block.OfToolResult.Content, c)
 	}
 	return block
+}
+
+// pdfBlock is a PDF as Claude reads it: its text and each page as an image.
+func pdfBlock(part agent.Part) *anthropic.BetaRequestDocumentBlockParam {
+	return &anthropic.BetaRequestDocumentBlockParam{Source: anthropic.BetaRequestDocumentBlockSourceUnionParam{
+		OfBase64: &anthropic.BetaBase64PDFSourceParam{Data: base64.StdEncoding.EncodeToString(part.Data)},
+	}}
 }
 
 // encodeUser sends text and images in their order.
@@ -281,6 +296,8 @@ func encodeUser(msg agent.Message) []anthropic.BetaContentBlockParamUnion {
 			out = append(out, anthropic.NewBetaImageBlock(anthropic.BetaBase64ImageSourceParam{
 				Data: base64.StdEncoding.EncodeToString(part.Data), MediaType: anthropic.BetaBase64ImageSourceMediaType(part.MIME),
 			}))
+		case part.Type == agent.PartDocument:
+			out = append(out, anthropic.BetaContentBlockParamUnion{OfDocument: pdfBlock(part)})
 		}
 	}
 	return out

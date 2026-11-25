@@ -207,21 +207,26 @@ func (p *provider) encodeMessages(req *agent.Request) []wireMessage {
 // encodeTurn is msg; in the current round, an assistant message carries
 // its reasoning back.
 func (p *provider) encodeTurn(msg agent.Message, inRound bool) wireMessage {
-	wire := encodeMessage(msg, p.cfg.Images)
+	wire := encodeMessage(msg, p.reads())
 	if inRound && msg.Role == agent.RoleAssistant {
 		wire.Reasoning = joinReasoning(msg.Reasoning(p.source()))
 	}
 	return wire
 }
 
-// toolImages is the images tool results returned, as a user message after
-// them: the API's tool messages carry text only.
-func (p *provider) toolImages(images []agent.Part) wireMessage {
-	if !p.cfg.Images { // the tools sent them, not the user (audit 21/11)
-		return wireMessage{Role: "user", Content: text("[The tool results above returned " + strconv.Itoa(len(images)) + " images, which this model cannot see.]")}
-	}
-	return encodeUser(agent.UserMessage("[The images the tool results above returned.]", images...), p.cfg.Images)
+// toolImages is the images and documents tool results returned, as a
+// user message after them: the API's tool messages carry text only. What
+// the model cannot read is named, not sent (the tools sent it, not the
+// user: audit 21/11).
+func (p *provider) toolImages(parts []agent.Part) wireMessage {
+	return encodeUser(agent.UserMessage("[What the tool results above returned.]", parts...), p.reads())
 }
+
+// reads is what the model reads beside text.
+func (p *provider) reads() reads { return reads{images: p.cfg.Images, documents: p.cfg.Documents} }
+
+// reads is what a model reads beside text.
+type reads struct{ images, documents bool }
 
 // currentRound is where the current round of tool calls starts: after the
 // last message the user wrote.
@@ -244,14 +249,14 @@ func joinReasoning(parts []agent.Part) string {
 
 func text(s string) *string { return &s }
 
-func encodeMessage(msg agent.Message, images bool) wireMessage {
+func encodeMessage(msg agent.Message, can reads) wireMessage {
 	switch msg.Role {
 	case agent.RoleTool:
 		return encodeResult(msg.Result)
 	case agent.RoleAssistant:
 		return encodeAssistant(msg)
 	case agent.RoleUser:
-		return encodeUser(msg, images)
+		return encodeUser(msg, can)
 	case agent.RoleSystem:
 		// Many servers' chat templates take a system message only first:
 		// the host's note goes as a marked user message, which every one
@@ -263,39 +268,88 @@ func encodeMessage(msg agent.Message, images bool) wireMessage {
 }
 
 type wirePart struct {
-	Type     string   `json:"type"`
-	Text     string   `json:"text,omitempty"`
-	ImageURL *wireURL `json:"image_url,omitempty"`
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *wireURL  `json:"image_url,omitempty"`
+	File     *wireFile `json:"file,omitempty"`
+}
+
+// wireFile is a PDF sent inline, as OpenAI's Chat Completions take it.
+type wireFile struct {
+	Filename string `json:"filename"`
+	FileData string `json:"file_data"`
 }
 
 type wireURL struct {
 	URL string `json:"url"`
 }
 
-// noImages tells a model that cannot see images that the user sent some,
-// so that it says so instead of answering as if they were not there.
-const noImages = "[The user sent images here, which this model cannot see: tell them.]"
-
 // encodeUser sends a user message's images, in order with its text, as
 // data URLs; to a model configured without images, a note in their place.
-func encodeUser(msg agent.Message, images bool) wireMessage {
+func encodeUser(msg agent.Message, can reads) wireMessage {
 	if msg.Images() == 0 {
 		return wireMessage{Role: "user", Content: text(msg.ModelText())}
 	}
-	if !images {
-		return wireMessage{Role: "user", Content: text(strings.TrimSpace(msg.ModelText() + "\n" + noImages))}
-	}
 	parts := make([]wirePart, 0, len(msg.Parts))
+	unseen, unread := 0, 0
 	for _, p := range msg.Parts {
-		switch p.Type {
-		case agent.PartText, agent.PartContext:
-			parts = append(parts, wirePart{Type: "text", Text: p.Text})
-		case agent.PartImage:
-			url := "data:" + p.MIME + ";base64," + base64.StdEncoding.EncodeToString(p.Data)
-			parts = append(parts, wirePart{Type: "image_url", ImageURL: &wireURL{URL: url}})
+		w, ok := can.part(p)
+		switch {
+		case ok:
+			parts = append(parts, w)
+		case p.Type == agent.PartImage:
+			unseen++
+		case p.Type == agent.PartDocument:
+			unread++
 		}
 	}
+	if note := cannotRead(unseen, unread); note != "" {
+		parts = append(parts, wirePart{Type: "text", Text: note})
+	}
+	if unseen+unread == msg.Images() { // nothing but text: as a string, for any server
+		return wireMessage{Role: "user", Content: text(joinText(parts))}
+	}
 	return wireMessage{Role: "user", Content: parts}
+}
+
+// joinText is the text of parts, a line each.
+func joinText(parts []wirePart) string {
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(p.Text)
+		b.WriteByte('\n')
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// part is p on the wire, or false when the model does not read it.
+func (can reads) part(p agent.Part) (wirePart, bool) {
+	switch {
+	case p.Type == agent.PartText || p.Type == agent.PartContext:
+		return wirePart{Type: "text", Text: p.Text}, true
+	case p.Type == agent.PartImage && can.images:
+		url := "data:" + p.MIME + ";base64," + base64.StdEncoding.EncodeToString(p.Data)
+		return wirePart{Type: "image_url", ImageURL: &wireURL{URL: url}}, true
+	case p.Type == agent.PartDocument && can.documents:
+		data := "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(p.Data)
+		return wirePart{Type: "file", File: &wireFile{Filename: "document.pdf", FileData: data}}, true
+	}
+	return wirePart{}, false
+}
+
+// cannotRead tells the model what is here that it cannot read.
+func cannotRead(images, documents int) string {
+	var what []string
+	if images > 0 {
+		what = append(what, strconv.Itoa(images)+" images")
+	}
+	if documents > 0 {
+		what = append(what, strconv.Itoa(documents)+" PDF documents")
+	}
+	if len(what) == 0 {
+		return ""
+	}
+	return "[" + strings.Join(what, " and ") + " here, which this model cannot see: say so.]"
 }
 
 func encodeResult(result *agent.ToolResult) wireMessage {

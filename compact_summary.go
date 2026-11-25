@@ -206,15 +206,15 @@ func shortHash(s string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// imagesNote says that a message had images, which a transcript cannot
-// carry.
+// imagesNote says that a message had images or PDFs, which a transcript
+// cannot carry.
 func imagesNote(m Message) string {
 	switch n := m.Images(); n {
 	case 0:
 		return ""
 	case 1:
-		return " [an image]"
+		return " [an image or document]"
 	default:
-		return " [" + strconv.Itoa(n) + " images]"
+		return " [" + strconv.Itoa(n) + " images or documents]"
 	}
 }

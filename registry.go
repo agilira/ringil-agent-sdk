@@ -190,8 +190,11 @@ func (r *registry) Execute(ctx context.Context, call ToolCall) (ToolResult, erro
 func checkedImages(parts []Part) []Part {
 	var out []Part
 	for _, p := range parts {
-		if p.Type == PartImage && CheckImage(p.MIME, p.Data) == nil {
+		switch {
+		case p.Type == PartImage && CheckImage(p.MIME, p.Data) == nil:
 			out = append(out, Part{Type: PartImage, MIME: p.MIME, Data: p.Data})
+		case p.Type == PartDocument && CheckDocument(p.MIME, p.Data) == nil:
+			out = append(out, Part{Type: PartDocument, MIME: p.MIME, Data: p.Data})
 		}
 	}
 	return out
