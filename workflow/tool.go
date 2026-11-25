@@ -57,6 +57,7 @@ func (r *Runner) runPlan(ctx context.Context, in planIn) (string, error) {
 // partial lists what a stopped run finished, so the model can tell the
 // user what was done and that the run can be resumed.
 func (r *Runner) partial(ctx context.Context, id string) string {
+	r.defaultJournal()
 	if r.Journal == nil {
 		return ""
 	}

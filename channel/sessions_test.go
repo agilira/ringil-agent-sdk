@@ -20,7 +20,7 @@ import (
 // sessionRig is a bridge with a sessions file and a clock of its own.
 func sessionRig(t *testing.T, r *rig, file string, idle time.Duration) (*Bridge, *time.Time) {
 	t.Helper()
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, Sessions: file, IdleReset: idle})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Owners: []string{me}, Sessions: file, IdleReset: idle})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestDamagedSessionsFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := newRig(t, true)
-	if _, err := NewBridge(Config{Channel: r.app, Server: r.srv, Sessions: file}); err == nil {
+	if _, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Sessions: file}); err == nil {
 		t.Fatal("a damaged sessions file was taken as empty")
 	}
 }
@@ -159,7 +159,7 @@ func TestBadSessionsFiles(t *testing.T) {
 		if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := NewBridge(Config{Channel: r.app, Server: r.srv, Sessions: file}); err == nil {
+		if _, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Sessions: file}); err == nil {
 			t.Errorf("%s taken", body)
 		}
 	}

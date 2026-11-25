@@ -30,7 +30,7 @@ func TestTypingWhileWorkingOnly(t *testing.T) {
 	t.Cleanup(func() { typingEvery = old })
 	r := newRig(t, true, fake.Call("delete_file", `{}`), fake.Reply("finished"))
 	app := &typingApp{chatApp: newApp()} // not the rig's: its bridge reads that one
-	b, err := NewBridge(Config{Channel: app, Server: r.srv, Owners: []string{me}})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: app, Server: r.srv, Owners: []string{me}})
 	if err != nil {
 		t.Fatal(err)
 	}

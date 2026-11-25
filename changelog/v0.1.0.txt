@@ -62,6 +62,23 @@ FEATURES
     tools the model was shown. Catalog.Reload reads the skills again.
     Together: what install_skill and add_mcp_server install works in the
     same conversation, at the next model call.
+  - channel/slack: a Slack app in Socket Mode (no public address). Direct
+    messages, and threads in channels (a mention starts one, a thread the
+    bot is in needs no mention); buttons for approvals; the app's slash
+    command as the Bridge's commands; files from files.slack.com; 👀 on
+    the message being answered. The agent's markdown goes as a markdown
+    block that cannot ping (<!here>, <@U…> defused); the Bridge's texts
+    as plain text. docs/slack/manifest.json creates the app.
+  - dirs: the standard places of a program on each system (configuration,
+    state, data), kept apart even when the XDG variables coincide.
+  - Defaults for a host that sets nothing, as coding agents behave: the
+    Bridge's inbox in the program's data, its sessions and shared phones
+    in its state; serve keeps conversations in files (NoStore for none);
+    bash and the file tools never reach the program's own places; skill
+    scripts run in this system's sandbox and keep their files in the
+    program's data, with a 5 GiB quota; an MCP sign-in is kept per server;
+    workflows keep a journal. An inbox inside the agent's own places is
+    refused at once.
   - mcp.Entry, mcp.AddFunc and the add_mcp_server tool: the agent adds the
     MCP server the user asked for, read from its documentation; the host
     saves and connects it (Adder) and reports its tools and the secrets

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/agilira/go-errors"
+	"github.com/agilira/ringil-agent-sdk/dirs"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
@@ -39,8 +40,13 @@ type Login struct {
 	Port int
 	// Show presents the sign-in link to the user. Required.
 	Show func(url string)
-	// Tokens, when set, keeps tokens across runs (FileTokens).
+	// Tokens keeps tokens across runs. Nil with a Name is a file in the
+	// program's state (dirs.Program().State, "mcp-tokens/<Name>.json"),
+	// so the user signs in once, as with coding agents; nil without a
+	// Name keeps them for this run only.
 	Tokens TokenStore
+	// Name is the server's (Server.Name), for where its tokens are kept.
+	Name string
 	// Timeout for the user to finish signing in; default 5 minutes.
 	Timeout time.Duration
 	// HTTPClient for the provider's endpoints; default http.DefaultClient.
@@ -58,6 +64,10 @@ type TokenStore interface {
 func NewLogin(l Login) (auth.OAuthHandler, func() error, error) {
 	if l.Show == nil {
 		return nil, nil, errors.New(ErrConfig, "a login needs a way to show the sign-in link")
+	}
+	l, err := withDefaultTokens(l)
+	if err != nil {
+		return nil, nil, err
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(l.Port))
 	if err != nil {
@@ -91,6 +101,29 @@ func NewLogin(l Login) (auth.OAuthHandler, func() error, error) {
 		return nil, nil, errors.Wrap(err, ErrConfig, "invalid sign-in configuration")
 	}
 	return h, cb.close, nil
+}
+
+// withDefaultTokens gives a named server's login its token file, when
+// the host set no store.
+func withDefaultTokens(l Login) (Login, error) {
+	if l.Tokens != nil || l.Name == "" {
+		return l, nil
+	}
+	store, err := defaultTokens(l.Name)
+	l.Tokens = store
+	return l, err
+}
+
+// defaultTokens is the file of a server's tokens in the program's state.
+func defaultTokens(name string) (TokenStore, error) {
+	if !serverName.MatchString(name) {
+		return nil, errors.New(ErrConfig, "MCP server names are 1-32 letters, digits, _ or -")
+	}
+	d, err := dirs.Program()
+	if err != nil {
+		return nil, errors.Wrap(err, ErrConfig, "no place for the sign-in tokens: set Tokens")
+	}
+	return FileTokens(filepath.Join(d.State, "mcp-tokens", name+".json")), nil
 }
 
 // withTokens starts from stored tokens and saves every new one.

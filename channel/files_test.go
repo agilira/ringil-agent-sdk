@@ -8,6 +8,8 @@ package channel
 import (
 	"bytes"
 	"context"
+	"github.com/agilira/go-errors"
+	"github.com/agilira/ringil-agent-sdk/dirs"
 	"image"
 	"image/png"
 	"os"
@@ -46,7 +48,7 @@ func fileRig(t *testing.T, steps ...fake.Step) (*rig, *Bridge, *ear, string) {
 	t.Helper()
 	r := newRig(t, true, steps...)
 	e, inbox := &ear{}, filepath.Join(t.TempDir(), "inbox")
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, Transcriber: e, Inbox: inbox})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Owners: []string{me}, Transcriber: e, Inbox: inbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +117,7 @@ func TestDocumentIsKept(t *testing.T) {
 
 func TestWithoutEarOrInbox(t *testing.T) {
 	r := newRig(t, true)
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Owners: []string{me}, NoInbox: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +194,7 @@ func TestSafeName(t *testing.T) {
 func TestOtherImagesAndAudioAreDocuments(t *testing.T) {
 	r := newRig(t, true, fake.Reply("ok"), fake.Reply("ok"))
 	inbox := t.TempDir()
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, Inbox: inbox})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Owners: []string{me}, Inbox: inbox})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,4 +232,44 @@ func TestACaptionIsNotAnAnswer(t *testing.T) {
 	r.app.press(q.Buttons[2].ID)
 	r.app.next(t)
 	r.app.next(t)
+}
+
+// An inbox among the agent's own places is refused at once: the agent's
+// tools could not open the documents (a PDF on Slack, 25/11).
+func TestInboxInsideOwnPlacesIsRefused(t *testing.T) {
+	r := newRig(t, true)
+	base := t.TempDir()
+	config := filepath.Join(base, "config")
+	_, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Owners: []string{me}, Inbox: filepath.Join(config, "inbox"), Own: []string{config}})
+	if !errors.HasCode(err, ErrConfig) || !strings.Contains(err.Error(), "could not open the documents") {
+		t.Fatalf("err %v", err)
+	}
+	if _, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Owners: []string{me}, Inbox: filepath.Join(base, "data", "inbox"), Own: []string{config}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Left alone, the documents go to the program's data, outside its own
+// places: the agent's tools can read them.
+func TestInboxDefaultsToTheProgramsData(t *testing.T) {
+	r := newRig(t, true)
+	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}, App: "myagent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := dirs.For("myagent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.cfg.Inbox != d.Inbox() || len(b.cfg.Own) != 2 {
+		t.Fatalf("inbox %s own %v, want %s", b.cfg.Inbox, b.cfg.Own, d.Inbox())
+	}
+	// The sessions and the shared phones last across restarts, in the
+	// program's state.
+	if b.cfg.Sessions != filepath.Join(d.State, r.app.Name()+"-sessions.json") || b.cfg.SharedPhones != filepath.Join(d.State, r.app.Name()+"-phones.json") {
+		t.Fatalf("sessions %s phones %s", b.cfg.Sessions, b.cfg.SharedPhones)
+	}
+	if appOf("") == "" || appOf("x") != "x" {
+		t.Fatal("program name")
+	}
 }

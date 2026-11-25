@@ -28,6 +28,7 @@ package files
 
 import (
 	"context"
+	"github.com/agilira/ringil-agent-sdk/dirs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,10 @@ type Config struct {
 	// Exclude replaces DefaultExclude when not nil; an empty, non-nil
 	// slice excludes nothing.
 	Exclude []string
+	// Own are the agent's own directories, never shown, read or offered:
+	// nil is the program's (dirs.Program().Own(): its configuration and
+	// state); an empty, non-nil slice is none.
+	Own []string
 	// Ask, when set, is called for a path outside every granted directory
 	// with the directory that would be granted; true grants it for the
 	// workspace's life. The CLI asks in the terminal, an app shows a
@@ -75,6 +80,18 @@ type Config struct {
 	// ConfirmProtected is asked before every write to a protected path,
 	// whatever else was allowed; nil refuses them.
 	ConfirmProtected func(ctx context.Context, path string) (bool, error)
+}
+
+// ownOf is own, or the program's own places when nil.
+func ownOf(own []string) []string {
+	if own != nil {
+		return own
+	}
+	d, err := dirs.Program()
+	if err != nil {
+		return nil
+	}
+	return d.Own()
 }
 
 // Workspace is a set of granted directories.
@@ -101,6 +118,7 @@ func New(cfg Config) (Workspace, error) {
 	if err != nil {
 		return nil, errors.New(ErrConfig, "bad exclude pattern")
 	}
+	pol = pol.withRoots(ownOf(cfg.Own))
 	protectedPatterns := cfg.Protected
 	if protectedPatterns == nil {
 		protectedPatterns = DefaultProtected

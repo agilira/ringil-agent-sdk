@@ -19,13 +19,17 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/dirs"
 	"github.com/agilira/ringil-agent-sdk/sandbox"
 )
 
 // Options configure the skill tools.
 type Options struct {
-	// Sandbox runs skill scripts; nil leaves run_skill_script out.
-	Sandbox sandbox.Sandbox
+	// Sandbox runs skill scripts; nil is this system's (sandbox.New), and
+	// run_skill_script is left out only where there is none, or with
+	// NoScripts.
+	Sandbox   sandbox.Sandbox
+	NoScripts bool
 	// Mounts are extra directories scripts see, such as the user's
 	// workspace (read-only unless marked writable). The skill itself is
 	// always at /skill, read-only.
@@ -36,14 +40,17 @@ type Options struct {
 	// of their own under Output (skill-date-time), never mixed into
 	// existing files; hidden names are left behind. Output is created
 	// when first needed. Without Output the
-	// working directory is discarded.
-	Output string
+	// working directory is discarded. Empty, "outputs" in the program's
+	// data (dirs.Program().Data); NoOutput discards them.
+	Output   string
+	NoOutput bool
 	// MaxFiles and MaxBytes bound one hand-over; defaults 1000 files and
 	// 1 GiB.
 	MaxFiles int
 	MaxBytes int64
-	// OutputQuota, when set, bounds what Output may hold in total across
-	// runs; once full, new files are refused until it is emptied.
+	// OutputQuota bounds what Output may hold in total across runs; once
+	// full, new files are refused until it is emptied. Default 5 GiB,
+	// negative no bound.
 	OutputQuota int64
 	// MountsFunc, when set, is called before every script for mounts
 	// that must reflect the moment, such as a start directory whose
@@ -60,7 +67,8 @@ type Options struct {
 	Network sandbox.Network
 	// Limits for scripts; zero values take the sandbox defaults.
 	Limits sandbox.Limits
-	// Protected host paths no mount may expose (see sandbox.Spec).
+	// Protected host paths no mount may expose (see sandbox.Spec); nil is
+	// the program's own places (dirs.Program().Own()).
 	Protected []string
 	// Timeout per script; default 2 minutes.
 	Timeout time.Duration
@@ -91,6 +99,7 @@ type runIn struct {
 // Tools returns load_skill and read_skill_file over c, and
 // run_skill_script when opts.Sandbox is set.
 func Tools(c *Catalog, opts Options) []agent.Tool {
+	opts = opts.withDefaults()
 	tools := []agent.Tool{
 		agent.NewTool("load_skill", "Load the instructions of an installed skill. Call it when the task matches the skill's description, before acting.",
 			func(_ context.Context, in loadIn) (string, error) { return c.loadForModel(in.Name) }, agent.ReadOnly()),
@@ -114,6 +123,54 @@ func Tools(c *Catalog, opts Options) []agent.Tool {
 			r.run, agent.SelfConfirms())) // in the sandbox, always
 	}
 	return tools
+}
+
+// defaultQuota bounds Output across runs when the host sets nothing.
+const defaultQuota = 5 << 30
+
+// withDefaults fills what the host left empty: this system's sandbox,
+// the program's outputs folder and own places, a quota.
+func (o Options) withDefaults() Options {
+	o.Sandbox = o.sandbox()
+	if d, err := dirs.Program(); err == nil {
+		o = o.withPlaces(d)
+	}
+	if o.NoOutput {
+		o.Output = ""
+	}
+	switch {
+	case o.OutputQuota == 0:
+		o.OutputQuota = defaultQuota
+	case o.OutputQuota < 0:
+		o.OutputQuota = 0
+	}
+	return o
+}
+
+// sandbox is the host's, else this system's; none with NoScripts.
+func (o Options) sandbox() sandbox.Sandbox {
+	if o.NoScripts {
+		return nil
+	}
+	if o.Sandbox != nil {
+		return o.Sandbox
+	}
+	sb, err := sandbox.New()
+	if err != nil {
+		return nil
+	}
+	return sb
+}
+
+// withPlaces fills the outputs folder and the protected places from d.
+func (o Options) withPlaces(d dirs.Dirs) Options {
+	if o.Output == "" && !o.NoOutput {
+		o.Output = filepath.Join(d.Data, "outputs")
+	}
+	if o.Protected == nil {
+		o.Protected = d.Own()
+	}
+	return o
 }
 
 func (c *Catalog) loadForModel(name string) (string, error) {

@@ -38,9 +38,12 @@ func call(t *testing.T, tools []agent.Tool, name string, in any) (string, error)
 
 func TestLoadAndReadTools(t *testing.T) {
 	c, _ := installed(t)
+	if got := len(Tools(c, Options{NoScripts: true})); got != 2 {
+		t.Fatalf("with NoScripts there is no run_skill_script: %d tools", got)
+	}
 	tools := Tools(c, Options{})
-	if len(tools) != 2 {
-		t.Fatalf("without a sandbox there is no run_skill_script: %d tools", len(tools))
+	if _, err := sandbox.New(); err == nil && len(tools) != 3 {
+		t.Fatalf("this system's sandbox runs the scripts by default: %d tools", len(tools))
 	}
 	out, err := call(t, tools, "load_skill", map[string]string{"name": "review"})
 	if err != nil || !strings.Contains(out, "# Review") || !strings.Contains(out, "scripts/stats.py") {

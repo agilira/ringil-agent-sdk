@@ -14,7 +14,7 @@ import (
 
 func TestSeveralOpenWantTheButtons(t *testing.T) {
 	r := newRig(t, true)
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, Owners: []string{me}})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, Owners: []string{me}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -60,7 +60,7 @@ func runner(t *testing.T, model agent.Provider, j Journal) *Runner {
 		t.Fatal(err)
 	}
 	t.Cleanup(crew.Close)
-	return &Runner{Crew: crew, Journal: j}
+	return &Runner{Crew: crew, Journal: j, NoJournal: j == nil} // a test without a journal wants none, not the default
 }
 
 var diamond = Plan{Steps: []Step{

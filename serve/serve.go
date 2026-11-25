@@ -25,6 +25,7 @@ import (
 	"context"
 	"crypto/rand"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -35,6 +36,8 @@ import (
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/delegate"
+	"github.com/agilira/ringil-agent-sdk/dirs"
+	"github.com/agilira/ringil-agent-sdk/session/file"
 )
 
 // Error codes.
@@ -82,8 +85,12 @@ type Config struct {
 	// characters.
 	Token string
 	// Store keeps conversations: a run that names one continues it. Nil
-	// means every run starts fresh and naming a conversation is refused.
+	// keeps them in files in the program's state (dirs.Program().State,
+	// "sessions"), as coding agents keep theirs.
 	Store agent.Store
+	// NoStore keeps no conversations: every run starts fresh and naming
+	// a conversation is refused.
+	NoStore bool
 	// MaxRuns bounds the runs going at once; default 4.
 	MaxRuns int
 	// Keep is how long a finished run stays readable; default 1 hour.
@@ -129,8 +136,32 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg, err = withStore(cfg); err != nil {
+		return nil, err
+	}
 	ctx, stop := context.WithCancel(context.Background())
 	return &Server{cfg: cfg, profiles: profiles, ctx: ctx, stop: stop, runs: map[string]*job{}, now: time.Now}, nil
+}
+
+// withStore gives cfg the default store, unless it has one or wants none.
+func withStore(cfg Config) (Config, error) {
+	if cfg.NoStore {
+		cfg.Store = nil
+		return cfg, nil
+	}
+	if cfg.Store != nil {
+		return cfg, nil
+	}
+	d, err := dirs.Program()
+	if err != nil {
+		return cfg, errors.Wrap(err, ErrConfig, "no place for the conversations: set Store, or NoStore")
+	}
+	store, err := file.New(filepath.Join(d.State, "sessions"))
+	if err != nil {
+		return cfg, errors.Wrap(err, ErrConfig, "cannot open the conversations' store")
+	}
+	cfg.Store = store
+	return cfg, nil
 }
 
 func byName(list []Profile) (map[string]Profile, error) {

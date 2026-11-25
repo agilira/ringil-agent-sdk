@@ -133,7 +133,7 @@ func rigWith(t *testing.T, bc Config, store bool, steps ...fake.Step) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := serve.Config{Token: token, Profiles: []serve.Profile{{Name: "default", New: serve.Fixed(a)}}}
+	cfg := serve.Config{Token: token, Profiles: []serve.Profile{{Name: "default", New: serve.Fixed(a)}}, NoStore: !store}
 	if store {
 		if cfg.Store, err = file.New(t.TempDir()); err != nil {
 			t.Fatal(err)
@@ -166,7 +166,7 @@ func TestReplyInTheChat(t *testing.T) {
 func TestBlankSendersAreNeverAllowed(t *testing.T) {
 	srv := newRig(t, true).srv
 	app := newApp()
-	b, err := NewBridge(Config{Channel: app, Server: srv, Owners: []string{" ", ""}})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: app, Server: srv, Owners: []string{" ", ""}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestBridgeConfig(t *testing.T) {
 		{Channel: named("tg-x"), Server: srv, Owners: []string{me}},
 	}
 	for i, cfg := range bad {
-		if _, err := NewBridge(cfg); err == nil {
+		if _, err := NewBridge(ephemeral(cfg)); err == nil {
 			t.Errorf("config %d accepted", i)
 		}
 	}
@@ -450,7 +450,7 @@ func TestASlowChatHoldsUpNoOther(t *testing.T) {
 func TestQueueIsBounded(t *testing.T) {
 	r := newRig(t, true)
 	r.app.hold = make(chan struct{})
-	b, err := NewBridge(Config{Channel: r.app, Server: r.srv, OnEvent: func(e Event) { r.events <- e }})
+	b, err := NewBridge(Config{Ephemeral: true, Channel: r.app, Server: r.srv, OnEvent: func(e Event) { r.events <- e }})
 	if err != nil {
 		t.Fatal(err)
 	}

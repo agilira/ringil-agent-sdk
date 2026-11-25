@@ -8,6 +8,7 @@ package channel
 import (
 	"context"
 	stderrors "errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/dirs"
 	"github.com/agilira/ringil-agent-sdk/serve"
 )
 
@@ -49,7 +51,8 @@ type Config struct {
 	// in their own chat is asked to share their number, with the app's
 	// button (the Channel must be a PhoneAsker); on a public bot, at
 	// /start. Who shares a listed one is a member from then on, by their
-	// sender ID, kept in the file SharedPhones (empty: in memory only);
+	// sender ID, kept in the file SharedPhones (empty: <channel>-phones.json
+	// in dirs.For(App).State; Ephemeral keeps it in memory only);
 	// taking the number off the list takes them out, also when they
 	// changed number since.
 	MemberPhones []string
@@ -77,9 +80,18 @@ type Config struct {
 	Transcriber agent.Transcriber
 	// Inbox is the directory where the documents sent in the chats are
 	// saved, each conversation in its own directory (Bridge.InboxOf), for the
-	// agent to read; the agent is told where. Empty, the chat is told
-	// documents are not taken.
+	// agent to read; the agent is told where. Empty, it is
+	// dirs.For(App).Inbox(): in the data the agent's tools may read.
 	Inbox string
+	// NoInbox refuses documents: the chat is told they are not taken.
+	NoInbox bool
+	// App names the program for its places (dirs.For); default the
+	// executable's own name.
+	App string
+	// Own are the agent's own places, which its tools are never granted;
+	// empty, dirs.For(App).Own(): its configuration and state. An Inbox
+	// inside one is refused: the agent could not open what is sent to it.
+	Own []string
 	// Synthesizer speaks answers. With it, a voice message is answered
 	// with voice when VoiceReplies is set or the chat asked for it with
 	// /voice (and not with /text); every other answer is text.
@@ -87,8 +99,12 @@ type Config struct {
 	VoiceReplies bool
 	// Sessions is the file where each chat's conversation number and last
 	// message are kept, so that /new and IdleReset hold across restarts;
-	// empty keeps them in memory only.
+	// empty, <channel>-sessions.json in dirs.For(App).State.
 	Sessions string
+	// Ephemeral leaves the sessions and the shared phones in memory when
+	// no file is given, for a test or a throwaway bot: a restart forgets
+	// them.
+	Ephemeral bool
 	// IdleReset starts a new conversation at the first message after a
 	// silence this long (the chat is told): default DefaultIdleReset (24
 	// hours), negative never. /new starts one at any time.
@@ -202,7 +218,8 @@ type chat struct {
 
 // NewBridge checks cfg and returns a Bridge.
 func NewBridge(cfg Config) (*Bridge, error) {
-	if err := checkConfig(cfg); err != nil {
+	cfg, err := prepare(cfg)
+	if err != nil {
 		return nil, err
 	}
 	who, err := peopleOf(cfg, PeopleOf(cfg))
@@ -252,6 +269,78 @@ func checkConfig(cfg Config) error {
 		return errors.New(ErrConfig, "a bridge needs a channel and a server")
 	case !validName.MatchString(cfg.Channel.Name()):
 		return errors.New(ErrConfig, "the channel's name must be 1-20 lower-case letters or digits")
+	}
+	return nil
+}
+
+// prepare checks cfg and fills its places.
+func prepare(cfg Config) (Config, error) {
+	if err := checkConfig(cfg); err != nil {
+		return cfg, err
+	}
+	cfg, err := withPlaces(cfg)
+	if err != nil {
+		return cfg, err
+	}
+	return cfg, checkInbox(cfg)
+}
+
+// withPlaces fills, where the host left them empty, the inbox, the
+// agent's own places and the files of the sessions and the shared phones
+// from the program's places (dirs.For). NoInbox has no inbox; Ephemeral
+// no files.
+func withPlaces(cfg Config) (Config, error) {
+	if cfg.NoInbox {
+		cfg.Inbox = ""
+	}
+	if !needsPlaces(cfg) {
+		return cfg, nil
+	}
+	d, err := dirs.For(appOf(cfg.App))
+	if err != nil {
+		return cfg, errors.Wrap(err, ErrConfig, "no place for the chats' files: set Inbox, Own, Sessions and SharedPhones, or NoInbox and Ephemeral")
+	}
+	name := cfg.Channel.Name()
+	fill(&cfg.Inbox, d.Inbox(), !cfg.NoInbox)
+	fill(&cfg.Sessions, filepath.Join(d.State, name+"-sessions.json"), !cfg.Ephemeral)
+	fill(&cfg.SharedPhones, filepath.Join(d.State, name+"-phones.json"), !cfg.Ephemeral)
+	if len(cfg.Own) == 0 {
+		cfg.Own = d.Own()
+	}
+	return cfg, nil
+}
+
+// needsPlaces: a place is left empty that has a default.
+func needsPlaces(cfg Config) bool {
+	return (cfg.Inbox == "" && !cfg.NoInbox) || len(cfg.Own) == 0 ||
+		(!cfg.Ephemeral && (cfg.Sessions == "" || cfg.SharedPhones == ""))
+}
+
+// fill sets *p to def when it is empty and wanted.
+func fill(p *string, def string, want bool) {
+	if *p == "" && want {
+		*p = def
+	}
+}
+
+// appOf is app, else the program's name.
+func appOf(app string) string {
+	if app != "" {
+		return app
+	}
+	return dirs.ProgramName()
+}
+
+// checkInbox refuses an inbox among the agent's own places, where its
+// tools could not read the documents.
+func checkInbox(cfg Config) error {
+	if cfg.Inbox == "" {
+		return nil
+	}
+	for _, own := range cfg.Own {
+		if own != "" && dirs.Within(cfg.Inbox, own) {
+			return errors.New(ErrConfig, "the inbox "+cfg.Inbox+" is inside "+own+", which the agent's tools are never granted: the agent could not open the documents. Put it in the data directory (dirs.For(app).Inbox())")
+		}
 	}
 	return nil
 }
