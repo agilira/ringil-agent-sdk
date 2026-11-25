@@ -96,6 +96,12 @@ FEATURES
   - Dollar limits: Config.MaxCost stops a run cleanly (StopMaxCost),
     budget.Limits.Cost refuses calls past it (BUDGET_COST, Unpriced counts
     calls with no price), workflow.Budget.Cost.
+  - provider/fallback: the next model answers when a provider does not
+    (down, rate limited, cut or malformed answer, key refused, circuit
+    open), at once; the failed one is passed over for a cooldown that
+    doubles, then tried again. Request errors stay; streamed text is never
+    repeated (OnRestart); OnSwitch tells which model answers. One provider
+    is returned as it is.
 
 SECURITY
 
