@@ -77,8 +77,9 @@ FEATURES
     bash and the file tools never reach the program's own places; skill
     scripts run in this system's sandbox and keep their files in the
     program's data, with a 5 GiB quota; an MCP sign-in is kept per server;
-    workflows keep a journal. An inbox inside the agent's own places is
-    refused at once.
+    workflows keep a journal; a group with no members' or public profile
+    talks with the owners' profile, answering the owners only. An inbox
+    inside the agent's own places is refused at once.
   - mcp.Entry, mcp.AddFunc and the add_mcp_server tool: the agent adds the
     MCP server the user asked for, read from its documentation; the host
     saves and connects it (Adder) and reports its tools and the secrets
