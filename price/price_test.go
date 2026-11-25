@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -207,7 +208,7 @@ func TestCatalogCaches(t *testing.T) {
 	}
 	load(1, false)
 	load(1, false)
-	if fi, err := os.Stat(c.Path); err != nil || fi.Mode().Perm()&0o077 != 0 {
+	if fi, err := os.Stat(c.Path); err != nil || runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 { // Windows has no such bits
 		t.Fatalf("file %v %v", fi, err)
 	}
 	now = now.Add(25 * time.Hour)
