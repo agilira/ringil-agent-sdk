@@ -78,6 +78,10 @@ type Event struct {
 	// to the end of the answer, streamed text included) or the tool call
 	// (EventToolEnd) took.
 	Duration time.Duration
+	// Began is when the tool call began to run (EventToolEnd): after its
+	// approval, and before the other calls of its batch were recorded.
+	// Zero for a call that did not run.
+	Began time.Time
 	// Parent is the run whose tool started this one (a delegated task),
 	// "" for a top-level run. Worker and Task are set on the events of a
 	// delegated task (package delegate): which worker ran it, and the

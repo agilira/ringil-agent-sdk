@@ -47,7 +47,7 @@ func TestToolDocuments(t *testing.T) {
 		t.Fatalf("%d attachments, %v", len(res.Images), err)
 	}
 	msg := ToolMessage(res)
-	if msg.Images() != 1 || attachmentTokens(msg) != len(pdfBytes)/documentBytesPerToken {
+	if msg.Images() != 1 || attachmentTokens(msg) != documentTokens(pdfBytes) {
 		t.Fatalf("counted %d, %d tokens", msg.Images(), attachmentTokens(msg))
 	}
 	noted := latestImages([]Message{msg, UserMessage("again", doc)}, 1)
@@ -65,5 +65,25 @@ func TestRequestBytesWeightsDocuments(t *testing.T) {
 	without := requestBytes(&Request{Messages: []Message{UserText("read")}})
 	if with-without <= imageTokens*bytesPerToken {
 		t.Fatalf("requestBytes did not weight PDF by size: diff=%d", with-without)
+	}
+}
+
+// A PDF is counted by its pages when they are in plain sight: a hundred
+// small pages are not a few thousand tokens.
+func TestDocumentTokensByPages(t *testing.T) {
+	data := []byte("%PDF-1.4\n" + strings.Repeat("<< /Type /Page /Parent 2 0 R >>\n", 100) + "<< /Type /Pages >>")
+	if got := documentTokens(data); got != 100*documentPageTokens {
+		t.Fatalf("%d", got)
+	}
+	// Incremental updates leave old pages behind: the tree's count wins.
+	updated := []byte("%PDF-1.4\n" + strings.Repeat("<< /Type /Page >>\n", 30) + "<< /Type /Pages /Kids [] /Count 12 >>")
+	if got := DocumentPages(updated); got != 12 {
+		t.Fatalf("updated: %d", got)
+	}
+	// Pages in compressed object streams: unknown, and the cost guessed by
+	// size.
+	hidden := append([]byte("%PDF-1.5\n"), make([]byte, 640<<10)...)
+	if DocumentPages(hidden) != 0 || documentTokens(hidden) != 10*documentPageTokens {
+		t.Fatalf("hidden: %d pages, %d tokens", DocumentPages(hidden), documentTokens(hidden))
 	}
 }

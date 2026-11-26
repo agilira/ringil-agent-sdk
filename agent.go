@@ -804,10 +804,11 @@ func (r *run) parallel(call ToolCall) bool {
 }
 
 type outcome struct {
-	res  ToolResult
-	err  error
-	loop string        // what the loop detector did, for EventLoop
-	took time.Duration // how long the call ran
+	res   ToolResult
+	err   error
+	loop  string        // what the loop detector did, for EventLoop
+	took  time.Duration // how long the call ran
+	began time.Time     // when it began
 }
 
 func (r *run) runBatch(ctx context.Context, asked []ToolCall) error {
@@ -878,7 +879,7 @@ func (r *run) unknown(name string) bool {
 func (r *run) timed(ctx context.Context, call ToolCall) outcome {
 	start := time.Now()
 	res, err := r.runOne(ctx, call)
-	return outcome{res: res, err: err, took: time.Since(start)}
+	return outcome{res: res, err: err, took: time.Since(start), began: start}
 }
 
 // record adds one result to the conversation and reports it. A call that
@@ -903,7 +904,7 @@ func (r *run) record(ctx context.Context, call *ToolCall, o outcome, quiet bool)
 			return err
 		}
 	}
-	return r.emit(Event{Kind: EventToolEnd, Call: call, Output: &res, Err: toolErr, Duration: o.took, UnknownTool: r.unknown(call.Name)})
+	return r.emit(Event{Kind: EventToolEnd, Call: call, Output: &res, Err: toolErr, Duration: o.took, Began: o.began, UnknownTool: r.unknown(call.Name)})
 }
 
 // gate decides whether a call runs: an unknown tool or the host's refusal

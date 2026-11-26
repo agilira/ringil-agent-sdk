@@ -68,10 +68,19 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, err := s.cfg.Voice.transcriber(r.Context())
-	if err != nil || t == nil {
+	switch {
+	case err != nil:
+		failure(w, http.StatusInternalServerError, fail("SERVE_VOICE", "the transcription model cannot be set up: "+agent.ModelMessage(err)))
+		return
+	case t == nil:
 		failure(w, http.StatusNotFound, fail(ErrNotFound, "no transcription model is set (transcribe: in the settings)"))
 		return
 	}
+	release, ok := s.upload(w)
+	if !ok {
+		return
+	}
+	defer release()
 	audio, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAudio))
 	if err != nil || len(audio) == 0 {
 		failure(w, http.StatusBadRequest, fail(ErrInput, "the recording is empty or larger than 25 MiB"))
@@ -101,7 +110,11 @@ func (s *Server) speak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sy, err := s.cfg.Voice.synthesizer(r.Context())
-	if err != nil || sy == nil {
+	switch {
+	case err != nil:
+		failure(w, http.StatusInternalServerError, fail("SERVE_VOICE", "the speech model cannot be set up: "+agent.ModelMessage(err)))
+		return
+	case sy == nil:
 		failure(w, http.StatusNotFound, fail(ErrNotFound, "no speech model is set (speech: in the settings)"))
 		return
 	}

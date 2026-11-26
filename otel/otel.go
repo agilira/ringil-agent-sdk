@@ -19,6 +19,12 @@
 // passes its tracer:
 //
 //	agent.Config{Observers: []agent.Observer{otel.Observer(tp.Tracer("ringil"), otel.Options{Agent: "support"})}}
+//
+// Agents that delegate to one another (a crew, a server's profiles) share
+// one Recorder, so that a task's run finds the call that started it:
+//
+//	rec := otel.New(tp.Tracer("ringil"))
+//	lead := rec.Observer(otel.Options{Agent: "lead"})
 package otel
 
 import (
@@ -58,7 +64,14 @@ const (
 
 // maxRuns bounds the runs followed at once: an observer that never saw a
 // run's end (a host that dropped it) costs this much and no more.
-const maxRuns = 4096
+// maxEnded bounds the runs, and maxEndedCalls a run's calls, kept once
+// over: a background task starts after the call that started it, or its
+// run, has ended, and goes under it all the same.
+const (
+	maxRuns       = 4096
+	maxEnded      = 1024
+	maxEndedCalls = 256
+)
 
 // Options shape the spans.
 type Options struct {
@@ -67,35 +80,77 @@ type Options struct {
 	Agent string
 }
 
-// Observer returns an observer that records each run on tracer. It is
-// safe for concurrent use, as observers must be.
+// Observer returns an observer that records each run on tracer: one
+// agent's, or agents that do not delegate to each other (else see New).
+// It is safe for concurrent use, as observers must be.
 func Observer(tracer trace.Tracer, opts Options) agent.Observer {
+	return New(tracer).Observer(opts)
+}
+
+// Recorder follows the runs of several agents on one tracer, so that a
+// delegated task's run goes under the call of another agent that started
+// it.
+type Recorder struct {
+	tracer trace.Tracer
+
+	mu    sync.Mutex
+	runs  map[string]*run
+	ended map[string]*endedRun
+	order []string // ended runs, oldest first
+}
+
+// New returns a Recorder on tracer.
+func New(tracer trace.Tracer) *Recorder {
 	if tracer == nil {
 		tracer = noop.NewTracerProvider().Tracer("")
 	}
-	r := &recorder{tracer: tracer, agent: opts.Agent, runs: map[string]*run{}}
-	return r.observe
+	return &Recorder{tracer: tracer, runs: map[string]*run{}, ended: map[string]*endedRun{}}
 }
 
-type recorder struct {
-	tracer trace.Tracer
-	agent  string
-
-	mu   sync.Mutex
-	runs map[string]*run
+// Observer is one agent's observer on the Recorder. It is safe for
+// concurrent use, as observers must be.
+func (r *Recorder) Observer(opts Options) agent.Observer {
+	return func(ev agent.Event) { r.observe(opts.Agent, ev) }
 }
 
-// run is one run's open spans.
+// run is one run's open spans, and its calls already over.
 type run struct {
 	ctx   context.Context
 	span  trace.Span
 	tools map[string]trace.Span // by call ID: a delegated task's parent
+	done  calls
 }
 
-func (r *recorder) observe(ev agent.Event) {
+// endedRun is a run over, kept as a parent for its late tasks.
+type endedRun struct {
+	span  trace.SpanContext
+	calls calls
+}
+
+// calls are the span contexts of ended calls, by ID, the latest few.
+type calls struct {
+	by    map[string]trace.SpanContext
+	order []string
+}
+
+func (c *calls) add(id string, sc trace.SpanContext) {
+	if c.by == nil {
+		c.by = map[string]trace.SpanContext{}
+	}
+	if _, seen := c.by[id]; !seen {
+		c.order = append(c.order, id)
+	}
+	c.by[id] = sc
+	if len(c.order) > maxEndedCalls {
+		delete(c.by, c.order[0])
+		c.order = c.order[1:]
+	}
+}
+
+func (r *Recorder) observe(name string, ev agent.Event) {
 	switch ev.Kind {
 	case agent.EventStarted:
-		r.start(ev)
+		r.start(name, ev)
 	case agent.EventModel:
 		r.model(ev)
 	case agent.EventToolStart:
@@ -109,7 +164,7 @@ func (r *recorder) observe(ev agent.Event) {
 	}
 }
 
-func (r *recorder) start(ev agent.Event) {
+func (r *Recorder) start(agentName string, ev agent.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if old, dup := r.runs[ev.Run]; dup {
@@ -121,7 +176,7 @@ func (r *recorder) start(ev agent.Event) {
 		return
 	}
 	parent := r.parentCtx(ev)
-	name, attrs := r.agent, []attribute.KeyValue{keyOperation.String("invoke_agent"), keyRun.String(ev.Run)}
+	name, attrs := agentName, []attribute.KeyValue{keyOperation.String("invoke_agent"), keyRun.String(ev.Run)}
 	if ev.Worker != "" {
 		name = ev.Worker
 		attrs = append(attrs, keyWorker.String(ev.Worker), keyTask.Int(ev.Task))
@@ -134,18 +189,32 @@ func (r *recorder) start(ev agent.Event) {
 	r.runs[ev.Run] = &run{ctx: ctx, span: span, tools: map[string]trace.Span{}}
 }
 
-func (r *recorder) parentCtx(ev agent.Event) context.Context {
-	if p, ok := r.runs[ev.Parent]; ok && ev.Parent != "" && ev.Parent != ev.Run {
+// parentCtx is where a run goes: under the call that started it, open or
+// over, else under its parent run, else at the root.
+func (r *Recorder) parentCtx(ev agent.Event) context.Context {
+	if ev.Parent == "" || ev.Parent == ev.Run {
+		return context.Background()
+	}
+	if p, ok := r.runs[ev.Parent]; ok {
 		if call, open := p.tools[ev.ParentCall]; open {
-			return trace.ContextWithSpan(p.ctx, call) // under the call that started it
+			return trace.ContextWithSpan(p.ctx, call)
+		}
+		if sc, over := p.done.by[ev.ParentCall]; over {
+			return trace.ContextWithSpanContext(context.Background(), sc)
 		}
 		return p.ctx
+	}
+	if p, ok := r.ended[ev.Parent]; ok {
+		if sc, over := p.calls.by[ev.ParentCall]; over {
+			return trace.ContextWithSpanContext(context.Background(), sc)
+		}
+		return trace.ContextWithSpanContext(context.Background(), p.span)
 	}
 	return context.Background()
 }
 
 // model is a model call: it happened in the Duration before the event.
-func (r *recorder) model(ev agent.Event) {
+func (r *Recorder) model(ev agent.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ru, ok := r.runs[ev.Run]
@@ -164,7 +233,7 @@ func (r *recorder) model(ev agent.Event) {
 	span.End(trace.WithTimestamp(ev.Time))
 }
 
-func (r *recorder) toolStart(ev agent.Event) {
+func (r *Recorder) toolStart(ev agent.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ru, ok := r.runs[ev.Run]
@@ -181,7 +250,10 @@ func (r *recorder) toolStart(ev agent.Event) {
 	ru.tools[ev.Call.ID] = span
 }
 
-func (r *recorder) toolEnd(ev agent.Event) {
+// toolEnd ends a call's span when the call ended: its events come once
+// its whole batch has run. The span began when the call was asked for
+// (its approval inside); an event marks when it began to run.
+func (r *Recorder) toolEnd(ev agent.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ru, ok := r.runs[ev.Run]
@@ -193,17 +265,34 @@ func (r *recorder) toolEnd(ev agent.Event) {
 		return
 	}
 	delete(ru.tools, ev.Call.ID)
-	if (ev.Output != nil && ev.Output.IsError) || ev.Err != nil {
-		code := eventlog.Code(ev.Err)
+	ru.done.add(ev.Call.ID, span.SpanContext())
+	if code := toolError(ev); code != "" {
 		span.SetAttributes(keyErrorType.String(code))
 		span.SetStatus(codes.Error, code)
 	}
-	span.End(trace.WithTimestamp(ev.Time))
+	end := ev.Time
+	if !ev.Began.IsZero() {
+		span.AddEvent("ringil.tool.began", trace.WithTimestamp(ev.Began))
+		end = ev.Began.Add(max(ev.Duration, 0))
+	}
+	span.End(trace.WithTimestamp(end))
+}
+
+// toolError is a failed call's error.type: its code, or tool_error for a
+// tool that answered with an error.
+func toolError(ev agent.Event) string {
+	switch {
+	case ev.Err != nil:
+		return eventlog.Code(ev.Err)
+	case ev.Output != nil && ev.Output.IsError:
+		return "tool_error"
+	}
+	return ""
 }
 
 // note is a step that has no duration of its own: an event on the run's
 // span, with the agent's own words about it.
-func (r *recorder) note(ev agent.Event) {
+func (r *Recorder) note(ev agent.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ru, ok := r.runs[ev.Run]
@@ -220,10 +309,13 @@ func (r *recorder) note(ev agent.Event) {
 	ru.span.AddEvent(string(ev.Kind), trace.WithTimestamp(ev.Time), trace.WithAttributes(attrs...))
 }
 
-func (r *recorder) end(ev agent.Event) {
+func (r *Recorder) end(ev agent.Event) {
 	r.mu.Lock()
 	ru, ok := r.runs[ev.Run]
 	delete(r.runs, ev.Run)
+	if ok {
+		r.keepEnded(ev.Run, ru)
+	}
 	r.mu.Unlock()
 	if !ok {
 		return
@@ -242,6 +334,23 @@ func (r *recorder) end(ev agent.Event) {
 		ru.span.SetStatus(codes.Error, code)
 	}
 	ru.span.End(trace.WithTimestamp(ev.Time))
+}
+
+// keepEnded keeps a run over as a parent for its late tasks, the latest
+// maxEnded. Its open calls count as over.
+func (r *Recorder) keepEnded(id string, ru *run) {
+	e := &endedRun{span: ru.span.SpanContext(), calls: ru.done}
+	for cid, s := range ru.tools {
+		e.calls.add(cid, s.SpanContext())
+	}
+	if _, seen := r.ended[id]; !seen {
+		r.order = append(r.order, id)
+	}
+	r.ended[id] = e
+	if len(r.order) > maxEnded {
+		delete(r.ended, r.order[0])
+		r.order = r.order[1:]
+	}
 }
 
 func closeTools(ru *run, at time.Time) {

@@ -2,8 +2,8 @@ github.com/agilira/go-errors v1.1.3 h1:olJH/AdQjbShZS3EXpIEudh0r+S9TyOhXVC5kUK3k
 github.com/agilira/go-errors v1.1.3/go.mod h1:mnahXmG7myK3mXAelE2lTeoFiCl4PhoZqsVlGWhiiAk=
 github.com/agilira/go-timecache v1.0.4 h1:bokjtEhvKw1b4KRiKGN/5A5HaHp9eh3asdWkdf1OGfw=
 github.com/agilira/go-timecache v1.0.4/go.mod h1:4e2uN0V00sIo5m0t0boLTQtORJmc2u2So/+LGvUbSs0=
-github.com/agilira/pdf v0.0.0-20261125221849-3f8b7a3968a6 h1:9YqaFNd5c20DbH/urdv7GTk+/4YNsSnzoUN3SzVhjSc=
-github.com/agilira/pdf v0.0.0-20261125221849-3f8b7a3968a6/go.mod h1:cIFmUH7eC/smYRlOuMhAZEnRh5J9sNOrdBinl/NQohc=
+github.com/agilira/pdf v0.0.0-20261126025143-c7c2ed834228 h1:79dB1YFU2PmpK69eeYyVsHFd2sr47w+5gNU80sMOiSk=
+github.com/agilira/pdf v0.0.0-20261126025143-c7c2ed834228/go.mod h1:cIFmUH7eC/smYRlOuMhAZEnRh5J9sNOrdBinl/NQohc=
 github.com/go-quicktest/qt v1.102.0 h1:HSQxCeh5YZH3EL3W39ixjtyaEhcWSXQHtHnMBzSs474=
 github.com/go-quicktest/qt v1.102.0/go.mod h1:p4lGIVX+8Wa6ZPNDvqcxq36XpUDLh42FLetFU7odllI=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

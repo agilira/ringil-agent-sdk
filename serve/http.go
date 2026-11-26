@@ -235,7 +235,7 @@ type attachmentIn struct {
 	Data []byte `json:"data"` // base64 in the JSON
 }
 
-// Bounds of a run's input: a PDF of 32 MiB is about 43 MiB in base64.
+// Bounds of a run's input: a PDF of 20 MiB is about 27 MiB in base64.
 const (
 	maxAttachments = 20
 	maxRunBody     = 64 << 20
@@ -260,7 +260,28 @@ func (in startIn) message() (agent.Message, error) {
 	return agent.UserMessage(in.Input, parts...), nil
 }
 
+// upload takes one of the slots for a large body (a run with its
+// attachments, a recording): MaxRuns at once, so that bodies read in
+// parallel cost at most that many times their bound. false, w answered.
+func (s *Server) upload(w http.ResponseWriter) (release func(), ok bool) {
+	select {
+	case s.uploads <- struct{}{}:
+		return func() { <-s.uploads }, true
+	default:
+		w.Header().Set("Retry-After", "1")
+		failure(w, http.StatusTooManyRequests, fail(ErrBusy, "too many uploads at once: try again"))
+		return nil, false
+	}
+}
+
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength < 0 || r.ContentLength > maxBody { // attachments: a slot; a plain message needs none
+		release, ok := s.upload(w)
+		if !ok {
+			return
+		}
+		defer release()
+	}
 	var in startIn
 	if !readJSONLimit(w, r, &in, maxRunBody) {
 		return

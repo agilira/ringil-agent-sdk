@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -124,15 +125,48 @@ func (m Message) Reasoning(source string) []Part {
 // APIs.
 const MaxImageBytes = 5 << 20
 
-// MaxDocumentBytes bounds a PDF: the request limit of the main model APIs.
-const MaxDocumentBytes = 32 << 20
+// MaxDocumentBytes bounds a PDF: in base64 it must fit, with the rest of
+// a request, in the 32 MB a request of the main model APIs may be.
+// MaxDocumentPages bounds the PDF pages a request may carry (Anthropic's
+// limit; others are near).
+const (
+	MaxDocumentBytes = 20 << 20
+	MaxDocumentPages = 100
+)
+
+// How a PDF names its pages in plain sight: the page tree's /Count, and
+// each page object ("/Type /Page", not "/Pages").
+var (
+	pageTree   = regexp.MustCompile(`<<[^<>]*/Type\s*/Pages\b[^<>]*>>`)
+	treeCount  = regexp.MustCompile(`/Count\s+(\d{1,7})`)
+	pageObject = regexp.MustCompile(`/Type\s*/Page\b`)
+)
+
+// DocumentPages counts a PDF's pages without parsing it: by its page
+// tree's count (the largest: the root's, also after incremental updates,
+// which leave old page objects behind), else by its page objects. 0 when
+// it keeps them in compressed object streams (Word, qpdf, pdfTeX): a host
+// that parsed it knows better.
+func DocumentPages(data []byte) int {
+	most := 0
+	for _, tree := range pageTree.FindAll(data, -1) {
+		if m := treeCount.FindSubmatch(tree); m != nil {
+			n, _ := strconv.Atoi(string(m[1]))
+			most = max(most, n)
+		}
+	}
+	if most > 0 {
+		return most
+	}
+	return len(pageObject.FindAllIndex(data, -1))
+}
 
 // CheckDocument accepts a PDF the model APIs take: at most
 // MaxDocumentBytes, and a PDF by its bytes, whatever its label says.
 func CheckDocument(mime string, data []byte) error {
 	switch {
 	case len(data) == 0 || len(data) > MaxDocumentBytes:
-		return errors.New(ErrImage, "a document must be 1 byte to 32 MiB")
+		return errors.New(ErrImage, "a document must be 1 byte to 20 MiB")
 	case mime != "application/pdf" || !strings.HasPrefix(string(data[:min(len(data), 5)]), "%PDF-"):
 		return errors.New(ErrImage, "documents must be PDF")
 	}

@@ -48,6 +48,10 @@ type Limits struct {
 	// Text is the most text returned; default 16 MiB. Past it the text
 	// ends with a note.
 	Text int
+	// Decoded is the most bytes a PDF's streams may decode to, together;
+	// default 128 MiB (some ten seconds of work). Past it the pages left
+	// are named as not read.
+	Decoded int64
 }
 
 func (l Limits) withDefaults() Limits {
@@ -59,6 +63,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.Text <= 0 {
 		l.Text = 16 << 20
+	}
+	if l.Decoded <= 0 {
+		l.Decoded = 128 << 20
 	}
 	return l
 }
@@ -81,8 +88,9 @@ type Doc struct {
 	// Cut: the text stopped at Limits.Text.
 	Cut bool
 	// Scans counts a PDF's pages without text: scans or images, which a
-	// model that reads PDFs can see.
+	// model that reads PDFs can see; Pages counts its pages.
 	Scans int
+	Pages int
 }
 
 // Kind returns the kind of document name is by its extension, or "".
@@ -184,16 +192,16 @@ func (p *pack) open(name string) ([]byte, error) {
 	}
 	rc, err := f.Open()
 	if err != nil {
-		return nil, errors.New(ErrFormat, "a damaged part: "+name)
+		return nil, errors.New(ErrFormat, "a damaged part: "+partName(name))
 	}
 	defer func() { _ = rc.Close() }()
 	room := min(p.limits.Part, p.limits.Total-p.read)
 	b, err := io.ReadAll(io.LimitReader(rc, room+1))
 	if err != nil {
-		return nil, errors.New(ErrFormat, "a damaged part: "+name)
+		return nil, errors.New(ErrFormat, "a damaged part: "+partName(name))
 	}
 	if int64(len(b)) > room {
-		return nil, errors.New(ErrTooLarge, "a part unpacks past the limit: "+name)
+		return nil, errors.New(ErrTooLarge, "a part unpacks past the limit: "+partName(name))
 	}
 	p.read += int64(len(b))
 	return b, nil
@@ -208,7 +216,7 @@ func (p *pack) find(name string) *zip.File {
 func (p *pack) must(name, kind string) ([]byte, error) {
 	b, err := p.open(name)
 	if err == nil && b == nil {
-		err = errors.New(ErrFormat, "not a valid "+kind+": "+name+" is missing")
+		err = errors.New(ErrFormat, "not a valid "+kind+": "+partName(name)+" is missing")
 	}
 	return b, err
 }
@@ -270,3 +278,14 @@ func clean(s string) string {
 }
 
 func isControl(r rune) bool { return r != '\t' && r != '\n' && unicode.IsControl(r) }
+
+// partName is a name from the zip as an error says it: one line, short.
+func partName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, name)
+	return short(name)
+}

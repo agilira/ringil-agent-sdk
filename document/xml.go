@@ -15,8 +15,34 @@ import (
 	"github.com/agilira/go-errors"
 )
 
-// maxDepth bounds the nesting of the XML: past it the part is refused.
-const maxDepth = 256
+// maxDepth bounds the nesting of the XML, maxTag the bytes of one tag
+// (from < to >): past them the part is refused. encoding/xml keeps every
+// attribute of an element, and has no bound of its own: a 93 KB file can
+// hold an element of millions of attributes.
+const (
+	maxDepth = 256
+	maxTag   = 1 << 20
+)
+
+// tagsFit: no tag of b is longer than maxTag.
+func tagsFit(b []byte) bool {
+	for i := 0; i < len(b); {
+		lt := bytes.IndexByte(b[i:], '<')
+		if lt < 0 {
+			return true
+		}
+		start := i + lt
+		gt := bytes.IndexByte(b[start:], '>')
+		if gt < 0 {
+			return len(b)-start <= maxTag
+		}
+		if gt > maxTag {
+			return false
+		}
+		i = start + gt + 1
+	}
+	return true
+}
 
 // walk calls start and end for the elements of b and text for its
 // character data, by local name (the namespaces of the formats are fixed).
@@ -27,6 +53,9 @@ type walk struct {
 }
 
 func (w walk) run(b []byte, part string) error {
+	if !tagsFit(b) {
+		return errors.New(ErrTooLarge, "the XML of "+partName(part)+" has a tag longer than 1 MiB")
+	}
 	d := xml.NewDecoder(bytes.NewReader(b))
 	d.Strict = true
 	d.Entity = nil // the five predefined entities only
@@ -37,7 +66,7 @@ func (w walk) run(b []byte, part string) error {
 			return nil
 		}
 		if err != nil {
-			return errors.New(ErrFormat, "the XML of "+part+" is damaged")
+			return errors.New(ErrFormat, "the XML of "+partName(part)+" is damaged")
 		}
 		if err := w.token(tok, &depth, part); err != nil {
 			return err
@@ -49,7 +78,7 @@ func (w walk) token(tok xml.Token, depth *int, part string) error {
 	switch t := tok.(type) {
 	case xml.StartElement:
 		if *depth++; *depth > maxDepth {
-			return errors.New(ErrTooLarge, "the XML of "+part+" nests too deep")
+			return errors.New(ErrTooLarge, "the XML of "+partName(part)+" nests too deep")
 		}
 		if w.start != nil {
 			return w.start(t.Name.Local, t.Attr)

@@ -127,11 +127,11 @@ func (a *appAuth) dropOldest() {
 
 // signOut ends the browser's session.
 func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		s.app.mu.Lock()
+	s.app.mu.Lock()
+	for _, c := range r.CookiesNamed(sessionCookie) {
 		delete(s.app.sessions, sha256.Sum256([]byte(c.Value)))
-		s.app.mu.Unlock()
 	}
+	s.app.mu.Unlock()
 	// #nosec G124 -- clears the cookie above, with its attributes
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	w.WriteHeader(http.StatusNoContent)
@@ -140,20 +140,29 @@ func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
 // signedIn says whether r comes from the app's own page with a live
 // session. The cookie alone is not enough: for a browser another port of
 // the same address is the same site, so it gets the cookie too; the
-// request must come from this very origin.
+// request must come from this very origin. Every cookie of the name is
+// tried: a page on another port can set one of its own, which the
+// browser sends first.
 func (s *Server) signedIn(r *http.Request) bool {
-	if s.cfg.App == nil {
+	if s.cfg.App == nil || !sameOrigin(r) {
 		return false
 	}
-	c, err := r.Cookie(sessionCookie)
-	if err != nil || c.Value == "" || !sameOrigin(r) {
-		return false
+	cookies := r.CookiesNamed(sessionCookie)
+	if len(cookies) > 32 { // the browser's own bound is near: a page cannot push ours past it
+		cookies = cookies[:32]
 	}
-	key := sha256.Sum256([]byte(c.Value))
+	now := s.now()
 	s.app.mu.Lock()
 	defer s.app.mu.Unlock()
-	until, ok := s.app.sessions[key]
-	return ok && s.now().Before(until)
+	for _, c := range cookies {
+		if c.Value == "" {
+			continue
+		}
+		if until, ok := s.app.sessions[sha256.Sum256([]byte(c.Value))]; ok && now.Before(until) {
+			return true
+		}
+	}
+	return false
 }
 
 // sameOrigin: the browser says the request comes from a page of this
