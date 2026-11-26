@@ -11,7 +11,7 @@ require (
 require (
 	github.com/agilira/go-timecache v1.0.4 // indirect
 	golang.org/x/sys v0.50.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )
 
 replace github.com/agilira/ringil-agent-sdk => ../..

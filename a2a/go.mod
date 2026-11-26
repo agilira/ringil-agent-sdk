@@ -11,10 +11,10 @@ require (
 require (
 	github.com/agilira/go-timecache v1.0.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )
 
 // Until the library has a tag, this module builds against the code next to it.
