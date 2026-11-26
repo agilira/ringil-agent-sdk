@@ -229,7 +229,7 @@ func (l *loop) Stream(ctx context.Context, conv Conversation, input Message) ite
 		if conv == nil {
 			conv = NewConversation()
 		}
-		ev := eventer{id: rand.Text()[:16], observers: l.cfg.Observers, yield: yield, parent: RunID(ctx)}
+		ev := eventer{id: rand.Text()[:16], observers: l.cfg.Observers, yield: yield, parent: RunID(ctx), parentCall: ToolCallID(ctx)}
 		defer ev.settle()
 		ctx = context.WithValue(ctx, runKey{}, ev.id)
 		if !ev.send(Event{Kind: EventStarted}) {
@@ -255,8 +255,12 @@ func (l *loop) Stream(ctx context.Context, conv Conversation, input Message) ite
 	}
 }
 
-// runKey carries the running run's ID to its tools.
-type runKey struct{}
+// runKey carries the running run's ID to its tools, callKey the ID of the
+// call being run.
+type (
+	runKey  struct{}
+	callKey struct{}
+)
 
 // RunID is the ID of the run whose tool ctx belongs to; "" outside one.
 // A tool that starts runs of its own (package delegate) passes it on as
@@ -266,17 +270,26 @@ func RunID(ctx context.Context) string {
 	return id
 }
 
+// ToolCallID is the ID of the tool call ctx belongs to; "" outside one. A
+// run started by that call reports it as its Event.ParentCall: of several
+// calls running at once, the one that started it.
+func ToolCallID(ctx context.Context) string {
+	id, _ := ctx.Value(callKey{}).(string)
+	return id
+}
+
 // eventer numbers a run's events and gives each to the observers, then
 // to the stream: one sequence for all.
 type eventer struct {
-	id        string
-	parent    string
-	seq       int
-	observers []Observer
-	broken    map[int]bool // observers that panicked
-	yield     func(Event, error) bool
-	stopped   bool // the consumer stopped: nothing more is sent to anyone
-	ended     bool // EventDone or EventFailed went out
+	id         string
+	parent     string
+	parentCall string
+	seq        int
+	observers  []Observer
+	broken     map[int]bool // observers that panicked
+	yield      func(Event, error) bool
+	stopped    bool // the consumer stopped: nothing more is sent to anyone
+	ended      bool // EventDone or EventFailed went out
 }
 
 // settle gives the observers an end the run did not reach: the consumer
@@ -301,7 +314,7 @@ func (e *eventer) settle() {
 
 func (e *eventer) stamp(ev *Event) {
 	e.seq++
-	ev.Run, ev.Parent, ev.Seq, ev.Time = e.id, e.parent, e.seq, time.Now()
+	ev.Run, ev.Parent, ev.ParentCall, ev.Seq, ev.Time = e.id, e.parent, e.parentCall, e.seq, time.Now()
 }
 
 func (e *eventer) observe(ev Event) {
@@ -654,7 +667,7 @@ func (r *run) callModel(ctx context.Context) (*Response, error) {
 		// dropped (a name not in the list): ask once more, saying so. The
 		// empty call is reported and counted, not recorded.
 		r.result.Usage = r.result.Usage.Add(resp.Usage)
-		if err := r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop, Duration: time.Since(r.modelStart)}); err != nil {
+		if err := r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop, Duration: time.Since(r.modelStart), Model: r.cfg.Provider.Info().Name}); err != nil {
 			return nil, err
 		}
 		r.modelStart = time.Now()
@@ -717,7 +730,7 @@ func (r *run) keep(ctx context.Context, resp *Response) (*Response, error) {
 		return nil, err
 	}
 	resp.Message = msg
-	return resp, r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop, Duration: time.Since(r.modelStart)})
+	return resp, r.emit(Event{Kind: EventModel, Usage: resp.Usage, Stop: resp.Stop, Duration: time.Since(r.modelStart), Model: r.cfg.Provider.Info().Name})
 }
 
 // generate sends full, compacted to budget tokens, and streams the answer.
@@ -1072,6 +1085,7 @@ func (r *run) withHistory(specs []ToolSpec) []ToolSpec {
 // runOne runs one call: read_history in the loop, the rest in the host's
 // registry.
 func (r *run) runOne(ctx context.Context, call ToolCall) (ToolResult, error) {
+	ctx = context.WithValue(ctx, callKey{}, call.ID)
 	if r.hist == nil || call.Name != HistoryToolName {
 		return r.tools.Execute(ctx, call)
 	}

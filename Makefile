@@ -7,7 +7,7 @@
 # Variables
 TOOLS_DIR := $(HOME)/go/bin
 # The library and its heavier parts are separate modules; every check runs on each.
-MODULES := . ./mcp ./a2a ./channel/slack ./memory/sqlite ./provider/anthropic ./secrets/keyring ./secrets/store
+MODULES := . ./mcp ./otel ./a2a ./channel/slack ./memory/sqlite ./provider/anthropic ./secrets/keyring ./secrets/store
 EACH = for m in $(MODULES); do (cd $$m && $(1)) || exit 1; done
 
 # Colors for output

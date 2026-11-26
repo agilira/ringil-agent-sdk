@@ -83,8 +83,11 @@ type Event struct {
 	// delegated task (package delegate): which worker ran it, and the
 	// task's number.
 	Parent string
-	Worker string
-	Task   int
+	// ParentCall is the call of Parent's tool that started this run: of
+	// several calls running at once, the one this run belongs to.
+	ParentCall string
+	Worker     string
+	Task       int
 	// UnknownTool is set on the tool events of a call to a name the agent
 	// does not have: the name is the model's invention.
 	UnknownTool bool
@@ -99,4 +102,8 @@ type Event struct {
 	Stop  StopReason
 	// Result is set on EventDone.
 	Result *Result
+	// Model is the model that answered, on EventModel: its provider's
+	// ModelInfo.Name after the call (with a fallback, the one that
+	// answered).
+	Model string
 }
