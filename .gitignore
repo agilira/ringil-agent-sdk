@@ -9,3 +9,11 @@ go.work.sum
 # Local credentials for live tests, never committed
 .env
 docs/RIPARTENZA-*.md
+
+# Our notes and plans stay local: only code, README, changelog, license
+# and security policy are published
+docs/*
+!docs/slack/
+!docs/ringil.example.yaml
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
