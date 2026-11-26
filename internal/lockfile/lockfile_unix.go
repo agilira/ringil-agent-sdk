@@ -25,6 +25,16 @@ func TryLock(f *os.File) (bool, error) {
 	return err == nil, err
 }
 
+// TryLockShared takes a shared lock on f without waiting: many holders
+// at once, none while an exclusive lock is held.
+func TryLockShared(f *os.File) (bool, error) {
+	err := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+	if err == unix.EWOULDBLOCK {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Unlock releases a lock taken on f.
 func Unlock(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_UN) }
 

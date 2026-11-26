@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -130,6 +131,7 @@ type Server struct {
 	runs     map[string]*job
 	held     map[string]int // conversations read or changed outside a run, by lower-case ID: readers, or -1 for one that deletes
 	active   int
+	paused   int // Pause holds: no run starts while one is held
 	mounts   map[string]http.Handler
 	wg       sync.WaitGroup
 	now      func() time.Time
@@ -319,6 +321,9 @@ func (s *Server) admit(conversation string) error {
 	if s.ctx.Err() != nil {
 		return fail(ErrClosed, "the server is closing")
 	}
+	if s.paused > 0 {
+		return fail(ErrBusy, "the server is pausing its runs (an export or an import): try again in a moment")
+	}
 	if s.active >= s.maxRuns() {
 		return fail(ErrBusy, "too many runs going")
 	}
@@ -361,6 +366,8 @@ func (s *Server) hold(conversation string, kind holdKind) (release func(), err e
 	defer s.mu.Unlock()
 	n := s.held[key]
 	switch {
+	case s.paused > 0:
+		return nil, fail(ErrBusy, "the server is pausing its runs (an export or an import): try again in a moment")
 	case n < 0 || (kind == holdExclude && n > 0):
 		return nil, fail(ErrBusy, "the conversation is being read or changed: try again")
 	case kind != holdTitle && s.runningLocked(conversation):
@@ -371,15 +378,17 @@ func (s *Server) hold(conversation string, kind holdKind) (release func(), err e
 	} else {
 		s.held[key]++
 	}
-	return func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.held[key] < 0 {
-			delete(s.held, key)
-		} else if s.held[key]--; s.held[key] <= 0 {
-			delete(s.held, key)
-		}
-	}, nil
+	return func() { s.releaseHold(key) }, nil
+}
+
+func (s *Server) releaseHold(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held[key] < 0 {
+		delete(s.held, key)
+	} else if s.held[key]--; s.held[key] <= 0 {
+		delete(s.held, key)
+	}
 }
 
 // execute runs one job to its end.
@@ -610,4 +619,43 @@ func (s *Server) Close() {
 	s.stop() // under the lock: no Start passes admission after this
 	s.mu.Unlock()
 	s.wg.Wait()
+}
+
+// Pause stops new runs and waits up to wait for those going (and any
+// conversation reads or changes) to end: a host exports or imports the
+// state while nothing touches it. resume lets runs start again; calling it
+// more than once is safe. With an error nothing is held.
+func (s *Server) Pause(ctx context.Context, wait time.Duration) (resume func(), err error) {
+	s.mu.Lock()
+	s.paused++
+	s.mu.Unlock()
+	var once sync.Once
+	resume = func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.paused--
+			s.mu.Unlock()
+		})
+	}
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		s.mu.Lock()
+		going := s.active + len(s.held)
+		s.mu.Unlock()
+		if going == 0 {
+			return resume, nil
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			resume()
+			return nil, fail(ErrBusy, strconv.Itoa(going)+" runs or active requests are still going: wait for them, or cancel them, and try again")
+		case <-ctx.Done():
+			resume()
+			return nil, ctx.Err()
+		}
+	}
 }

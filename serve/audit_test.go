@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agilira/go-errors"
 
@@ -92,4 +93,60 @@ func TestUploadSlots(t *testing.T) {
 		t.Fatalf("a plain message waits for no slot: %d %s", code, out)
 	}
 	<-a.srv.uploads
+}
+
+// Paused, no run starts, and the pause waits for the runs going.
+func TestPause(t *testing.T) {
+	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New(fake.Reply("ok"))})}})
+	resume, err := a.srv.Pause(context.Background(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, out := a.do("POST", "/v1/runs", `{"profile":"default","input":"x"}`); code != http.StatusConflict && code != http.StatusTooManyRequests && code != http.StatusServiceUnavailable {
+		t.Fatalf("a run while paused: %d %s", code, out)
+	}
+	resume()
+	if code, out := a.do("POST", "/v1/runs", `{"profile":"default","input":"x"}`); code != http.StatusCreated {
+		t.Fatalf("after resume: %d %s", code, out)
+	}
+	a.srv.mu.Lock()
+	a.srv.active++ // a run that does not end
+	a.srv.mu.Unlock()
+	if _, err := a.srv.Pause(context.Background(), 50*time.Millisecond); !errors.HasCode(err, ErrBusy) {
+		t.Fatalf("paused over a run: %v", err)
+	}
+	a.srv.mu.Lock()
+	a.srv.active--
+	paused := a.srv.paused
+	a.srv.mu.Unlock()
+	if paused != 0 {
+		t.Fatalf("a failed pause held %d", paused)
+	}
+}
+
+func TestPauseIdempotentAndWaitsForHeld(t *testing.T) {
+	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New(fake.Reply("ok"))})}})
+	resume, err := a.srv.Pause(context.Background(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume()
+	resume() // double call must not underflow paused
+	resume2, err := a.srv.Pause(context.Background(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.srv.hold("c", holdRead); !errors.HasCode(err, ErrBusy) {
+		t.Fatalf("hold while paused: %v", err)
+	}
+	resume2()
+
+	rel, err := a.srv.hold("c", holdRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	if _, err := a.srv.Pause(context.Background(), 50*time.Millisecond); !errors.HasCode(err, ErrBusy) {
+		t.Fatalf("pause over hold: %v", err)
+	}
 }

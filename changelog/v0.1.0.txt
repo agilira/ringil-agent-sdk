@@ -177,6 +177,15 @@ FEATURES
     /v1/conversations/{id}/artifacts (content never served as a page of
     its origin), a conversation deleted takes its artifacts.
     files.Workspace.ReadFile: a whole file under read_file's rules.
+  - backup: export and import. Sources are directories or files
+    (Source); Import replaces the state with an archive's, all or
+    nothing: staged beside each place and synced, the manifest's sources
+    checked (once each, of their kind), swapped by a journal, put back on
+    a failed swap, and a cut-short import undone by the next Use; only
+    when no process holds the state (Use: a shared lock; ErrBusy);
+    Options.Before under the lock. At most 1M files. Restore into
+    quarantine is gone. serve: Pause stops new runs and waits for those
+    going.
   - ringil: serve.app serves the app's build and prints its sign-in link;
     a settings API for it (models, limits, connections, keys write-only,
     MCP servers, skills, a provider's models), each change checked as the

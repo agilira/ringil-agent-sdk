@@ -1,4 +1,4 @@
-// restore.go: checking an archive and restoring it apart
+// verify.go: reading an archive and checking it against its manifest
 //
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
@@ -9,18 +9,14 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"io/fs"
-	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/agilira/go-errors"
@@ -64,6 +60,7 @@ type walker struct {
 	seen  map[string]string
 	m     *Manifest
 	total int64
+	files int
 	each  func(string, io.Reader) error
 }
 
@@ -75,19 +72,33 @@ func (w *walker) next(hdr *tar.Header) error {
 	case w.m != nil:
 		return errors.New(ErrDamaged, "the archive goes on after its manifest")
 	case hdr.Name == manifestName:
-		w.m, err = readManifest(w.tr, hdr.Size)
+		w.m, err = readManifest(w.tr, hdr)
 		return err
 	case w.seen[hdr.Name] != "":
 		return errors.New(ErrDamaged, "the archive repeats "+strconv.Quote(hdr.Name))
 	}
-	if w.total += hdr.Size; w.total > MaxTotal {
-		return errors.New(ErrDamaged, "the archive is larger than a restore allows")
+	if err := w.count(hdr); err != nil {
+		return err
 	}
 	sum, err := entry(hdr, w.tr, w.each)
 	if err != nil {
 		return err
 	}
 	w.seen[hdr.Name] = sum
+	return nil
+}
+
+func (w *walker) count(hdr *tar.Header) error {
+	if w.files++; w.files > maxFiles {
+		return errors.New(ErrDamaged, "the archive holds more files than an import allows")
+	}
+	if hdr.Size < 0 || hdr.Size > maxEntry {
+		return errors.New(ErrDamaged, "the archive holds an entry it should not: "+strconv.Quote(hdr.Name))
+	}
+	if hdr.Size > MaxTotal-w.total {
+		return errors.New(ErrDamaged, "the archive is larger than a restore allows")
+	}
+	w.total += hdr.Size
 	return nil
 }
 
@@ -113,16 +124,22 @@ func safePath(p string) bool {
 		!strings.ContainsFunc(p, unicode.IsControl)
 }
 
-// MaxTotal bounds what one restore writes: a small archive cannot fill
+// maxFiles bounds the files of one archive.
+const maxFiles = 1 << 20
+
+// MaxTotal bounds what one import writes: a small archive cannot fill
 // the disk.
 var MaxTotal int64 = 16 << 30
 
-func readManifest(r io.Reader, size int64) (*Manifest, error) {
-	if size > 64<<20 {
+func readManifest(r io.Reader, hdr *tar.Header) (*Manifest, error) {
+	switch {
+	case hdr.Typeflag != tar.TypeReg || hdr.Size < 0:
+		return nil, errors.New(ErrDamaged, "the manifest is damaged")
+	case hdr.Size > 64<<20:
 		return nil, errors.New(ErrDamaged, "the manifest is too large")
 	}
 	var m Manifest
-	if err := json.NewDecoder(io.LimitReader(r, size)).Decode(&m); err != nil || m.Version != 1 || m.Files == nil {
+	if err := json.NewDecoder(io.LimitReader(r, hdr.Size)).Decode(&m); err != nil || m.Version != 1 || m.Files == nil {
 		return nil, errors.New(ErrDamaged, "the manifest is damaged")
 	}
 	return &m, nil
@@ -139,71 +156,6 @@ func match(m *Manifest, seen map[string]string) error {
 		if seen[name] != sum {
 			return errors.New(ErrDamaged, "the archive's file "+strconv.Quote(name)+" does not match its digest")
 		}
-	}
-	return nil
-}
-
-// Restore extracts an archive into dest, which must not exist. The files
-// go to a hidden building directory first; only a fully verified archive
-// is renamed into place, with a QUARANTINE.md that says what it is.
-func Restore(ctx context.Context, r io.Reader, dest string) (*Manifest, error) {
-	dest = filepath.Clean(dest) // "out/" names the directory out
-	if _, err := os.Lstat(dest); err == nil {
-		return nil, errors.New(ErrExists, dest+" already exists: restore into a new directory")
-	}
-	building := filepath.Join(filepath.Dir(dest), "."+filepath.Base(dest)+"-building-"+strings.ToLower(rand.Text()[:8]))
-	if err := os.MkdirAll(building, 0o700); err != nil {
-		return nil, errors.Wrap(err, ErrIO, "cannot create the restore directory")
-	}
-	m, err := extract(ctx, r, building)
-	if err == nil {
-		err = finishRestore(building, dest, m)
-	}
-	if err != nil {
-		if rerr := os.RemoveAll(building); rerr != nil {
-			return nil, errors.Wrap(err, ErrIO, "restore failed and left "+building)
-		}
-		return nil, err
-	}
-	return m, nil
-}
-
-func extract(ctx context.Context, r io.Reader, dir string) (*Manifest, error) {
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, errors.Wrap(err, ErrIO, "cannot open the restore directory")
-	}
-	defer closeRoot(root)
-	return walk(ctx, r, func(name string, body io.Reader) error {
-		if d := path.Dir(name); d != "." {
-			if err := root.MkdirAll(d, 0o700); err != nil {
-				return errors.Wrap(err, ErrIO, "cannot restore "+strconv.Quote(name))
-			}
-		}
-		f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return errors.Wrap(err, ErrDamaged, "the archive repeats or misplaces "+strconv.Quote(name))
-		}
-		_, err = io.Copy(f, body)
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
-			return errors.Wrap(err, ErrIO, "cannot restore "+strconv.Quote(name))
-		}
-		return nil
-	})
-}
-
-func finishRestore(building, dest string, m *Manifest) error {
-	note := "# Restored state, in quarantine\n\nRestored on " + time.Now().UTC().Format(time.RFC3339) +
-		" from a backup made on " + m.Created.Format(time.RFC3339) + ".\n\n" +
-		"Nothing uses this directory. A snapshot says nothing of what happened after it: work it marks as pending may have been done, money it counts as unspent may be spent. Check before using any of it.\n"
-	if err := os.WriteFile(filepath.Join(building, QuarantineFile), []byte(note), 0o600); err != nil {
-		return errors.Wrap(err, ErrIO, "cannot mark the quarantine")
-	}
-	if err := os.Rename(building, dest); err != nil {
-		return errors.Wrap(err, ErrIO, "cannot move the restored state into place")
 	}
 	return nil
 }

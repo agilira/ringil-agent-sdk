@@ -453,7 +453,7 @@ func (s *store) SetTitle(ctx context.Context, id, title string) error {
 
 // writeWhole replaces file with data through a unique temporary file.
 func writeWhole(root *os.Root, file, data string) error {
-	tmp := file + "." + rand.Text()[:8] + ".tmp"
+	tmp := "." + file + "." + rand.Text()[:8] + ".tmp"
 	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return ioError(err, "cannot write the title")

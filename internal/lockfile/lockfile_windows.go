@@ -23,6 +23,17 @@ func TryLock(f *os.File) (bool, error) {
 	return err == nil, err
 }
 
+// TryLockShared takes a shared lock on f without waiting: many holders
+// at once, none while an exclusive lock is held.
+func TryLockShared(f *os.File) (bool, error) {
+	ol := new(windows.Overlapped)
+	err := windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ol)
+	if err == windows.ERROR_LOCK_VIOLATION {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Unlock releases a lock taken on f.
 func Unlock(f *os.File) error {
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, new(windows.Overlapped))

@@ -338,15 +338,25 @@ cancella i suoi artifact.
 CLI: nel terminale lo scope è il progetto della cartella di lancio; `ringil artifact`,
 `artifact show <nome>`, `artifact rm <nome>`.
 
-## Backup e ripristino
+## Esporta e importa
 
-`backup.Create` salva in un tar.gz le cartelle di stato indicate dall'host, con un manifest
-di digest; `backup.Verify` controlla un archivio senza estrarlo; `backup.Restore` lo
-ripristina solo in una cartella nuova, marcata `QUARANTINE.md`: un'istantanea non dice nulla
-di ciò che è successo dopo (effetti già fatti, spese già fatte), quindi niente viene
-riattivato da solo. CLI: `ringil state backup <file>`, `state verify <file>`,
-`state restore <file> <cartella nuova>`; sono esclusi le skill installate e i token di
-login.
+`backup.Create` esporta in un tar.gz le cartelle e i file di stato indicati dall'host, con un
+manifest di digest: l'utente lo salva dove vuole. `backup.Verify` controlla un archivio senza
+estrarlo. `backup.Import` lo rimette al posto dello stato, tutto o niente: estrae accanto a
+ogni posto e scrive su disco, verifica l'archivio intero (ogni sorgente una volta, del suo
+tipo), poi scambia tutto insieme seguendo un giornale; se uno scambio fallisce rimette
+com'era, e un import interrotto (crash, corrente) lo annulla il primo processo dopo. Gira solo
+quando nessun processo usa lo stato (`backup.Use`: lock condiviso per chi lo usa, esclusivo
+per l'import); `Options.Before` fa la copia dello stato attuale già con il lock. `serve.Server.Pause` ferma le nuove esecuzioni e
+aspetta quelle in corso, per una copia coerente.
+CLI: `ringil state export <file>`, `state verify <file>`, `state import <file>` (prima una
+copia dello stato attuale in `<data>/backups`, ne restano le ultime 5). Dall'app:
+`GET /v1/state/export` scarica l'archivio; `POST /v1/state/import` lo carica, serve si ferma,
+importa e riparte da solo; `GET /v1/state/import` dice com'è andato l'ultimo.
+Nell'archivio: conversazioni, memoria, note, workflow, artifact, skill, trigger (con i segreti
+dei loro webhook: l'archivio va tenuto privato), `ringil.yaml`, `AGENTS.md`, i registri delle
+chat, i documenti ricevuti. Esclusi: lo store dei segreti, il token di serve e i login
+(credenziali), il registro di audit, le cache.
 
 ## Regole di progetto
 

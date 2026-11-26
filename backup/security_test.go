@@ -27,7 +27,7 @@ func FuzzVerify(f *testing.F) {
 		f.Fatal(err)
 	}
 	var validBuf bytes.Buffer
-	if _, err := Create(bg, &validBuf, map[string]string{"data": src}, nil); err != nil {
+	if _, err := Create(bg, &validBuf, map[string]Source{"data": {Path: src}}, nil); err != nil {
 		f.Fatal(err)
 	}
 	f.Add(validBuf.Bytes())
@@ -141,6 +141,7 @@ func TestSecurityTarAttacksRefused(t *testing.T) {
 		"newlineChar":   mustRawArchive(t, []rawTarEntry{{name: "a/\nb", typ: tar.TypeReg, body: "x"}, {name: manifestName, typ: tar.TypeReg, body: `{"version":1,"files":{}}`}}),
 		"duplicate":     mustRawArchive(t, []rawTarEntry{{name: "a/b", typ: tar.TypeReg, body: "x"}, {name: "a/b", typ: tar.TypeReg, body: "y"}, {name: manifestName, typ: tar.TypeReg, body: `{"version":1,"files":{}}`}}),
 		"afterManifest": mustRawArchive(t, []rawTarEntry{{name: manifestName, typ: tar.TypeReg, body: `{"version":1,"files":{}}`}, {name: "a/b", typ: tar.TypeReg, body: "x"}}),
+		"manifestLink":  mustRawArchive(t, []rawTarEntry{{name: manifestName, typ: tar.TypeSymlink, link: "/etc/passwd"}}),
 		"noManifest":    mustRawArchive(t, []rawTarEntry{{name: "a/b", typ: tar.TypeReg, body: "x"}}),
 		"badVersion2":   mustRawArchive(t, []rawTarEntry{{name: manifestName, typ: tar.TypeReg, body: `{"version":2,"files":{}}`}}),
 		"badVersion0":   mustRawArchive(t, []rawTarEntry{{name: manifestName, typ: tar.TypeReg, body: `{"version":0,"files":{}}`}}),
@@ -148,7 +149,7 @@ func TestSecurityTarAttacksRefused(t *testing.T) {
 		"missingFile":   mustRawArchive(t, []rawTarEntry{{name: manifestName, typ: tar.TypeReg, body: `{"version":1,"files":{"a/b":"00"}}`}}),
 	}
 	for name, archive := range cases {
-		assertRestoreDamagedClean(t, name, archive)
+		assertImportDamagedClean(t, name, archive)
 	}
 
 	oldMax := MaxTotal
@@ -158,19 +159,30 @@ func TestSecurityTarAttacksRefused(t *testing.T) {
 		{name: "a/big", typ: tar.TypeReg, body: strings.Repeat("x", 1025)},
 		{name: manifestName, typ: tar.TypeReg, body: `{"version":1,"files":{}}`},
 	})
-	assertRestoreDamagedClean(t, "maxTotal", oversize)
+	assertImportDamagedClean(t, "maxTotal", oversize)
 }
 
-func assertRestoreDamagedClean(t *testing.T, name string, archive []byte) {
+// assertImportDamagedClean: a damaged archive is refused, the state as it
+// was, nothing left beside it.
+func assertImportDamagedClean(t *testing.T, name string, archive []byte) {
 	t.Helper()
 	parent := t.TempDir()
-	dest := filepath.Join(parent, "out")
-	if _, err := Restore(bg, bytes.NewReader(archive), dest); !errors.HasCode(err, ErrDamaged) {
+	state := filepath.Join(parent, "a")
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "mine"), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(bg, bytes.NewReader(archive), Options{Sources: map[string]Source{"a": {Path: state}}, LockDir: t.TempDir()}); !errors.HasCode(err, ErrDamaged) {
 		t.Errorf("%s: got %v, want ErrDamaged", name, err)
 	}
 	entries, err := os.ReadDir(parent)
-	if err != nil || len(entries) != 0 {
-		t.Errorf("%s: leftover files in parent: %v %v", name, entries, err)
+	if err != nil || len(entries) != 1 {
+		t.Errorf("%s: leftover beside the state: %v %v", name, entries, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(state, "mine")); string(b) != "mine" {
+		t.Errorf("%s: the state changed", name)
 	}
 }
 
@@ -184,12 +196,12 @@ func TestSecurityCreateRejectsBadSourcesAndSkipsLocks(t *testing.T) {
 	})
 	for _, bad := range []string{"../a", "Upper", "", "a/b", strings.Repeat("a", 33)} {
 		var buf bytes.Buffer
-		if _, err := Create(bg, &buf, map[string]string{bad: dir}, nil); !errors.HasCode(err, ErrInput) {
+		if _, err := Create(bg, &buf, map[string]Source{bad: {Path: dir}}, nil); !errors.HasCode(err, ErrInput) {
 			t.Errorf("source %q accepted: %v", bad, err)
 		}
 	}
 	var buf bytes.Buffer
-	m, err := Create(bg, &buf, map[string]string{"data": dir}, nil)
+	m, err := Create(bg, &buf, map[string]Source{"data": {Path: dir}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
