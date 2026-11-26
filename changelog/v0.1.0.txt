@@ -186,6 +186,10 @@ FEATURES
     Options.Before under the lock. At most 1M files. Restore into
     quarantine is gone. serve: Pause stops new runs and waits for those
     going.
+  - serve: Config.Container lets the API listen on every interface of a
+    container's own network, answering only the loopback and
+    Config.Peers (the host, through the container's gateway): the Host
+    header, which a client writes, proves nothing there.
   - ringil: serve.app serves the app's build and prints its sign-in link;
     a settings API for it (models, limits, connections, keys write-only,
     MCP servers, skills, a provider's models), each change checked as the

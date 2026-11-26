@@ -7,7 +7,10 @@ package serve
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -148,5 +151,72 @@ func TestPauseIdempotentAndWaitsForHeld(t *testing.T) {
 	defer rel()
 	if _, err := a.srv.Pause(context.Background(), 50*time.Millisecond); !errors.HasCode(err, ErrBusy) {
 		t.Fatalf("pause over hold: %v", err)
+	}
+}
+
+// Outside a container the API refuses an address that is not loopback;
+// in one it takes it.
+func TestContainerListens(t *testing.T) {
+	l, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Skip("no interface to listen on")
+	}
+	defer func() { _ = l.Close() }()
+	srv, err := New(Config{Token: token, NoStore: true, Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Serve(context.Background(), l); !errors.HasCode(err, ErrConfig) {
+		t.Fatalf("outside a container: %v", err)
+	}
+	srv.Close()
+	in, err := New(Config{Token: token, NoStore: true, Container: true, Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- in.Serve(ctx, l) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("in a container: %v", err)
+	}
+}
+
+// In a container the API answers the loopback and its peers only: the
+// Host header says nothing of where a request comes from.
+func TestContainerPeers(t *testing.T) {
+	srv, err := New(Config{Token: token, NoStore: true, Container: true, Peers: []netip.Prefix{netip.MustParsePrefix("172.17.0.1/32")},
+		Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	h := srv.Handler()
+	for remote, want := range map[string]int{
+		"127.0.0.1:5000":           http.StatusOK,
+		"172.17.0.1:5000":          http.StatusOK,
+		"[::ffff:172.17.0.1]:5000": http.StatusOK,
+		"172.17.0.3:5000":          http.StatusForbidden,
+		"192.168.1.20:5000":        http.StatusForbidden,
+		"[::1]:5000":               http.StatusOK,
+	} {
+		req := httptest.NewRequest("GET", "/health", nil)
+		req.Host, req.RemoteAddr = "127.0.0.1:8765", remote
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("%s: %d, want %d", remote, rec.Code, want)
+		}
+	}
+	g := srv.Guard(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	req := httptest.NewRequest("GET", "/a2a", nil)
+	req.Host, req.RemoteAddr = "127.0.0.1:8765", "172.17.0.3:5000"
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("direct Guard from non-peer: %d, want 403", rec.Code)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -97,15 +98,48 @@ func (s *Server) Handler() http.Handler {
 	s.mu.Unlock()
 	guarded := s.Guard(mux)
 	if s.cfg.App == nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return s.fromPeers(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/health" {
 				s.health(w, r)
 				return
 			}
 			guarded.ServeHTTP(w, r)
-		})
+		}))
 	}
-	return s.withApp(s.mountMatcher(), guarded)
+	return s.fromPeers(s.withApp(s.mountMatcher(), guarded))
+}
+
+// fromPeers, in a container, answers only the loopback and Config.Peers:
+// there the Host header, which the client writes, says nothing of where
+// a request comes from.
+func (s *Server) fromPeers(next http.Handler) http.Handler {
+	if !s.cfg.Container {
+		return next // a loopback listener: only this machine reaches it
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.peer(r.RemoteAddr) {
+			failure(w, http.StatusForbidden, fail("SERVE_PEER", "requests come from the host only: publish the port on its loopback (-p 127.0.0.1:8765:8765)"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) peer(remote string) bool {
+	ap, err := netip.ParseAddrPort(remote)
+	if err != nil {
+		return false
+	}
+	ip := ap.Addr().Unmap()
+	if ip.IsLoopback() {
+		return true
+	}
+	for _, p := range s.cfg.Peers {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // withApp is the API beside the app: its files and its sign-in, to the
@@ -197,7 +231,7 @@ func (s *Server) bearerOK(r *http.Request) bool {
 // from a browser page: what the API itself requires, for a host mounting
 // more on the same listener (an A2A endpoint).
 func (s *Server) Guard(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return s.fromPeers(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !loopbackHost(r.Host):
 			// DNS rebinding: a page whose name now points at 127.0.0.1.
@@ -214,7 +248,7 @@ func (s *Server) Guard(next http.Handler) http.Handler {
 			w.Header().Set("Cache-Control", "no-store")
 			next.ServeHTTP(w, r)
 		}
-	})
+	}))
 }
 
 func loopbackHost(host string) bool {
@@ -516,8 +550,8 @@ func status(err error) int {
 // until ctx ends or Close; then it closes l.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	addr, ok := l.Addr().(*net.TCPAddr)
-	if !ok || !addr.IP.IsLoopback() {
-		return fail(ErrConfig, "the API listens on a loopback address only")
+	if !ok || (!addr.IP.IsLoopback() && !s.cfg.Container) {
+		return fail(ErrConfig, "the API listens on a loopback address only (in a container, set Container)")
 	}
 	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
 		IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10}

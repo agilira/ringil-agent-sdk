@@ -8,8 +8,8 @@
 // Events, resumable), asks the caller to approve risky tool calls, lets
 // it cancel a run, and keeps finished runs for a while.
 //
-// The API listens on loopback only and wants a bearer token on every
-// request; requests from a browser (an Origin header, a Host other than
+// The API listens on loopback only (in a container on its own network,
+// with Config.Container) and wants a bearer token on every request; requests from a browser (an Origin header, a Host other than
 // the loopback) are refused, so a web page cannot drive the agent.
 //
 //	srv, _ := serve.New(serve.Config{Token: token, Profiles: []serve.Profile{{Name: "default", New: serve.Fixed(a)}}})
@@ -26,8 +26,10 @@ import (
 	"crypto/rand"
 	"io/fs"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -119,6 +121,19 @@ type Config struct {
 	// them under /v1/conversations/{id}/artifacts. A store of its own:
 	// every scope in it is a conversation's.
 	Artifacts artifact.Store
+	// Container says the server runs in a container, whose network is its
+	// own: it may listen on every interface, as the container's port must
+	// be reached from the host. Then a request is answered only from the
+	// loopback or from Peers (the host, through the container's gateway),
+	// refusing other containers on the bridge and direct LAN peers before
+	// the token is looked at. Still publish the port on the host's loopback
+	// only (docker run -p 127.0.0.1:8765:8765): Docker's userland proxy and
+	// Docker Desktop masquerade LAN connections behind the gateway address.
+	Container bool
+	// Peers are the networks a server in a container answers besides the
+	// loopback: the host's address as the container sees it (its default
+	// gateway). Empty, only the loopback.
+	Peers []netip.Prefix
 }
 
 // Server runs the profiles' agents for the API.
@@ -161,6 +176,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg, err = withStore(cfg); err != nil {
 		return nil, err
 	}
+	cfg.Peers = slices.Clone(cfg.Peers)
 	ctx, stop := context.WithCancel(context.Background())
 	s := &Server{cfg: cfg, profiles: profiles, ctx: ctx, stop: stop, runs: map[string]*job{}, held: map[string]int{}, now: time.Now, app: newAppAuth()}
 	s.uploads = make(chan struct{}, s.maxRuns())
