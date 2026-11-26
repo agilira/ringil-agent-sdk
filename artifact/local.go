@@ -11,8 +11,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -83,19 +83,24 @@ type index struct {
 }
 
 // Put implements Store.
-func (l *Local) Put(ctx context.Context, scope, name, mediaType, by string, data []byte) (Info, error) {
+func (l *Local) Put(ctx context.Context, scope, name string, meta Meta, data []byte) (Info, error) {
 	if err := check(scope, name); err != nil {
 		return Info{}, err
 	}
-	if !validMedia.MatchString(mediaType) {
-		mediaType = "application/octet-stream"
+	meta, err := normalize(name, meta)
+	if err != nil {
+		return Info{}, err
 	}
 	if int64(len(data)) > l.maxSize() {
 		return Info{}, errors.New(ErrInput, "the artifact is too large").WithUserMessage("The artifact is larger than the store allows.")
 	}
 	sum := sha256.Sum256(data)
-	info := Info{Name: name, MediaType: mediaType, Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:]), Created: time.Now().UTC(), By: by}
-	err := l.locked(ctx, scope, func(root *os.Root, idx *index) (bool, error) {
+	info := Info{Name: name, Title: meta.Title, Kind: meta.Kind, Language: meta.Language, MediaType: meta.MediaType,
+		Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:]), Created: time.Now().UTC(), By: meta.By}
+	err = l.locked(ctx, scope, true, func(root *os.Root, idx *index) (bool, error) {
+		if err := checkBase(idx.Artifacts[name], name, meta.Base); err != nil {
+			return false, err
+		}
 		if idx.bytes()+info.Size > l.maxScope() {
 			return false, errors.New(ErrInput, "the scope is full").WithUserMessage("This scope is full; delete artifacts no longer needed.")
 		}
@@ -118,6 +123,21 @@ func (l *Local) Put(ctx context.Context, scope, name, mediaType, by string, data
 		return true, nil
 	})
 	return info, err
+}
+
+// checkBase refuses a version made on one that is no longer the latest.
+func checkBase(versions []Info, name string, base int) error {
+	latest := 0
+	if len(versions) > 0 {
+		latest = versions[len(versions)-1].Version
+	}
+	switch {
+	case base == NoBase && latest > 0:
+		return errors.New(ErrExists, "the artifact exists").WithUserMessage("An artifact named " + name + " exists: change it with edit_artifact or rewrite_artifact, or pick another name.")
+	case base > 0 && latest != base:
+		return errors.New(ErrConflict, "the artifact changed").WithUserMessage(name + " changed since it was read (now v" + strconv.Itoa(latest) + "): read it again and redo the change.")
+	}
+	return nil
 }
 
 // bytes is the size of the scope's distinct contents.
@@ -175,7 +195,7 @@ func (l *Local) Get(ctx context.Context, scope, name string, version int) (Info,
 	}
 	var info Info
 	var data []byte
-	err := l.locked(ctx, scope, func(root *os.Root, idx *index) (bool, error) {
+	err := l.locked(ctx, scope, false, func(root *os.Root, idx *index) (bool, error) {
 		found, ok := pick(idx.Artifacts[name], version)
 		if !ok {
 			return false, errors.New(ErrNotFound, "no such artifact").WithUserMessage("No artifact " + name + " in this scope with that version.")
@@ -222,11 +242,8 @@ func (l *Local) List(ctx context.Context, scope string) ([]Info, error) {
 	if !validScope.MatchString(scope) {
 		return nil, errors.New(ErrInput, "bad scope")
 	}
-	if _, err := os.Lstat(filepath.Join(l.dir, scope)); os.IsNotExist(err) {
-		return nil, nil // nothing published there yet
-	}
 	var out []Info
-	err := l.locked(ctx, scope, func(_ *os.Root, idx *index) (bool, error) {
+	err := l.locked(ctx, scope, false, func(_ *os.Root, idx *index) (bool, error) {
 		for _, versions := range idx.Artifacts {
 			out = append(out, versions[len(versions)-1])
 		}
@@ -236,13 +253,50 @@ func (l *Local) List(ctx context.Context, scope string) ([]Info, error) {
 	return out, err
 }
 
+// Versions implements Store.
+func (l *Local) Versions(ctx context.Context, scope, name string) ([]Info, error) {
+	if err := check(scope, name); err != nil {
+		return nil, err
+	}
+	var out []Info
+	err := l.locked(ctx, scope, false, func(_ *os.Root, idx *index) (bool, error) {
+		out = append(out, idx.Artifacts[name]...)
+		if len(out) == 0 {
+			return false, errors.New(ErrNotFound, "no such artifact").WithUserMessage("No artifact " + name + " in this scope.")
+		}
+		return false, nil
+	})
+	return out, err
+}
+
+// DeleteScope implements Store: under the scope's lock its index and
+// contents go; the empty folder and its lock stay, so that whoever waits
+// on the lock finds a scope with nothing in it, never a half-removed one.
+func (l *Local) DeleteScope(ctx context.Context, scope string) error {
+	if !validScope.MatchString(scope) {
+		return errors.New(ErrInput, "bad scope")
+	}
+	return l.locked(ctx, scope, false, func(root *os.Root, _ *index) (bool, error) {
+		if root == nil {
+			return false, nil // never made
+		}
+		if err := root.Remove(indexFile); err != nil && !os.IsNotExist(err) {
+			return false, errors.Wrap(err, ErrIO, "cannot remove the index")
+		}
+		if err := root.RemoveAll(blobDir); err != nil {
+			return false, errors.Wrap(err, ErrIO, "cannot remove the contents")
+		}
+		return false, nil
+	})
+}
+
 // Delete implements Store: the versions go from the index; contents no
 // other version uses are removed.
 func (l *Local) Delete(ctx context.Context, scope, name string) error {
 	if err := check(scope, name); err != nil {
 		return err
 	}
-	return l.locked(ctx, scope, func(_ *os.Root, idx *index) (bool, error) {
+	return l.locked(ctx, scope, false, func(_ *os.Root, idx *index) (bool, error) {
 		gone := idx.Artifacts[name]
 		if len(gone) == 0 {
 			return false, errors.New(ErrNotFound, "no such artifact")
@@ -254,13 +308,20 @@ func (l *Local) Delete(ctx context.Context, scope, name string) error {
 }
 
 // locked runs fn on the scope's index under its lock, saving the index
-// when fn reports a change.
-func (l *Local) locked(ctx context.Context, scope string, fn func(*os.Root, *index) (bool, error)) error {
+// when fn reports a change. Only a write (create) makes a scope: a read
+// of one never made runs fn on an empty index, and leaves nothing behind.
+func (l *Local) locked(ctx context.Context, scope string, create bool, fn func(*os.Root, *index) (bool, error)) error {
 	top, err := os.OpenRoot(l.dir)
 	if err != nil {
 		return errors.Wrap(err, ErrIO, "cannot open the artifact directory")
 	}
 	defer closeRoot(top)
+	if !create {
+		if _, err := top.Lstat(scope); os.IsNotExist(err) {
+			_, err := fn(nil, &index{Version: 1, Artifacts: map[string][]Info{}})
+			return err
+		}
+	}
 	// Through the root: names Windows reserves (CON, NUL) are refused.
 	if err := top.MkdirAll(scope, 0o700); err != nil {
 		return errors.Wrap(err, ErrIO, "cannot open the scope")
@@ -314,10 +375,40 @@ func readIndex(root *os.Root) (*index, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, ErrIO, "cannot read the index")
 	}
-	if json.Unmarshal(data, idx) != nil || idx.Version != 1 || idx.Artifacts == nil {
+	if json.Unmarshal(data, idx) != nil || !validateIndex(idx) {
 		return nil, errors.New(ErrDamaged, "the artifact index is damaged")
 	}
 	return idx, nil
+}
+
+func validateIndex(idx *index) bool {
+	if idx.Version != 1 || idx.Artifacts == nil {
+		return false
+	}
+	for _, vs := range idx.Artifacts {
+		if len(vs) == 0 {
+			return false
+		}
+		for _, v := range vs {
+			if !validDigest(v.SHA256) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validDigest(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := range len(s) {
+		b := s[i]
+		if (b < '0' || b > '9') && (b < 'a' || b > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func closeRoot(r *os.Root) {

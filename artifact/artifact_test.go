@@ -33,11 +33,11 @@ func store(t *testing.T) (*Local, string) {
 
 func TestVersionsAndDigest(t *testing.T) {
 	s, dir := store(t)
-	a, err := s.Put(bg, "proj", "report.md", "text/markdown", "task 1", []byte("first"))
+	a, err := s.Put(bg, "proj", "report.md", Meta{Kind: Markdown, By: "task 1"}, []byte("first"))
 	if err != nil || a.Version != 1 {
 		t.Fatalf("put %+v %v", a, err)
 	}
-	if b, err := s.Put(bg, "proj", "report.md", "text/markdown", "task 2", []byte("second")); err != nil || b.Version != 2 {
+	if b, err := s.Put(bg, "proj", "report.md", Meta{Kind: Markdown, By: "task 2"}, []byte("second")); err != nil || b.Version != 2 {
 		t.Fatalf("second %+v %v", b, err)
 	}
 	if _, data, err := s.Get(bg, "proj", "report.md", 0); err != nil || string(data) != "second" {
@@ -70,7 +70,7 @@ func checkTamperAndDelete(t *testing.T, s *Local, dir string, a Info) {
 func TestBadNamesAndConcurrentPuts(t *testing.T) {
 	s, _ := store(t)
 	for _, n := range []string{"../x", ".hidden", "a/b", ""} {
-		if _, err := s.Put(bg, "p", n, "text/plain", "", []byte("x")); !errors.HasCode(err, ErrInput) {
+		if _, err := s.Put(bg, "p", n, Meta{}, []byte("x")); !errors.HasCode(err, ErrInput) {
 			t.Errorf("%q accepted", n)
 		}
 	}
@@ -79,7 +79,7 @@ func TestBadNamesAndConcurrentPuts(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := s.Put(bg, "p", "log.txt", "text/plain", "", []byte("x")); err != nil {
+			if _, err := s.Put(bg, "p", "log.txt", Meta{}, []byte("x")); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -102,25 +102,24 @@ func call(t *testing.T, tool agent.Tool, in any) (string, error) {
 
 func TestToolsRespectScopes(t *testing.T) {
 	s, _ := store(t)
-	if _, err := s.Put(bg, "project", "spec.md", "text/markdown", "", []byte("the spec")); err != nil {
+	if _, err := s.Put(bg, "project", "spec.md", Meta{Kind: Markdown, Title: "Spec"}, []byte("the spec")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Put(bg, "secret", "keys.txt", "text/plain", "", []byte("no")); err != nil {
+	if _, err := s.Put(bg, "secret", "keys.txt", Meta{}, []byte("no")); err != nil {
 		t.Fatal(err)
 	}
-	ts := Tools(s, Access{Scope: "task-1", By: "worker", Publish: true, Read: []string{"project"}})
-	byName := index2(ts)
-	if out, err := call(t, byName["publish_artifact"], publishIn{Name: "out.md", Content: "done"}); err != nil || !strings.Contains(out, "v1") {
-		t.Fatalf("publish %q %v", out, err)
+	byName := index2(Tools(s, Access{Scope: "task-1", By: "worker", Write: true, Read: []string{"project"}}))
+	if out, err := call(t, byName["create_artifact"], createIn{Name: "out.md", Title: "Out", Kind: Markdown, Content: "done"}); err != nil || !strings.Contains(out, "v1") {
+		t.Fatalf("create %q %v", out, err)
 	}
-	if out, err := call(t, byName["read_artifact"], readIn{Name: "spec.md", Scope: "project"}); err != nil || out != "[spec.md v1, text/markdown]\nthe spec" {
+	if out, err := call(t, byName["read_artifact"], readIn{Name: "spec.md", Scope: "project"}); err != nil || out != "[spec.md v1, markdown, \"Spec\"]\nthe spec" {
 		t.Fatalf("read project %q %v", out, err)
 	}
 	if _, err := call(t, byName["read_artifact"], readIn{Name: "keys.txt", Scope: "secret"}); err == nil {
 		t.Fatal("read an ungranted scope")
 	}
 	if ro := Tools(s, Access{Scope: "x"}); len(ro) != 2 {
-		t.Fatalf("publish without the grant: %d tools", len(ro))
+		t.Fatalf("writing without the grant: %d tools", len(ro))
 	}
 }
 
@@ -139,7 +138,7 @@ func TestAuditRegressions(t *testing.T) {
 	s, dir := store(t)
 	s.MaxVersions = 3
 	for i := range 5 {
-		if _, err := s.Put(bg, "-dotfiles-1a2b", "log.txt", "text/plain", "", []byte{byte('a' + i)}); err != nil {
+		if _, err := s.Put(bg, "-dotfiles-1a2b", "log.txt", Meta{}, []byte{byte('a' + i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -158,14 +157,14 @@ func TestAuditRegressions(t *testing.T) {
 
 func TestDamagedContentHealedByPublish(t *testing.T) {
 	s, dir := store(t)
-	a, err := s.Put(bg, "p", "x.txt", "text/plain", "", []byte("same"))
+	a, err := s.Put(bg, "p", "x.txt", Meta{}, []byte("same"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "p", blobDir, a.SHA256), []byte("bad"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Put(bg, "p", "x.txt", "text/plain", "", []byte("same")); err != nil {
+	if _, err := s.Put(bg, "p", "x.txt", Meta{}, []byte("same")); err != nil {
 		t.Fatal(err)
 	}
 	if _, data, err := s.Get(bg, "p", "x.txt", 0); err != nil || string(data) != "same" {

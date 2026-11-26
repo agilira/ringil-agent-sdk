@@ -15,6 +15,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/artifact"
 )
 
 // Bounds of a page of history.
@@ -196,7 +197,15 @@ func (s *Server) DeleteConversation(ctx context.Context, id string) error {
 	if !s.exists(ctx, id) {
 		return fail(ErrNotFound, "no conversation "+id)
 	}
-	return s.cfg.Store.Delete(ctx, id)
+	if err := s.cfg.Store.Delete(ctx, id); err != nil {
+		return err
+	}
+	if s.cfg.Artifacts != nil && artifact.ValidScope(id) {
+		// Its artifacts go with it; the conversation is gone whatever
+		// happens here, and a scope left over is empty to the app.
+		_ = s.cfg.Artifacts.DeleteScope(ctx, id)
+	}
+	return nil
 }
 
 func (s *Server) exists(ctx context.Context, id string) bool {

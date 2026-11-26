@@ -50,6 +50,10 @@ var writeTimeout = 30 * time.Second
 //	GET    /v1/conversations/{id}/messages       a page of its messages (?from=&limit=; the last 200 by default)
 //	PATCH  /v1/conversations/{id}                {"title"} rename it
 //	DELETE /v1/conversations/{id}                delete it
+//	GET    /v1/conversations/{id}/artifacts      the latest version of each artifact of the conversation
+//	GET    /v1/conversations/{id}/artifacts/{name}  {"latest","versions"}
+//	GET    /v1/conversations/{id}/artifacts/{name}/content?version=N  its bytes: an image as itself, text as text/plain, a file as a download
+//	DELETE /v1/conversations/{id}/artifacts/{name}  every version
 //	GET    /v1/audio                             {"transcribe","speech"} which halves of the voice are on
 //	POST   /v1/audio/transcriptions              the recording as the body (audio/webm, ogg, mpeg, wav, mp4) → {"text"}
 //	POST   /v1/audio/speech                      {"text"} → the audio, its type in Content-Type
@@ -77,6 +81,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", s.history)
 	mux.HandleFunc("PATCH /v1/conversations/{id}", s.rename)
 	mux.HandleFunc("DELETE /v1/conversations/{id}", s.deleteConversation)
+	mux.HandleFunc("GET /v1/conversations/{id}/artifacts", s.listArtifacts)
+	mux.HandleFunc("GET /v1/conversations/{id}/artifacts/{name}", s.artifactVersions)
+	mux.HandleFunc("GET /v1/conversations/{id}/artifacts/{name}/content", s.artifactContent)
+	mux.HandleFunc("DELETE /v1/conversations/{id}/artifacts/{name}", s.deleteArtifact)
 	mux.HandleFunc("GET /v1/audio", s.audioInfo)
 	mux.HandleFunc("POST /v1/audio/transcriptions", s.transcribe)
 	mux.HandleFunc("POST /v1/audio/speech", s.speak)

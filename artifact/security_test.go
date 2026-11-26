@@ -19,18 +19,18 @@ func TestSecurityScopeNameAndMediaValidation(t *testing.T) {
 	s, _ := store(t)
 	badScopes := []string{"", ".", "..", "../x", ".hidden", "a/b", `a\b`, "a\x00b", strings.Repeat("s", 101)}
 	for _, sc := range badScopes {
-		if _, err := s.Put(bg, sc, "ok.txt", "text/plain", "", []byte("x")); !errors.HasCode(err, ErrInput) {
+		if _, err := s.Put(bg, sc, "ok.txt", Meta{}, []byte("x")); !errors.HasCode(err, ErrInput) {
 			t.Errorf("scope %q accepted: %v", sc, err)
 		}
 	}
 	badNames := []string{"", "-a", "_a", ".a", "../x", "a/b", strings.Repeat("n", 101)}
 	for _, nm := range badNames {
-		if _, err := s.Put(bg, "proj", nm, "text/plain", "", []byte("x")); !errors.HasCode(err, ErrInput) {
+		if _, err := s.Put(bg, "proj", nm, Meta{}, []byte("x")); !errors.HasCode(err, ErrInput) {
 			t.Errorf("name %q accepted: %v", nm, err)
 		}
 	}
 	for _, mt := range []string{"text/plain; evil", "../x", "TEXT/PLAIN", ""} {
-		info, err := s.Put(bg, "proj", "m.txt", mt, "", []byte("x"))
+		info, err := s.Put(bg, "proj", "m.txt", Meta{Kind: File, MediaType: mt}, []byte("x"))
 		if err != nil {
 			t.Fatalf("put with media %q failed: %v", mt, err)
 		}
@@ -44,13 +44,13 @@ func TestSecurityQuotasAndScopeIsolation(t *testing.T) {
 	s, _ := store(t)
 	s.MaxSize = 10
 	s.MaxScope = 15
-	if _, err := s.Put(bg, "own", "big.txt", "text/plain", "", []byte("01234567890")); !errors.HasCode(err, ErrInput) {
+	if _, err := s.Put(bg, "own", "big.txt", Meta{}, []byte("01234567890")); !errors.HasCode(err, ErrInput) {
 		t.Fatalf("oversize Put accepted: %v", err)
 	}
-	if _, err := s.Put(bg, "own", "a.txt", "text/plain", "", []byte("12345678")); err != nil {
+	if _, err := s.Put(bg, "own", "a.txt", Meta{}, []byte("12345678")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Put(bg, "own", "b.txt", "text/plain", "", []byte("12345678")); !errors.HasCode(err, ErrInput) {
+	if _, err := s.Put(bg, "own", "b.txt", Meta{}, []byte("12345678")); !errors.HasCode(err, ErrInput) {
 		t.Fatalf("scope quota exceeded accepted: %v", err)
 	}
 	checkScopeIsolation(t, s)
@@ -58,15 +58,17 @@ func TestSecurityQuotasAndScopeIsolation(t *testing.T) {
 
 func checkScopeIsolation(t *testing.T, s *Local) {
 	t.Helper()
-	if _, err := s.Put(bg, "secret", "k.txt", "text/plain", "", []byte("top")); err != nil {
+	if _, err := s.Put(bg, "secret", "k.txt", Meta{}, []byte("top")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Put(bg, "shared", "bin.dat", "application/octet-stream", "", []byte{0xff, 0xfe, 0x00}); err != nil {
+	if _, err := s.Put(bg, "shared", "bin.dat", Meta{Kind: File}, []byte{0xff, 0xfe, 0x00}); err != nil {
 		t.Fatal(err)
 	}
-	byName := index2(Tools(s, Access{Scope: "own", Read: []string{"shared"}, Publish: false}))
-	if _, ok := byName["publish_artifact"]; ok {
-		t.Fatal("publish_artifact exposed when Publish=false")
+	byName := index2(Tools(s, Access{Scope: "own", Read: []string{"shared"}}))
+	for _, name := range []string{"create_artifact", "edit_artifact", "rewrite_artifact", "save_file_artifact"} {
+		if _, ok := byName[name]; ok {
+			t.Fatal(name + " exposed without Write")
+		}
 	}
 	if _, err := call(t, byName["list_artifacts"], listIn{Scope: "secret"}); err == nil {
 		t.Fatal("listed ungranted scope")
@@ -75,14 +77,14 @@ func checkScopeIsolation(t *testing.T, s *Local) {
 		t.Fatal("read ungranted scope")
 	}
 	out, err := call(t, byName["read_artifact"], readIn{Name: "bin.dat", Scope: "shared"})
-	if err != nil || !strings.Contains(out, "binary") {
+	if err != nil || !strings.Contains(out, "cannot be shown as text") {
 		t.Fatalf("binary artifact response: %q %v", out, err)
 	}
 }
 
 func TestSecurityCorruptIndexMissingBlobAndPermissions(t *testing.T) {
 	s, dir := store(t)
-	info, err := s.Put(bg, "proj", "a.txt", "text/plain", "", []byte("hello"))
+	info, err := s.Put(bg, "proj", "a.txt", Meta{}, []byte("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}

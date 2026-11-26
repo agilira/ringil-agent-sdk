@@ -36,6 +36,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/artifact"
 	"github.com/agilira/ringil-agent-sdk/delegate"
 	"github.com/agilira/ringil-agent-sdk/dirs"
 	"github.com/agilira/ringil-agent-sdk/session/file"
@@ -110,6 +111,13 @@ type Config struct {
 	// Voice gives the app speech to text and text to speech; zero, the
 	// voice routes say it is off.
 	Voice Voice
+	// Artifacts is where the profiles' artifact tools keep what they make
+	// (artifact.Tools, on this same store): each run works in its
+	// conversation's scope only, its workers too (a run without one has
+	// none), each new version is an "artifact" event, and the app reads
+	// them under /v1/conversations/{id}/artifacts. A store of its own:
+	// every scope in it is a conversation's.
+	Artifacts artifact.Store
 }
 
 // Server runs the profiles' agents for the API.
@@ -394,6 +402,7 @@ func (s *Server) work(ctx context.Context, j *job, p Profile, input agent.Messag
 			err = fail(ErrConfig, "the profile's agent panicked")
 		}
 	}()
+	ctx = artifact.WithPublished(artifact.WithScope(ctx, j.conversation), j.artifact) // no conversation, no artifacts
 	inst, err := p.New(ctx)
 	defer release(inst) // whatever New made, even with an error
 	if err != nil {

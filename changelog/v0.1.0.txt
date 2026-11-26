@@ -166,6 +166,17 @@ FEATURES
       deletes of a conversation hold runs off (reads share); large bodies
       read MaxRuns at once; a voice model that cannot be set up is 500;
       renaming without titles is 404.
+  - artifact, as an app shows them beside the chat: kinds (markdown, html,
+    svg, mermaid, react, code with its language, text, file), titles,
+    versions (Versions), DeleteScope; tools create_artifact, edit_artifact
+    (exact passages, all or none), rewrite_artifact, read_artifact (an
+    image or a PDF reaches the model as itself), list_artifacts and, with
+    Access.Files, save_file_artifact; WithScope gives a run its scope,
+    WithPublished announces each version; ToolNames. publish_artifact is
+    gone. serve: Config.Artifacts, the "artifact" event, the routes under
+    /v1/conversations/{id}/artifacts (content never served as a page of
+    its origin), a conversation deleted takes its artifacts.
+    files.Workspace.ReadFile: a whole file under read_file's rules.
   - ringil: serve.app serves the app's build and prints its sign-in link;
     a settings API for it (models, limits, connections, keys write-only,
     MCP servers, skills, a provider's models), each change checked as the

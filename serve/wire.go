@@ -10,12 +10,14 @@ import (
 	"time"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/artifact"
 )
 
 // wireEvent is one event of a run on the API. ID numbers the run's
 // events for resuming a stream (Last-Event-ID). Agent events keep their
 // kind and carry their content: the API's caller owns the run. The
-// server's own kinds are "approval", "approval_decided" and "run_end".
+// server's own kinds are "approval", "approval_decided", "artifact" (a
+// new version of one, its description) and "run_end".
 type wireEvent struct {
 	ID       int              `json:"id"`
 	Kind     string           `json:"kind"`
@@ -36,6 +38,7 @@ type wireEvent struct {
 	State    string           `json:"state,omitzero"`
 	Approval *Approval        `json:"approval,omitzero"`
 	Decision *Decision        `json:"decision,omitzero"`
+	Artifact *artifact.Info   `json:"artifact,omitzero"`
 }
 
 type wireCall struct {

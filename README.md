@@ -311,14 +311,32 @@ CLI: il piano compare con i passaggi e chiede conferma; `ringil workflow`,
 
 ## Artifact
 
-`artifact` conserva i risultati che gli agenti producono (un rapporto, una tabella, un
-file) perché altri compiti, sessioni successive o l'utente li usino. Un artifact ha un nome
-in uno scope scelto dall'host e delle versioni: ripubblicare un nome aggiunge una versione,
-non sovrascrive mai. Ogni versione è salvata per SHA-256 e controllata a ogni lettura.
-`artifact.Tools` dà al modello `list_artifacts`, `read_artifact` e, con il permesso,
-`publish_artifact`; altri scope si possono concedere in sola lettura.
-CLI: scope = progetto della cartella di lancio, condiviso da agente, sub-agenti e
-workflow; `ringil artifact`, `artifact show <nome>`, `artifact rm <nome>`.
+`artifact` tiene ciò che gli agenti fanno per l'utente, a parte dalla conversazione, come
+un'app lo mostra accanto alla chat: un documento (`markdown`), una pagina (`html`, in un
+frame isolato), un diagramma (`svg`, `mermaid`), un componente (`react`), del codice (`code`
+con il linguaggio), del testo, un file (`file`, con il suo tipo: un foglio, un'immagine, un
+PDF). Un artifact ha un nome nel suo scope e delle versioni: crearlo è la 1, ogni modifica ne
+aggiunge una, nessuna si sovrascrive. Ogni versione è salvata per SHA-256 e controllata a
+ogni lettura.
+
+```go
+store, _ := artifact.NewLocal(dir)
+tools := artifact.Tools(store, artifact.Access{Write: true, Files: ws.ReadFile})
+ctx = artifact.WithScope(ctx, conversationID)          // lo scope dell'esecuzione
+ctx = artifact.WithPublished(ctx, func(i artifact.Info) { /* all'app */ })
+```
+
+Il modello ha `create_artifact`, `edit_artifact` (sostituisce passaggi esatti, ognuno
+presente una volta sola: tutte le modifiche o nessuna), `rewrite_artifact`, `read_artifact`
+(anche una versione precedente; un'immagine o un PDF arrivano al modello come tali),
+`list_artifacts` e, con `Files`, `save_file_artifact` per un file che ha prodotto.
+`serve` con `Config.Artifacts`: ogni esecuzione lavora nello scope della sua conversazione,
+ogni nuova versione è un evento `artifact` dello stream, e l'app li legge sotto
+`/v1/conversations/{id}/artifacts`; il contenuto torna come testo, un'immagine come tale,
+un file da scaricare, mai come pagina della nostra origine. Cancellare la conversazione
+cancella i suoi artifact.
+CLI: nel terminale lo scope è il progetto della cartella di lancio; `ringil artifact`,
+`artifact show <nome>`, `artifact rm <nome>`.
 
 ## Backup e ripristino
 

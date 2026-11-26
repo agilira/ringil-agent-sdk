@@ -17,6 +17,7 @@ import (
 	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/artifact"
 	"github.com/agilira/ringil-agent-sdk/delegate"
 )
 
@@ -378,4 +379,16 @@ type Decision struct {
 	CallID  string `json:"call_id"`
 	Allowed bool   `json:"allowed"`
 	By      string `json:"by"`
+}
+
+// artifact records a new version an artifact tool made in the run.
+// One made after the run ended (by a background task the run did not
+// wait for) is not an event: the stream is over; the app lists it.
+func (j *job) artifact(info artifact.Info) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !j.ended.IsZero() {
+		return
+	}
+	j.append(wireEvent{Kind: "artifact", Artifact: &info})
 }

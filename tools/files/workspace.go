@@ -103,6 +103,11 @@ type Workspace interface {
 	WriteTools() []agent.Tool
 	// Dirs returns the granted directories, resolved.
 	Dirs() []string
+	// ReadFile reads a whole file under read_file's rules (a grant, the
+	// exclusions, the descriptor checked), at most max bytes, with its
+	// media type: a host hands it to tools that take a file the agent
+	// made, such as artifact.Access.Files.
+	ReadFile(ctx context.Context, path string, max int64) (data []byte, mediaType string, err error)
 }
 
 // New checks the configuration and resolves the granted directories.
