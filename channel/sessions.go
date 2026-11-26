@@ -186,10 +186,14 @@ func (b *Bridge) reconcile(ctx context.Context, chatID string) {
 	if done {
 		return
 	}
-	ids, err := b.cfg.Server.Conversations(ctx)
+	list, err := b.cfg.Server.Conversations(ctx)
 	if err != nil {
 		b.report(Event{Kind: SessionsFailed, Chat: chatID, Err: err})
 		return
+	}
+	ids := make([]string, len(list))
+	for i, c := range list {
+		ids[i] = c.ID
 	}
 	top := highest(ids, Conversation(b.cfg.Channel.Name(), chatID, 1))
 	b.mu.Lock()

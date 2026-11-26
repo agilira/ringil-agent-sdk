@@ -24,6 +24,7 @@ package serve
 import (
 	"context"
 	"crypto/rand"
+	"io/fs"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -101,6 +102,14 @@ type Config struct {
 	// ApprovalTimeout is how long a call waits for a decision before it is
 	// refused; default 10 minutes.
 	ApprovalTimeout time.Duration
+	// App, when set, is a browser app served at "/" (its index.html and
+	// files, such as a build of the community app). A browser signs in
+	// with a link of SignInPath and then calls the API with its session
+	// cookie, from the app's own pages only; other pages stay refused.
+	App fs.FS
+	// Voice gives the app speech to text and text to speech; zero, the
+	// voice routes say it is off.
+	Voice Voice
 }
 
 // Server runs the profiles' agents for the API.
@@ -115,6 +124,7 @@ type Server struct {
 	mounts   map[string]http.Handler
 	wg       sync.WaitGroup
 	now      func() time.Time
+	app      *appAuth
 }
 
 // fail is an error whose message the API's caller sees.
@@ -140,7 +150,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	return &Server{cfg: cfg, profiles: profiles, ctx: ctx, stop: stop, runs: map[string]*job{}, now: time.Now}, nil
+	return &Server{cfg: cfg, profiles: profiles, ctx: ctx, stop: stop, runs: map[string]*job{}, now: time.Now, app: newAppAuth()}, nil
 }
 
 // withStore gives cfg the default store, unless it has one or wants none.
@@ -343,6 +353,7 @@ func (s *Server) work(ctx context.Context, j *job, p Profile, input agent.Messag
 		return err
 	}
 	defer closeConv()
+	s.titleFirst(ctx, j.conversation, conv, input)
 	err = turn(ctx, j, inst.Agent, conv, input)
 	for err == nil && inst.Crew != nil {
 		f, ok := inst.Crew.Next(ctx)
@@ -453,23 +464,6 @@ func (s *Server) Watch(ctx context.Context, id string, see func(Snapshot)) error
 			return ctx.Err()
 		}
 	}
-}
-
-// Conversations lists the IDs of the conversations the server keeps;
-// none without a store.
-func (s *Server) Conversations(ctx context.Context) ([]string, error) {
-	if s.cfg.Store == nil {
-		return nil, nil
-	}
-	infos, err := s.cfg.Store.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(infos))
-	for _, i := range infos {
-		out = append(out, i.ID)
-	}
-	return out, nil
 }
 
 // Cancel stops a run; it ends as cancelled once its tools return.

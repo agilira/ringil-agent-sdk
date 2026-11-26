@@ -21,6 +21,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/agilira/go-errors"
+
+	agent "github.com/agilira/ringil-agent-sdk"
 )
 
 // maxBody bounds a request body.
@@ -36,13 +38,25 @@ var writeTimeout = 30 * time.Second
 // Handler is the API:
 //
 //	GET    /v1/profiles                          the profiles
-//	POST   /v1/runs                              {"profile","input","conversation"?} starts a run
+//	POST   /v1/runs                              {"profile","input","conversation"?,"attachments"?} starts a run;
+//	                                             attachments: [{"mime","data"}], data in base64, images and PDFs
 //	GET    /v1/runs                              the runs kept
 //	GET    /v1/runs/{id}                         a run
 //	GET    /v1/runs/{id}/events                  its events, as Server-Sent Events (Last-Event-ID or ?after= to resume)
 //	POST   /v1/runs/{id}/cancel                  stop it
 //	POST   /v1/runs/{id}/approvals/{approval}    {"allow": true|false} decide a waiting tool call
 //	DELETE /v1/runs/{id}                         forget a finished run
+//	GET    /v1/conversations                     the conversations kept, the latest first
+//	GET    /v1/conversations/{id}/messages       a page of its messages (?from=&limit=; the last 200 by default)
+//	PATCH  /v1/conversations/{id}                {"title"} rename it
+//	DELETE /v1/conversations/{id}                delete it
+//	GET    /v1/audio                             {"transcribe","speech"} which halves of the voice are on
+//	POST   /v1/audio/transcriptions              the recording as the body (audio/webm, ogg, mpeg, wav, mp4) → {"text"}
+//	POST   /v1/audio/speech                      {"text"} → the audio, its type in Content-Type
+//	POST   /v1/signin-links                      {"path"} a new sign-in link of the app (with Config.App)
+//	POST   /v1/signout                           end the browser's session
+//	GET    /signin?code=                         the app's sign-in: a session cookie, then the app; no token needed
+//	GET    /...                                  the app's files (with Config.App); no token needed
 //	GET    /health                               {"status":"ok"}, or 503 {"status":"closing"}; no token needed
 //
 // /health tells a supervisor (systemd, Docker, a load balancer on this
@@ -59,19 +73,92 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", s.cancel)
 	mux.HandleFunc("POST /v1/runs/{id}/approvals/{approval}", s.decide)
 	mux.HandleFunc("DELETE /v1/runs/{id}", s.forget)
+	mux.HandleFunc("GET /v1/conversations", s.listConversations)
+	mux.HandleFunc("GET /v1/conversations/{id}/messages", s.history)
+	mux.HandleFunc("PATCH /v1/conversations/{id}", s.rename)
+	mux.HandleFunc("DELETE /v1/conversations/{id}", s.deleteConversation)
+	mux.HandleFunc("GET /v1/audio", s.audioInfo)
+	mux.HandleFunc("POST /v1/audio/transcriptions", s.transcribe)
+	mux.HandleFunc("POST /v1/audio/speech", s.speak)
+	mux.HandleFunc("POST /v1/signin-links", s.signInLink)
+	mux.HandleFunc("POST /v1/signout", s.signOut)
 	s.mu.Lock()
 	for pattern, h := range s.mounts {
 		mux.Handle(pattern, h)
 	}
 	s.mu.Unlock()
 	guarded := s.Guard(mux)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
+	if s.cfg.App == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/health" {
+				s.health(w, r)
+				return
+			}
 			guarded.ServeHTTP(w, r)
-			return
+		})
+	}
+	return s.withApp(s.mountMatcher(), guarded)
+}
+
+// withApp is the API beside the app: its files and its sign-in, to the
+// loopback name only.
+func (s *Server) withApp(mounts *http.ServeMux, guarded http.Handler) http.Handler {
+	app := s.appFiles()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/health":
+			s.health(w, r)
+		case !loopbackHost(r.Host):
+			failure(w, http.StatusForbidden, fail("SERVE_HOST", "requests must name the loopback host"))
+		case r.URL.Path == "/signin":
+			s.signIn(w, r)
+		case !strings.HasPrefix(r.URL.Path, "/v1/") && !s.mounted(mounts, r):
+			app.ServeHTTP(w, r)
+		default:
+			guarded.ServeHTTP(w, r)
 		}
-		s.health(w, r)
 	})
+}
+
+// mountMatcher builds a path-only mux for mounted handlers so a request
+// with a different HTTP method still routes to Guard rather than appFiles.
+func (s *Server) mountMatcher() *http.ServeMux {
+	matcher := http.NewServeMux()
+	seen := map[string]bool{}
+	noop := func(http.ResponseWriter, *http.Request) {}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for pattern := range s.mounts {
+		if _, p, ok := strings.Cut(pattern, " "); ok && p != "" {
+			pattern = p
+		}
+		if !seen[pattern] {
+			seen[pattern] = true
+			matcher.HandleFunc(pattern, noop)
+		}
+	}
+	return matcher
+}
+
+// mounted: a handler the host mounted answers r (an A2A endpoint,
+// /metrics): it stays behind the guard, not taken for an app's route.
+func (s *Server) mounted(mux *http.ServeMux, r *http.Request) bool {
+	_, pattern := mux.Handler(r)
+	return pattern != ""
+}
+
+// signInLink makes a new sign-in link of the app; bearer token only.
+func (s *Server) signInLink(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" || !s.bearerOK(r) {
+		failure(w, http.StatusForbidden, fail("SERVE_AUTH", "sign-in links require the bearer token"))
+		return
+	}
+	p := s.SignInPath()
+	if p == "" {
+		failure(w, http.StatusNotFound, fail(ErrNotFound, "the server has no app"))
+		return
+	}
+	respond(w, http.StatusCreated, map[string]string{"path": p})
 }
 
 // health answers whether the server takes runs.
@@ -93,19 +180,26 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) bearerOK(r *http.Request) bool {
+	want := []byte("Bearer " + s.cfg.Token)
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) == 1
+}
+
 // Guard admits to next only the token's holder, by loopback name, not
 // from a browser page: what the API itself requires, for a host mounting
 // more on the same listener (an A2A endpoint).
 func (s *Server) Guard(next http.Handler) http.Handler {
-	want := []byte("Bearer " + s.cfg.Token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !loopbackHost(r.Host):
 			// DNS rebinding: a page whose name now points at 127.0.0.1.
 			failure(w, http.StatusForbidden, fail("SERVE_HOST", "requests must name the loopback host"))
+		case s.signedIn(r): // the app's own page, signed in
+			w.Header().Set("Cache-Control", "no-store")
+			next.ServeHTTP(w, r)
 		case r.Header.Get("Origin") != "":
 			failure(w, http.StatusForbidden, fail("SERVE_ORIGIN", "requests from web pages are refused"))
-		case subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1:
+		case !s.bearerOK(r):
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			failure(w, http.StatusUnauthorized, fail("SERVE_AUTH", "a valid bearer token is required"))
 		default:
@@ -128,17 +222,55 @@ func loopbackHost(host string) bool {
 }
 
 type startIn struct {
-	Profile      string `json:"profile"`
-	Input        string `json:"input"`
-	Conversation string `json:"conversation,omitempty"`
+	Profile      string         `json:"profile"`
+	Input        string         `json:"input"`
+	Conversation string         `json:"conversation,omitempty"`
+	Attachments  []attachmentIn `json:"attachments,omitempty"`
+}
+
+// attachmentIn is an image or a PDF sent with the input; its type is its
+// MIME's, checked against its bytes.
+type attachmentIn struct {
+	MIME string `json:"mime"`
+	Data []byte `json:"data"` // base64 in the JSON
+}
+
+// Bounds of a run's input: a PDF of 32 MiB is about 43 MiB in base64.
+const (
+	maxAttachments = 20
+	maxRunBody     = 64 << 20
+)
+
+// message is the input as a user message, its attachments as parts.
+func (in startIn) message() (agent.Message, error) {
+	switch {
+	case len(in.Input) > maxBody: // the room is for attachments, not text
+		return agent.Message{}, fail(ErrInput, "the input text is at most 1 MiB")
+	case len(in.Attachments) > maxAttachments:
+		return agent.Message{}, fail(ErrInput, "at most 20 attachments")
+	}
+	parts := make([]agent.Part, 0, len(in.Attachments))
+	for _, a := range in.Attachments {
+		t := agent.PartImage
+		if a.MIME == "application/pdf" {
+			t = agent.PartDocument
+		}
+		parts = append(parts, agent.Part{Type: t, MIME: a.MIME, Data: a.Data})
+	}
+	return agent.UserMessage(in.Input, parts...), nil
 }
 
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	var in startIn
-	if !readJSON(w, r, &in) {
+	if !readJSONLimit(w, r, &in, maxRunBody) {
 		return
 	}
-	snap, err := s.Start(in.Profile, in.Conversation, in.Input)
+	msg, err := in.message()
+	if err != nil {
+		failure(w, status(err), err)
+		return
+	}
+	snap, err := s.StartMessage(in.Profile, in.Conversation, msg)
 	if err != nil {
 		failure(w, status(err), err)
 		return
@@ -291,12 +423,17 @@ func resumeFrom(r *http.Request) (int, bool) {
 
 // readJSON decodes one JSON object of a known shape.
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	return readJSONLimit(w, r, v, maxBody)
+}
+
+// readJSONLimit is readJSON with a body of at most limit bytes.
+func readJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" {
 		failure(w, http.StatusUnsupportedMediaType, fail(ErrInput, "send application/json"))
 		return false
 	}
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil || !utf8.Valid(data) {
 		failure(w, http.StatusBadRequest, fail(ErrInput, "the body is too large or not UTF-8"))
 		return false
@@ -330,6 +467,9 @@ func failure(w http.ResponseWriter, code int, err error) {
 }
 
 func status(err error) int {
+	if code, ok := storeStatus(err); ok {
+		return code
+	}
 	switch {
 	case errors.HasCode(err, ErrNotFound):
 		return http.StatusNotFound

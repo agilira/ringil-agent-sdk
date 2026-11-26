@@ -9,10 +9,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/agilira/go-errors"
@@ -405,5 +407,79 @@ func TestReadBoundedRejectsPastLimit(t *testing.T) {
 	_ = g.Close()
 	if !errors.HasCode(err, agent.ErrSessionIO) {
 		t.Fatalf("want ErrSessionIO past limit, got %v", err)
+	}
+}
+
+// titled makes a store with one session, "a".
+func titled(t *testing.T) (agent.TitleStore, string) {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := st.Open(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Append(context.Background(), agent.UserText("hi")); err != nil {
+		t.Fatal(err)
+	}
+	_ = sess.Close()
+	return st.(agent.TitleStore), dir
+}
+
+// A title is kept beside the history and listed without opening it.
+func TestTitles(t *testing.T) {
+	ts, _ := titled(t)
+	ctx := context.Background()
+	if err := ts.SetTitle(ctx, "a", "  My\ttitle  "); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := ts.List(ctx); len(list) != 1 || list[0].Title != "My title" {
+		t.Fatalf("%+v", list)
+	}
+	if err := ts.SetTitle(ctx, "../x", "t"); err == nil {
+		t.Fatal("a bad ID was accepted")
+	}
+}
+
+// A title written by hand is cleaned when read; it goes with its session.
+func TestTitleByHandAndDelete(t *testing.T) {
+	ts, dir := titled(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(dir, "a.title"), []byte("bad\x1b[2Jtitle\n"+strings.Repeat("x", 1000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := ts.List(ctx); len(list[0].Title) > agent.MaxTitle || strings.ContainsRune(list[0].Title, 0x1b) {
+		t.Fatalf("%q", list[0].Title)
+	}
+	if err := ts.Delete(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.title")); !os.IsNotExist(err) {
+		t.Fatal("the title outlived its session")
+	}
+}
+
+func TestTitleConcurrentWrites(t *testing.T) {
+	ts, _ := titled(t)
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+	for g := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 4 {
+				if err := ts.SetTitle(bg, "a", fmt.Sprintf("title-%d-%d", g, i)); err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }

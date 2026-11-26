@@ -133,6 +133,23 @@ FEATURES
     ringil.config span too (loaded, applied, refused): its digest, the one
     before, the keys that changed and what needs serve restarted; never a
     value, and a refusal by its code only.
+  - serve, for an app: GET /v1/conversations (title, updated, running),
+    GET /v1/conversations/{id}/messages in pages (attachments named, not
+    sent), PATCH to rename, DELETE; a new conversation takes its title
+    from its first message (agent.TitleStore, SessionInfo.Title,
+    CleanTitle; session/file keeps it beside the history). POST /v1/runs
+    takes images and PDFs (attachments, base64; the text still 1 MiB).
+    Config.App serves a browser app at "/": a one-time sign-in link
+    (SignInPath, 10 minutes) gives an HttpOnly SameSite=Strict session,
+    accepted only from the app's own origin (another port of 127.0.0.1
+    is refused); the token works as before. Voice: GET /v1/audio,
+    POST /v1/audio/transcriptions (a browser's recording, 25 MiB) and
+    /v1/audio/speech (text to audio, 4096 characters), through
+    Config.Voice, asked at each request.
+  - ringil: serve.app serves the app's build and prints its sign-in link;
+    a settings API for it (models, limits, connections, keys write-only,
+    MCP servers, skills, a provider's models), each change checked as the
+    whole file before it is written to ringil.yaml.
 
 SECURITY
 

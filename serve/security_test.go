@@ -121,6 +121,8 @@ func TestSecurityReadJSONRejectsBadBodies(t *testing.T) {
 	}{
 		{"wrongContentType", "text/plain", "/v1/runs", `{"profile":"p","input":"hi"}`, http.StatusUnsupportedMediaType},
 		{"oversized", "application/json", "/v1/runs", `{"profile":"p","input":"` + strings.Repeat("a", maxBody+1) + `"}`, http.StatusBadRequest},
+		{"oversizedBody", "application/json", "/v1/runs", `{"profile":"p","input":"hi","attachments":[{"mime":"image/png","data":"` + strings.Repeat("A", maxRunBody) + `"}]}`, http.StatusBadRequest},
+		{"oversizedOther", "application/json", "/v1/runs/x/approvals/y", `{"allow":true,"x":"` + strings.Repeat("a", maxBody) + `"}`, http.StatusBadRequest},
 		{"invalidUTF8", "application/json", "/v1/runs", "{\"profile\":\"p\",\"input\":\"\xff\"}", http.StatusBadRequest},
 		{"unknownField", "application/json", "/v1/runs", `{"profile":"p","input":"hi","admin":true}`, http.StatusBadRequest},
 		{"trailingJSON", "application/json", "/v1/runs", `{"profile":"p","input":"hi"}{"profile":"p","input":"two"}`, http.StatusBadRequest},
