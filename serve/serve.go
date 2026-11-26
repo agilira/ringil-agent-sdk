@@ -120,11 +120,13 @@ type Server struct {
 	stop     context.CancelFunc
 	mu       sync.Mutex
 	runs     map[string]*job
+	held     map[string]int // conversations read or changed outside a run, by lower-case ID: readers, or -1 for one that deletes
 	active   int
 	mounts   map[string]http.Handler
 	wg       sync.WaitGroup
 	now      func() time.Time
 	app      *appAuth
+	uploads  chan struct{} // large bodies read at once: MaxRuns
 }
 
 // fail is an error whose message the API's caller sees.
@@ -150,7 +152,9 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	return &Server{cfg: cfg, profiles: profiles, ctx: ctx, stop: stop, runs: map[string]*job{}, now: time.Now, app: newAppAuth()}, nil
+	s := &Server{cfg: cfg, profiles: profiles, ctx: ctx, stop: stop, runs: map[string]*job{}, held: map[string]int{}, now: time.Now, app: newAppAuth()}
+	s.uploads = make(chan struct{}, s.maxRuns())
+	return s, nil
 }
 
 // withStore gives cfg the default store, unless it has one or wants none.
@@ -296,7 +300,7 @@ func checkAttachments(m agent.Message) error {
 			}
 		case agent.PartDocument:
 			if agent.CheckDocument(p.MIME, p.Data) != nil {
-				return fail(ErrInput, "a document must be a PDF up to 32 MiB")
+				return fail(ErrInput, "a document must be a PDF up to 20 MiB")
 			}
 		}
 	}
@@ -310,14 +314,64 @@ func (s *Server) admit(conversation string) error {
 	if s.active >= s.maxRuns() {
 		return fail(ErrBusy, "too many runs going")
 	}
-	for _, j := range s.runs {
-		// Compared without case: a store on a case-insensitive file
-		// system holds "abc" and "ABC" in one file.
-		if conversation != "" && strings.EqualFold(j.conversation, conversation) && !j.finished() {
-			return fail(ErrBusy, "the conversation has a run going")
-		}
+	if conversation != "" && s.held[strings.ToLower(conversation)] != 0 {
+		return fail(ErrBusy, "the conversation is being read or changed: try again")
+	}
+	if s.runningLocked(conversation) {
+		return fail(ErrBusy, "the conversation has a run going")
 	}
 	return nil
+}
+
+// runningLocked: a run of conversation is going. Compared without case:
+// a store on a case-insensitive file system holds "abc" and "ABC" in one
+// file. The caller holds mu.
+func (s *Server) runningLocked(conversation string) bool {
+	for _, j := range s.runs {
+		if conversation != "" && strings.EqualFold(j.conversation, conversation) && !j.finished() {
+			return true
+		}
+	}
+	return false
+}
+
+// Kinds of hold on a conversation outside a run.
+type holdKind int
+
+const (
+	holdRead    holdKind = iota // its history: shared with other reads
+	holdTitle                   // its title, beside the history: shared with reads and with a run
+	holdExclude                 // deleting it: alone
+)
+
+// hold keeps runs off conversation while the caller reads or changes it
+// outside a run: reads and titles share it, a delete has it alone. The
+// caller calls release.
+func (s *Server) hold(conversation string, kind holdKind) (release func(), err error) {
+	key := strings.ToLower(conversation)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.held[key]
+	switch {
+	case n < 0 || (kind == holdExclude && n > 0):
+		return nil, fail(ErrBusy, "the conversation is being read or changed: try again")
+	case kind != holdTitle && s.runningLocked(conversation):
+		return nil, fail(ErrBusy, "the conversation has a run going")
+	}
+	if kind == holdExclude {
+		s.held[key] = -1
+	} else {
+		s.held[key]++
+	}
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.held[key] < 0 {
+			delete(s.held, key)
+		} else if s.held[key]--; s.held[key] <= 0 {
+			delete(s.held, key)
+		}
+	}, nil
 }
 
 // execute runs one job to its end.

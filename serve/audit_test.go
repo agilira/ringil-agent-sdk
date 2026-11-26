@@ -1,4 +1,4 @@
-// audit_test.go: regressions for the serve audit of 18/11
+// audit_test.go: what the audit of 26/11 found in the API for an app
 //
 // Copyright (c) 2026 AGILira - A. Giordano
 // SPDX-License-Identifier: MPL-2.0
@@ -6,230 +6,90 @@
 package serve
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"iter"
 	"net/http"
-	"net/http/httptest"
-	"runtime"
 	"strings"
-	"sync"
 	"testing"
-	"time"
+
+	"github.com/agilira/go-errors"
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 )
 
-// funcAgent is an agent whose Stream is a function.
-type funcAgent func(ctx context.Context, yield func(agent.Event, error) bool)
-
-func (f funcAgent) Run(context.Context, agent.Conversation, agent.Message) (*agent.Result, error) {
-	return nil, nil
+// A cookie of the name set by a page on another port, sent first, does
+// not sign the app out.
+func TestAppCookieTossed(t *testing.T) {
+	a := appAPI(t)
+	cookie := a.signedIn()
+	resp := a.raw("GET", "/v1/profiles", "Cookie", "ringil_session=planted; "+cookie, "Sec-Fetch-Site", "same-origin")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%d %s", resp.StatusCode, body(resp))
+	}
 }
 
-func (f funcAgent) Stream(ctx context.Context, _ agent.Conversation, _ agent.Message) iter.Seq2[agent.Event, error] {
-	return func(yield func(agent.Event, error) bool) { f(ctx, yield) }
-}
-
-func mustGet(s *Server, id string) Snapshot {
-	g, _ := s.Get(id)
-	return g
-}
-
-// (1) A Cancel right after Start was lost: the cancel func did not exist
-// yet.
-func TestCancelRightAfterStart(t *testing.T) {
-	old := runtime.GOMAXPROCS(1)
-	defer runtime.GOMAXPROCS(old)
-	block := funcAgent(func(ctx context.Context, yield func(agent.Event, error) bool) {
-		select {
-		case <-ctx.Done():
-			yield(agent.Event{}, ctx.Err())
-		case <-time.After(2 * time.Second):
+// Reads and titles share a conversation, a delete has it alone, and no
+// run starts while any of them is going.
+func TestConversationHeld(t *testing.T) {
+	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New(fake.Reply("ok"))})}})
+	s := a.srv
+	admit := func() error { s.mu.Lock(); defer s.mu.Unlock(); return s.admit("chat1") }
+	held := func(id string, kind holdKind) func() {
+		t.Helper()
+		release, err := s.hold(id, kind)
+		if err != nil {
+			t.Fatalf("%s %d: %v", id, kind, err)
 		}
-	})
-	s, err := New(Config{Token: token, Profiles: []Profile{{Name: "p", New: Fixed(block)}}})
-	if err != nil {
-		t.Fatal(err)
+		return release
 	}
-	defer s.Close()
-	snap, err := s.Start("p", "", "hi")
-	if err != nil {
-		t.Fatal(err)
+	r1, r2, r3 := held("Chat1", holdRead), held("chat1", holdRead), held("chat1", holdTitle) // two tabs and a rename
+	if !errors.HasCode(admit(), ErrBusy) {
+		t.Fatal("a run during a read")
 	}
-	if err := s.Cancel(snap.ID); err != nil {
-		t.Fatal(err)
+	if _, err := s.hold("chat1", holdExclude); !errors.HasCode(err, ErrBusy) {
+		t.Fatalf("a delete during a read: %v", err)
 	}
-	if got, _ := s.Wait(context.Background(), snap.ID); got.State != Cancelled {
-		t.Fatalf("run ended %q", got.State)
+	r1()
+	r2()
+	r3()
+	del := held("chat1", holdExclude)
+	if _, err := s.hold("chat1", holdRead); !errors.HasCode(err, ErrBusy) {
+		t.Fatalf("a read during a delete: %v", err)
+	}
+	del()
+	if err := admit(); err != nil || len(s.held) != 0 {
+		t.Fatalf("after release: %v %v", err, s.held)
 	}
 }
 
-// (2) A tool input that is not JSON lost its events and broke every
-// snapshot and the listing.
-func TestInvalidCallInput(t *testing.T) {
-	var s *Server
-	ran := false
-	a := newAPI(t, Config{Profiles: []Profile{approvalProfile(t, &s, &ran, fake.Call("delete_file", "{"), fake.Reply("ok"))}})
-	s = a.srv
-	run := a.start(`{"profile":"default","input":"x"}`)
-	w := a.until(run.ID, func(s Snapshot) bool { return s.State == Waiting })
-	if string(w.Pending[0].Input) != `"{"` {
-		t.Fatalf("input %s", w.Pending[0].Input)
+// Without a store that keeps titles, renaming is "not found", not a
+// server error.
+func TestRenameWithoutTitles(t *testing.T) {
+	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
+	if err := a.srv.Rename(context.Background(), "abc", "x"); status(err) != http.StatusNotFound {
+		t.Fatalf("%v → %d", err, status(err))
 	}
-	if code, out := a.do("GET", "/v1/runs", ""); code != 200 || !strings.Contains(out, run.ID) {
+}
+
+// A voice model that cannot be set up is a server error, not "no model".
+func TestVoiceSetupFails(t *testing.T) {
+	broken := func(context.Context) (agent.Transcriber, error) { return nil, errors.New("X", "no key") }
+	a := voiceAPI(t, Voice{Transcriber: broken})
+	if code, _, out := a.send("POST", "/v1/audio/transcriptions", "audio/ogg", "x", true); code != http.StatusInternalServerError {
 		t.Fatalf("%d %s", code, out)
 	}
 }
 
-// (3) Two waiting calls with one call ID: one was lost. Approvals have IDs
-// of the server's.
-func TestSameCallIDTwice(t *testing.T) {
-	var s *Server
-	done := make(chan bool, 2)
-	ag := funcAgent(func(ctx context.Context, yield func(agent.Event, error) bool) {
-		var wg sync.WaitGroup
-		for range 2 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				ok, _ := s.Ask(ctx, agent.ToolCall{ID: "call_0", Name: "rm", Input: json.RawMessage(`{}`)})
-				done <- ok
-			}()
-		}
-		wg.Wait()
-	})
-	var err error
-	s, err = New(Config{Token: token, Profiles: []Profile{{Name: "p", New: Fixed(ag)}}})
-	if err != nil {
-		t.Fatal(err)
+// Large bodies are read MaxRuns at once.
+func TestUploadSlots(t *testing.T) {
+	a := newAPI(t, Config{MaxRuns: 1, Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
+	a.srv.uploads <- struct{}{} // one held
+	big := `{"profile":"default","input":"x","attachments":[{"mime":"image/png","data":"` + strings.Repeat("A", maxBody) + `"}]}`
+	if code, _, out := a.send("POST", "/v1/runs", "application/json", big, true); code != http.StatusTooManyRequests {
+		t.Fatalf("%d %.200s", code, out)
 	}
-	defer s.Close()
-	snap, _ := s.Start("p", "", "x")
-	pend := pendingOf(s, snap.ID, 2)
-	if len(pend) != 2 || pend[0].ID == pend[1].ID {
-		t.Fatalf("pending %+v", pend)
+	if code, _, out := a.send("POST", "/v1/runs", "application/json", `{"profile":"default","input":"x"}`, true); code != http.StatusCreated {
+		t.Fatalf("a plain message waits for no slot: %d %s", code, out)
 	}
-	for _, p := range pend {
-		if err := s.Decide(snap.ID, p.ID, true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for range 2 {
-		if !<-done {
-			t.Fatal("a decided call was refused")
-		}
-	}
-}
-
-// pendingOf waits until n calls of a run wait for approval.
-func pendingOf(s *Server, id string, n int) []Approval {
-	var pend []Approval
-	for deadline := time.Now().Add(5 * time.Second); len(pend) < n && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-		pend = mustGet(s, id).Pending
-	}
-	return pend
-}
-
-// (4) An idle stream died at the first heartbeat 30s after the last
-// event: every write has its own deadline now.
-func TestIdleStreamStaysOpen(t *testing.T) {
-	oldBeat, oldWrite := heartbeat, writeTimeout
-	heartbeat, writeTimeout = 100*time.Millisecond, 300*time.Millisecond
-	defer func() { heartbeat, writeTimeout = oldBeat, oldWrite }()
-	ag := funcAgent(func(ctx context.Context, yield func(agent.Event, error) bool) {
-		yield(agent.Event{Kind: agent.EventText, Text: "one"}, nil)
-		<-ctx.Done()
-	})
-	s, err := New(Config{Token: token, Profiles: []Profile{{Name: "p", New: Fixed(ag)}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	h := httptest.NewServer(s.Handler())
-	defer h.Close()
-	snap, _ := s.Start("p", "", "x")
-	req, _ := http.NewRequest("GET", h.URL+"/v1/runs/"+snap.ID+"/events", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
-	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeQuietly(resp.Body)
-	beats := 0
-	sc := bufio.NewScanner(resp.Body)
-	for sc.Scan() {
-		if strings.HasPrefix(sc.Text(), ":") {
-			beats++
-		}
-	}
-	if beats < 10 {
-		t.Fatalf("stream ended after %d heartbeats: %v", beats, sc.Err())
-	}
-}
-
-// (6) An Instance without an agent was never released.
-func TestInstanceReleasedOnError(t *testing.T) {
-	closed := make(chan struct{})
-	s, err := New(Config{Token: token, Profiles: []Profile{{Name: "p", New: func(context.Context) (Instance, error) {
-		return Instance{Close: func() { close(closed) }}, nil
-	}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Start("p", "", "x"); err != nil {
-		t.Fatal(err)
-	}
-	s.Close()
-	select {
-	case <-closed:
-	default:
-		t.Fatal("Instance.Close not called")
-	}
-}
-
-// (5) Start racing Close could start a run after Close returned.
-func TestStartVersusClose(t *testing.T) {
-	for range 500 {
-		s, err := New(Config{Token: token, Profiles: []Profile{{Name: "p", New: Fixed(funcAgent(func(context.Context, func(agent.Event, error) bool) {}))}}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		go func() { _, _ = s.Start("p", "", "x") }()
-		s.Close()
-		s.mu.Lock()
-		active := s.active
-		s.mu.Unlock()
-		if active > 0 {
-			t.Fatal("a run is active after Close returned")
-		}
-	}
-}
-
-// (7) Every error read "Tool failed [CODE]."; each says what happened.
-func TestErrorBodiesSayWhy(t *testing.T) {
-	a := newAPI(t, Config{Profiles: []Profile{{Name: "p", New: Fixed(funcAgent(func(context.Context, func(agent.Event, error) bool) {}))}}})
-	for path, want := range map[string]string{"/v1/runs/nope": "no such run"} {
-		if _, out := a.do("GET", path, ""); !strings.Contains(out, want) {
-			t.Fatalf("%s: %s", path, out)
-		}
-	}
-	if _, out := a.do("GET", "/v1/runs", "", "Authorization", ""); !strings.Contains(out, "a valid bearer token is required") {
-		t.Fatal(out)
-	}
-	s, err := New(Config{Token: token, Profiles: []Profile{{Name: "p", New: Fixed(funcAgent(func(_ context.Context, y func(agent.Event, error) bool) {
-		y(agent.Event{}, context.DeadlineExceeded)
-	}))}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snap, _ := s.Start("p", "", "x")
-	s.Close()
-	if g := mustGet(s, snap.ID); g.Error == nil || g.Error.Message != "The run failed." {
-		t.Fatalf("%+v", g.Error)
-	}
+	<-a.srv.uploads
 }

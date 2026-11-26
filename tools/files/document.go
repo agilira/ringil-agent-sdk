@@ -102,7 +102,11 @@ func (w *workspace) withScans(o *opened, doc document.Doc, text string, firstPag
 	}
 	data, tooLarge := readDocBytes(o, agent.MaxDocumentBytes)
 	if tooLarge {
-		out.Content += "\n[" + strconv.Itoa(doc.Scans) + " pages have no text, and the PDF is too large to attach (over 32 MiB).]"
+		out.Content += "\n[" + strconv.Itoa(doc.Scans) + " pages have no text, and the PDF is too large to attach (over 20 MiB).]"
+		return out
+	}
+	if pages := max(doc.Pages, agent.DocumentPages(data)); pages > agent.MaxDocumentPages {
+		out.Content += "\n[" + strconv.Itoa(doc.Scans) + " pages have no text, and the PDF has too many pages to attach (" + strconv.Itoa(pages) + ", over " + strconv.Itoa(agent.MaxDocumentPages) + ").]"
 		return out
 	}
 	part, err := agent.Document(data)

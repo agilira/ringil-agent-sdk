@@ -67,8 +67,8 @@ func checkStamps(t *testing.T, evs []agent.Event) {
 		if ev.Run != evs[0].Run || ev.Run == "" || ev.Time.IsZero() {
 			t.Fatalf("event %+v", ev)
 		}
-		if ev.Kind == agent.EventToolEnd && ev.Duration < 5*time.Millisecond {
-			t.Fatalf("tool took %v", ev.Duration)
+		if ev.Kind == agent.EventToolEnd && (ev.Duration < 5*time.Millisecond || ev.Began.IsZero() || ev.Began.After(ev.Time)) {
+			t.Fatalf("tool took %v, began %v", ev.Duration, ev.Began)
 		}
 	}
 }

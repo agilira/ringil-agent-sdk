@@ -185,16 +185,33 @@ func (r *registry) Execute(ctx context.Context, call ToolCall) (ToolResult, erro
 	return ToolResult{CallID: call.ID, Content: strings.ToValidUTF8(out.Content, "\uFFFD"), Images: checkedImages(out.Images)}, nil
 }
 
-// checkedImages keeps the images a model API takes (CheckImage); a tool's
-// other output is not the model's to see.
+// maxToolAttachments bounds the images and documents of one tool result,
+// and maxToolAttachedBytes their bytes together: past them the rest are
+// left out (a request of the main APIs is 32 MB at most, base64 inside).
+const (
+	maxToolAttachments   = 20
+	maxToolAttachedBytes = MaxDocumentBytes
+)
+
+// checkedImages keeps the images a model API takes (CheckImage), the
+// first that fit the bounds above; a tool's other output is not the
+// model's to see.
 func checkedImages(parts []Part) []Part {
 	var out []Part
+	size := 0
 	for _, p := range parts {
+		if len(out) >= maxToolAttachments || size+len(p.Data) > maxToolAttachedBytes {
+			continue
+		}
+		before := len(out)
 		switch {
 		case p.Type == PartImage && CheckImage(p.MIME, p.Data) == nil:
 			out = append(out, Part{Type: PartImage, MIME: p.MIME, Data: p.Data})
 		case p.Type == PartDocument && CheckDocument(p.MIME, p.Data) == nil:
 			out = append(out, Part{Type: PartDocument, MIME: p.MIME, Data: p.Data})
+		}
+		if len(out) > before {
+			size += len(p.Data)
 		}
 	}
 	return out

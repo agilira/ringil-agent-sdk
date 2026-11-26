@@ -440,7 +440,7 @@ func attachmentTokens(msg Message) int {
 		case PartImage:
 			n += imageTokens
 		case PartDocument:
-			n += max(imageTokens, len(p.Data)/documentBytesPerToken)
+			n += documentTokens(p.Data)
 		}
 	}
 	for _, p := range msg.Parts {
@@ -454,9 +454,22 @@ func attachmentTokens(msg Message) int {
 	return n
 }
 
-// documentBytesPerToken: a PDF page of 50-100 KB costs about 1,500-3,000
-// tokens.
-const documentBytesPerToken = 32
+// A PDF page costs about 1,500-3,000 tokens (its text and its image);
+// a PDF whose pages are not in plain sight is guessed at one page per
+// documentBytesPerPage.
+const (
+	documentPageTokens   = 2500
+	documentBytesPerPage = 64 << 10
+)
+
+// documentTokens estimates what a PDF costs, by its pages.
+func documentTokens(data []byte) int {
+	pages := DocumentPages(data)
+	if pages == 0 {
+		pages = max(1, len(data)/documentBytesPerPage)
+	}
+	return pages * documentPageTokens
+}
 
 func (v *sized) resize(i int) {
 	v.total -= v.sizes[i]

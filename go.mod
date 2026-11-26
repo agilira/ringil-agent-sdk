@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/agilira/go-errors v1.1.3
-	github.com/agilira/pdf v0.0.0-20261125221849-3f8b7a3968a6
+	github.com/agilira/pdf v0.0.0-20261126025143-c7c2ed834228
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.43.0
 	golang.org/x/time v0.16.0

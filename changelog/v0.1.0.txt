@@ -146,6 +146,26 @@ FEATURES
     POST /v1/audio/transcriptions (a browser's recording, 25 MiB) and
     /v1/audio/speech (text to audio, 4096 characters), through
     Config.Voice, asked at each request.
+  - Audit of 26/11 on documents, traces and serve:
+    - document: a PDF's streams decode to at most Limits.Decoded
+      (128 MiB, through the fork's SetDecodeLimit; the pages past it are
+      named as not read); an XML tag over 1 MiB is refused before it is
+      parsed; a spreadsheet row holds at most 16 MiB; Doc.Pages; part
+      names in errors on one line.
+    - A PDF is at most 20 MiB (MaxDocumentBytes: its base64 fits a 32 MB
+      request), MaxDocumentPages 100, DocumentPages; read_document
+      attaches no PDF over them; anthropic drops the oldest attachments
+      past 22 MiB or 100 pages together; a tool result keeps at most 20
+      attachments, 20 MiB together; a PDF's tokens are estimated by its
+      pages.
+    - otel: Recorder (New), one for every agent of a process, so that a
+      delegated run goes under the call that started it, also once that
+      call or its run is over; a tool span ends when the call did
+      (Event.Began); a tool that answered an error is tool_error.
+    - serve: every session cookie of the name is tried; reads, titles and
+      deletes of a conversation hold runs off (reads share); large bodies
+      read MaxRuns at once; a voice model that cannot be set up is 500;
+      renaming without titles is 404.
   - ringil: serve.app serves the app's build and prints its sign-in link;
     a settings API for it (models, limits, connections, keys write-only,
     MCP servers, skills, a provider's models), each change checked as the

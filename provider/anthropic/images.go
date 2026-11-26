@@ -16,24 +16,30 @@ import (
 // screenshots would be refused at every turn. The latest maxImages are
 // sent, at least imageStep fewer when it trims, so that the older images
 // leave in steps and the turns before stay the same for the prompt cache
-// (audit 21/11).
+// (audit 21/11). A request is also at most 32 MB, base64 inside, and
+// carries at most agent.MaxDocumentPages PDF pages: past maxAttached
+// bytes or those pages the oldest go too, or every turn after would be
+// refused.
 const (
-	maxImages = 20
-	imageStep = 10
+	maxImages   = 20
+	imageStep   = 10
+	maxAttached = 22 << 20 // 29 MB in base64, room left for the text
 )
 
 // fitImages is msgs with all but the latest images replaced by a note,
-// when there are more than maxImages.
+// when there are more than maxImages, or they are too large together.
 func fitImages(msgs []agent.Message) []agent.Message {
-	total := 0
-	for _, m := range msgs {
-		total += m.Images()
+	sizes, pages := attached(msgs)
+	total := len(sizes)
+	drop := 0
+	if total > maxImages {
+		keep := total - (total-maxImages+imageStep-1)/imageStep*imageStep
+		drop = total - keep
 	}
-	if total <= maxImages {
+	drop = max(drop, overBudget(sizes, pages))
+	if drop == 0 {
 		return msgs
 	}
-	keep := total - (total-maxImages+imageStep-1)/imageStep*imageStep
-	drop := total - keep
 	out := append([]agent.Message(nil), msgs...)
 	for i := 0; i < len(out) && drop > 0; i++ {
 		if n := out[i].Images(); n > 0 {
@@ -43,6 +49,47 @@ func fitImages(msgs []agent.Message) []agent.Message {
 		}
 	}
 	return out
+}
+
+// attached are the bytes and PDF pages of each image and document of
+// msgs, oldest first, in the order withoutImages takes them.
+func attached(msgs []agent.Message) (sizes, pages []int) {
+	add := func(p agent.Part) {
+		sizes = append(sizes, len(p.Data))
+		if p.Type == agent.PartDocument {
+			pages = append(pages, agent.DocumentPages(p.Data))
+		} else {
+			pages = append(pages, 0)
+		}
+	}
+	for _, m := range msgs {
+		if m.Result != nil {
+			for _, p := range m.Result.Images {
+				add(p)
+			}
+		}
+		for _, p := range m.Parts {
+			if p.Type == agent.PartImage || p.Type == agent.PartDocument {
+				add(p)
+			}
+		}
+	}
+	return sizes, pages
+}
+
+// overBudget is how many of the oldest must go for the rest to fit in
+// maxAttached bytes and agent.MaxDocumentPages pages.
+func overBudget(sizes, pages []int) int {
+	bytes, pdfPages := 0, 0
+	for i := range sizes {
+		bytes, pdfPages = bytes+sizes[i], pdfPages+pages[i]
+	}
+	drop := 0
+	for drop < len(sizes) && (bytes > maxAttached || pdfPages > agent.MaxDocumentPages) {
+		bytes, pdfPages = bytes-sizes[drop], pdfPages-pages[drop]
+		drop++
+	}
+	return drop
 }
 
 // withoutImages takes up to n images out of m, oldest first, leaving a

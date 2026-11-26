@@ -55,12 +55,7 @@ func (s *Server) Conversations(ctx context.Context) ([]ConversationInfo, error) 
 func (s *Server) running(conversation string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, j := range s.runs {
-		if strings.EqualFold(j.conversation, conversation) && !j.finished() {
-			return true
-		}
-	}
-	return false
+	return s.runningLocked(conversation)
 }
 
 // History is a page of a conversation's messages.
@@ -108,11 +103,13 @@ func (s *Server) History(ctx context.Context, id string, from, limit int) (Histo
 	if err := agent.ValidateSessionID(id); err != nil {
 		return History{}, err
 	}
+	release, err := s.hold(id, holdRead)
+	if err != nil {
+		return History{}, err
+	}
+	defer release()
 	if !s.exists(ctx, id) { // Open would create it
 		return History{}, fail(ErrNotFound, "no conversation "+id)
-	}
-	if s.running(id) {
-		return History{}, fail(ErrBusy, "the conversation has a run going")
 	}
 	sess, err := s.cfg.Store.Open(ctx, id)
 	if err != nil {
@@ -170,8 +167,13 @@ func (s *Server) Rename(ctx context.Context, id, title string) error {
 	}
 	ts, ok := s.cfg.Store.(agent.TitleStore)
 	if !ok {
-		return fail(ErrConfig, "the store keeps no titles")
+		return fail(ErrNotFound, "the server keeps no conversation titles")
 	}
+	release, err := s.hold(id, holdTitle)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if !s.exists(ctx, id) {
 		return fail(ErrNotFound, "no conversation "+id)
 	}
@@ -183,11 +185,16 @@ func (s *Server) DeleteConversation(ctx context.Context, id string) error {
 	if err := agent.ValidateSessionID(id); err != nil {
 		return err
 	}
-	if s.cfg.Store == nil || !s.exists(ctx, id) {
+	if s.cfg.Store == nil {
 		return fail(ErrNotFound, "no conversation "+id)
 	}
-	if s.running(id) {
-		return fail(ErrBusy, "the conversation has a run going")
+	release, err := s.hold(id, holdExclude)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !s.exists(ctx, id) {
+		return fail(ErrNotFound, "no conversation "+id)
 	}
 	return s.cfg.Store.Delete(ctx, id)
 }
