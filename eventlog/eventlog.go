@@ -64,7 +64,7 @@ func Attrs(ev agent.Event) []slog.Attr {
 		a = append(a, slog.String("parent", ev.Parent))
 	}
 	if ev.Call != nil {
-		a = append(a, tool(ev)...)
+		a = append(a, slog.String("tool", ToolName(ev)), slog.String("call", CallID(ev)))
 	}
 	if ev.Output != nil {
 		a = append(a, slog.Bool("is_error", ev.Output.IsError), slog.Int("result_bytes", len(ev.Output.Content)))
@@ -74,9 +74,9 @@ func Attrs(ev agent.Event) []slog.Attr {
 	}
 	a = append(a, usage(ev)...)
 	if ev.Err != nil {
-		a = append(a, slog.String("error", code(ev.Err)))
+		a = append(a, slog.String("error", Code(ev.Err)))
 	}
-	if what := ours(ev); what != "" {
+	if what := Note(ev); what != "" {
 		a = append(a, slog.String("what", what))
 	}
 	return a
@@ -84,8 +84,11 @@ func Attrs(ev agent.Event) []slog.Attr {
 
 func usage(ev agent.Event) []slog.Attr {
 	var a []slog.Attr
+	if ev.Model != "" {
+		a = append(a, slog.String("model", ev.Model))
+	}
 	if ev.Stop != "" {
-		a = append(a, slog.String("stop", stop(ev.Stop)))
+		a = append(a, slog.String("stop", Stop(ev.Stop)))
 	}
 	u := ev.Usage
 	if ev.Kind == agent.EventDone && ev.Result != nil {
@@ -101,10 +104,10 @@ func usage(ev agent.Event) []slog.Attr {
 	return a
 }
 
-// ours is an event's Text when the agent wrote it (what compaction left
+// Note is an event's Text when the agent wrote it (what compaction left
 // out, how many memories, what the loop detector did), never text from
-// the model, a tool or the user.
-func ours(ev agent.Event) string {
+// the model, a tool or the user; "" otherwise. Cut to 64 bytes.
+func Note(ev agent.Event) string {
 	switch ev.Kind {
 	case agent.EventCompacted, agent.EventRecalled, agent.EventLoop:
 		return clip(ev.Text)
@@ -112,8 +115,9 @@ func ours(ev agent.Event) string {
 	return ""
 }
 
-// code is the error's code, or its kind for an error without one.
-func code(err error) string {
+// Code is the error's code, or its kind for an error without one: never
+// its message, which may carry content.
+func Code(err error) string {
 	var e *errors.Error
 	switch {
 	case stderrors.As(err, &e):
@@ -126,19 +130,27 @@ func code(err error) string {
 	return "UNCLASSIFIED"
 }
 
-// tool names the tool of a call when the agent has it: a name the model
-// invented is model output, and could carry anything. Call IDs come from
-// the provider or the agent, but are logged only when plain.
-func tool(ev agent.Event) []slog.Attr {
-	name := ident(ev.Call.Name)
-	if ev.UnknownTool {
-		name = "(unknown tool)"
+// ToolName names the tool of a call when the agent has it: a name the
+// model invented is model output, and could carry anything.
+func ToolName(ev agent.Event) string {
+	if ev.UnknownTool || ev.Call == nil {
+		return "(unknown tool)"
 	}
-	return []slog.Attr{slog.String("tool", name), slog.String("call", ident(ev.Call.ID))}
+	return ident(ev.Call.Name)
 }
 
-// stop is a stop reason the agent defines; a provider may pass anything.
-func stop(s agent.StopReason) string {
+// CallID is the call's ID when it is plain: IDs come from the provider or
+// the agent.
+func CallID(ev agent.Event) string {
+	if ev.Call == nil {
+		return ""
+	}
+	return ident(ev.Call.ID)
+}
+
+// Stop is a stop reason the agent defines, or "(other)": a provider may
+// pass anything.
+func Stop(s agent.StopReason) string {
 	switch s {
 	case agent.StopEnd, agent.StopToolUse, agent.StopMaxTokens, agent.StopFiltered, agent.StopMaxTurns, agent.StopMaxCost, agent.StopCancelled, agent.StopLoop, agent.StopDenied:
 		return string(s)

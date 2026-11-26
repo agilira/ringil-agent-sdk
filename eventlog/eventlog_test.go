@@ -88,7 +88,7 @@ func TestStopReasonsAreTheAgents(t *testing.T) {
 	if got := text(agent.Event{Kind: agent.EventModel, Stop: agent.StopReason("key=" + secret)}); strings.Contains(got, secret) || !strings.Contains(got, "stop=(other)") {
 		t.Fatal(got)
 	}
-	if got := text(agent.Event{Kind: agent.EventModel, Stop: agent.StopLoop, Parent: "P1"}); !strings.Contains(got, "stop=loop") || !strings.Contains(got, "parent=P1") {
+	if got := text(agent.Event{Kind: agent.EventModel, Stop: agent.StopLoop, Parent: "P1", Model: "claude-test"}); !strings.Contains(got, "stop=loop") || !strings.Contains(got, "parent=P1") || !strings.Contains(got, "model=claude-test") {
 		t.Fatal(got)
 	}
 }

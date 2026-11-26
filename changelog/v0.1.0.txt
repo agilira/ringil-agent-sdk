@@ -120,6 +120,19 @@ FEATURES
     document; openai.Config.Documents sends it as a file (OpenAI,
     OpenRouter); other models and the ChatGPT subscription are told a PDF
     is there. read_document attaches the PDF when pages have no text.
+  - otel: each run as an OpenTelemetry trace by the GenAI conventions:
+    invoke_agent, chat (model, tokens, cache, ringil.usage.cost_usd) and
+    execute_tool spans, a worker's run under the call that started it,
+    errors by code. Metadata only, as eventlog (whose rules it reuses,
+    now exported: Code, ToolName, CallID, Stop, Note). The OpenTelemetry
+    API only; Event.Model names the model that answered, Event.ParentCall
+    (and agent.ToolCallID) the call that started a delegated run, so a
+    worker's span goes under its own call when several run at once.
+  - ringil: traces over OTLP/HTTP with the standard OTEL_EXPORTER_OTLP_*
+    variables, flushed at exit. Each revision of ringil.yaml is a
+    ringil.config span too (loaded, applied, refused): its digest, the one
+    before, the keys that changed and what needs serve restarted; never a
+    value, and a refusal by its code only.
 
 SECURITY
 

@@ -704,3 +704,36 @@ func TestAfterToolPanicsAndImages(t *testing.T) {
 		t.Fatalf("an unchecked image went through: %v", err)
 	}
 }
+
+// A run a tool starts names the call that started it, beside its parent
+// run: of several calls running at once, the one it belongs to.
+func TestParentCall(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]string{} // child run's parent call → the call the tool saw
+	inner, err := agent.New(agent.Config{Provider: fake.New(fake.Reply("a"), fake.Reply("b")), Observers: []agent.Observer{func(ev agent.Event) {
+		if ev.Kind == agent.EventStarted {
+			mu.Lock()
+			got[ev.ParentCall] = ev.Parent
+			mu.Unlock()
+		}
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type in struct{}
+	spawn := agent.NewTool("spawn", "starts a run", func(ctx context.Context, _ in) (string, error) {
+		if agent.ToolCallID(ctx) == "" || agent.RunID(ctx) == "" {
+			t.Error("the tool does not know its call or run")
+		}
+		_, err := inner.Run(ctx, nil, agent.UserText("x"))
+		return "ok", err
+	}, agent.ReadOnly())
+	p := fake.New(fake.Step{Calls: []agent.ToolCall{{ID: "c1", Name: "spawn", Input: json.RawMessage(`{}`)}, {ID: "c2", Name: "spawn", Input: json.RawMessage(`{}`)}}}, fake.Reply("done"))
+	a := newAgent(t, agent.Config{Provider: p, Tools: tools(t, spawn)})
+	if _, err := a.Run(context.Background(), nil, agent.UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["c1"] == "" || got["c1"] != got["c2"] {
+		t.Fatalf("parent calls %v", got)
+	}
+}

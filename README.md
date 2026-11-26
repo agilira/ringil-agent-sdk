@@ -525,6 +525,24 @@ a, _ := agent.New(agent.Config{Provider: p, MaxCost: 0.50}) // si ferma pulito: 
 Un'API che dichiara il costo di ogni chiamata (OpenRouter) lo mette in `Usage.Cost` con
 `openai.Config{StatesCost: true}`, e `price.Wrap` lo tiene.
 
+## Tracce
+
+Il modulo `otel` registra ogni esecuzione come traccia OpenTelemetry, con le convenzioni GenAI:
+uno span per l'esecuzione (`invoke_agent`), sotto uno per ogni chiamata al modello (`chat`, con
+modello, token, cache e costo in dollari `ringil.usage.cost_usd`) e per ogni strumento
+(`execute_tool`, errori col loro codice); il task di un worker sta sotto la chiamata che l'ha
+avviato. Solo metadati, come `eventlog`: niente testo della conversazione, input o risultati
+degli strumenti, messaggi d'errore. Serve solo l'API di OpenTelemetry: l'host sceglie SDK ed
+esportatore.
+
+```go
+obs := otel.Observer(tp.Tracer("ringil"), otel.Options{Agent: "supporto"})
+a, _ := agent.New(agent.Config{Provider: p, Observers: []agent.Observer{obs}})
+```
+
+CLI: con `OTEL_EXPORTER_OTLP_ENDPOINT` (o `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) e
+`OTEL_EXPORTER_OTLP_HEADERS` le tracce vanno in OTLP/HTTP (Jaeger, Tempo, Honeycomb, Langfuse…).
+
 ## Fallback
 
 `fallback.New` prova i provider in ordine: quando uno non risponde (server giù, rate
