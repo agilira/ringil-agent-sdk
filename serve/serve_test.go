@@ -567,7 +567,7 @@ func TestConversationsListsTheStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids, err := a.srv.Conversations(context.Background())
-	if err != nil || len(ids) != 1 || ids[0] != "telegram-5" {
+	if err != nil || len(ids) != 1 || ids[0] != (ConversationInfo{ID: "telegram-5", Title: "hi", Updated: ids[0].Updated, Size: ids[0].Size}) {
 		t.Fatalf("%v %v", ids, err)
 	}
 	none := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})

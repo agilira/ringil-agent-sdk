@@ -16,6 +16,7 @@ package file
 
 import (
 	"context"
+	"crypto/rand"
 	stderrors "errors"
 	"io"
 	"os"
@@ -30,8 +31,9 @@ import (
 )
 
 const (
-	dataExt = ".jsonl"
-	lockExt = ".lock"
+	dataExt  = ".jsonl"
+	lockExt  = ".lock"
+	titleExt = ".title"
 	// maxSession bounds the session file read into memory on Open; far above
 	// any real conversation, as memory/local bounds its own store.
 	maxSession = 1 << 30
@@ -240,20 +242,38 @@ func (s *store) List(ctx context.Context) ([]agent.SessionInfo, error) {
 	if err != nil {
 		return nil, ioError(err, "cannot list sessions")
 	}
+	root := s.openRoot()
+	if root != nil {
+		defer func() { _ = root.Close() }()
+	}
 	var out []agent.SessionInfo
 	for _, e := range entries {
-		id, ok := strings.CutSuffix(e.Name(), dataExt)
-		if !ok || !e.Type().IsRegular() || agent.ValidateSessionID(id) != nil {
-			continue
+		if item, ok := sessionEntry(root, e); ok {
+			out = append(out, item)
 		}
-		info, err := e.Info()
-		if err != nil {
-			continue // removed while listing
-		}
-		out = append(out, agent.SessionInfo{ID: id, Updated: info.ModTime(), Size: info.Size()})
 	}
 	slices.SortFunc(out, func(a, b agent.SessionInfo) int { return b.Updated.Compare(a.Updated) })
 	return out, nil
+}
+
+func (s *store) openRoot() *os.Root {
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return nil
+	}
+	return root
+}
+
+func sessionEntry(root *os.Root, e os.DirEntry) (agent.SessionInfo, bool) {
+	id, ok := strings.CutSuffix(e.Name(), dataExt)
+	if !ok || !e.Type().IsRegular() || agent.ValidateSessionID(id) != nil {
+		return agent.SessionInfo{}, false
+	}
+	info, err := e.Info()
+	if err != nil {
+		return agent.SessionInfo{}, false // removed while listing
+	}
+	return agent.SessionInfo{ID: id, Updated: info.ModTime(), Size: info.Size(), Title: readTitle(root, id)}, true
 }
 
 // Delete removes a session that nobody has open.
@@ -268,7 +288,10 @@ func (s *store) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	err = s.withRoot(func(root *os.Root) error { return root.Remove(name(id, dataExt)) })
+	err = s.withRoot(func(root *os.Root) error {
+		_ = root.Remove(name(id, titleExt)) // the title goes with it; none is fine
+		return root.Remove(name(id, dataExt))
+	})
 	if err != nil && !os.IsNotExist(errors.RootCause(err)) {
 		return joinClose(ioError(err, "cannot delete session"), lock)
 	}
@@ -385,6 +408,66 @@ func (s *session) Close() error {
 	s.f, s.lock = nil, nil
 	if err != nil {
 		return ioError(err, "cannot close session")
+	}
+	return nil
+}
+
+// readTitle is the session's title, "" without one: a small file beside the
+// history, read bounded and cleaned (it could have been written by hand).
+func readTitle(root *os.Root, id string) string {
+	if root == nil {
+		return ""
+	}
+	f, err := root.Open(name(id, titleExt))
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, 4*agent.MaxTitle))
+	if err != nil {
+		return ""
+	}
+	return agent.CleanTitle(string(b))
+}
+
+// SetTitle implements agent.TitleStore: the title is written whole beside
+// the history (a reader never sees half of it); empty, it is removed.
+func (s *store) SetTitle(ctx context.Context, id, title string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := agent.ValidateSessionID(id); err != nil {
+		return err
+	}
+	title = agent.CleanTitle(title)
+	return s.withRoot(func(root *os.Root) error {
+		if title == "" {
+			if err := root.Remove(name(id, titleExt)); err != nil && !os.IsNotExist(err) {
+				return ioError(err, "cannot remove the title")
+			}
+			return nil
+		}
+		return writeWhole(root, name(id, titleExt), title)
+	})
+}
+
+// writeWhole replaces file with data through a unique temporary file.
+func writeWhole(root *os.Root, file, data string) error {
+	tmp := file + "." + rand.Text()[:8] + ".tmp"
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return ioError(err, "cannot write the title")
+	}
+	_, werr := f.WriteString(data)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = root.Rename(tmp, file)
+	}
+	if werr != nil {
+		_ = root.Remove(tmp)
+		return ioError(werr, "cannot write the title")
 	}
 	return nil
 }

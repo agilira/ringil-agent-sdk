@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/agilira/go-errors"
 )
@@ -63,6 +65,47 @@ type SessionInfo struct {
 	ID      string
 	Updated time.Time
 	Size    int64
+	// Title is what a list of conversations shows: set by the host
+	// (TitleStore), "" when none was.
+	Title string
+}
+
+// TitleStore is a Store that keeps a title for each session, beside its
+// history (session/file does): a list of conversations shows it without
+// reading them.
+type TitleStore interface {
+	Store
+	// SetTitle sets the title of the session id, cleaned (CleanTitle);
+	// an empty one removes it.
+	SetTitle(ctx context.Context, id, title string) error
+}
+
+// MaxTitle bounds a session's title, in bytes.
+const MaxTitle = 120
+
+// CleanTitle is title as a list shows it: one line, no control
+// characters, spaces folded, at most MaxTitle bytes cut at a word where
+// it can.
+func CleanTitle(title string) string {
+	title = strings.ToValidUTF8(title, "")
+	title = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && !unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, title)
+	title = strings.Join(strings.Fields(title), " ")
+	if len(title) <= MaxTitle {
+		return title
+	}
+	cut := MaxTitle - len("…")
+	for cut > 0 && !utf8.RuneStart(title[cut]) {
+		cut--
+	}
+	if sp := strings.LastIndexByte(title[:cut], ' '); sp > MaxTitle/2 {
+		cut = sp
+	}
+	return strings.TrimSpace(title[:cut]) + "…"
 }
 
 // Session error codes.

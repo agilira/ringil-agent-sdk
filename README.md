@@ -525,6 +525,17 @@ a, _ := agent.New(agent.Config{Provider: p, MaxCost: 0.50}) // si ferma pulito: 
 Un'API che dichiara il costo di ogni chiamata (OpenRouter) lo mette in `Usage.Cost` con
 `openai.Config{StatesCost: true}`, e `price.Wrap` lo tiene.
 
+## App nel browser
+
+`serve` dà all'app tutto quello che le serve: conversazioni (`GET /v1/conversations`, storia a
+pagine con `GET /v1/conversations/{id}/messages`, `PATCH` per rinominare, `DELETE`; il titolo
+nasce dal primo messaggio), allegati nelle esecuzioni (immagini e PDF in base64), e con
+`Config.App` l'app stessa servita su «/». Si entra con un link monouso (`SignInPath`, 10
+minuti) che diventa un cookie HttpOnly e SameSite=Strict, accettato solo dalle pagine dell'app
+(stessa origine); ogni altra pagina web resta rifiutata, il token Bearer funziona come prima.
+Voce con `Config.Voice`: `POST /v1/audio/transcriptions` (la registrazione del browser → testo),
+`POST /v1/audio/speech` (testo → audio), `GET /v1/audio` per sapere cosa è acceso.
+
 ## Tracce
 
 Il modulo `otel` registra ogni esecuzione come traccia OpenTelemetry, con le convenzioni GenAI:
