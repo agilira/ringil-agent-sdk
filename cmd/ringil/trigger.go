@@ -673,16 +673,24 @@ func (c *cli) inOwnState(path string) bool {
 	return within(state, path) || within(path, state)
 }
 
-// realPath is path with its links followed, as far as it exists.
+// realPath is path with the links of the part that exists followed, the
+// rest as written: a path not made yet below a link (macOS's /var, a
+// Windows short name) is compared where it would be.
 func realPath(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return path
 	}
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		return real
+	rest := ""
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(real, rest)
+		}
+		if filepath.Dir(dir) == dir {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
 	}
-	return abs
 }
 
 // within: path is dir or inside it.

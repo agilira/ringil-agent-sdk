@@ -64,6 +64,9 @@ func TestOwnStateThroughALink(t *testing.T) {
 	if h.c.inOwnState(t.TempDir()) {
 		t.Error("another folder was refused")
 	}
+	if !h.c.inOwnState(filepath.Join(link, "not", "made", "yet")) {
+		t.Error("a path not made yet below the link passed")
+	}
 }
 
 // What the app may not set is refused in any case of its letters; a
