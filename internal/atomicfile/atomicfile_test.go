@@ -7,6 +7,7 @@ package atomicfile
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -25,11 +26,13 @@ func TestWriteInSubdirectory(t *testing.T) {
 	if err := root.MkdirAll("a/b", 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"top.md", "a/b/deep.md"} {
+	// A name joined with filepath has \ on Windows (found 27/11: every
+	// project.json failed there).
+	for _, name := range []string{"top.md", "a/b/deep.md", filepath.Join("a", "b", "joined.md")} {
 		writeRead(t, root, name)
 	}
 	entries, err := os.ReadDir(root.Name() + "/a/b")
-	if err != nil || len(entries) != 1 {
+	if err != nil || len(entries) != 2 {
 		t.Fatalf("leftovers %v %v", entries, err)
 	}
 }
