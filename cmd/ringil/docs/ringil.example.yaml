@@ -1,0 +1,217 @@
+# ringil.yaml: the whole setup of ringil, in <config>/ringil/ringil.yaml
+# (or --config FILE). Keys are the global flags' names with _ for -; a
+# flag given wins over the file for that command, and RINGIL_PROVIDER,
+# RINGIL_MODEL and RINGIL_EMBED_MODEL in the environment win too.
+# No secret is ever written here: key_env and ${NAME} name the variables
+# (environment or --env-file) that hold them. Relative paths of the
+# instructions and sessions_dir are from this file's directory. A key
+# ringil does not know is an error.
+
+# The models, in order, as provider:model: the first answers; the others,
+# in their order, when it does not (server down, too many requests, an
+# answer cut or garbled, the key refused). One with no key is left out; a
+# conversation goes to no provider that is not listed. --provider and
+# --model (or RINGIL_PROVIDER, RINGIL_MODEL) put another first; --models
+# replaces the list. The provider by name. Built in, with the secret
+# holding the key:
+# anthropic (ANTHROPIC_API_KEY), chatgpt (a subscription: no key, `ringil
+# login chatgpt` signs in), openai (OPENAI_API_KEY), google (Gemini,
+# GEMINI_API_KEY), openrouter (OPENROUTER_API_KEY), nvidia (NIM,
+# NVIDIA_API_KEY), deepseek (DEEPSEEK_API_KEY), requesty
+# (REQUESTY_API_KEY), zai (ZAI_API_KEY), moonshot (MOONSHOT_API_KEY),
+# xai (Grok, XAI_API_KEY), mistral (MISTRAL_API_KEY), ollama (this
+# machine, no key). Each key goes to its own provider and to no other.
+models:
+  - work:example-model
+  - openrouter:anthropic/claude-sonnet-5.5
+  - ollama:qwen3:8b
+embed_model: example-embed     # memory by meaning; leave out for words
+
+# Providers of your own, as many as you like, each with a name: kind
+# openai (compatible, the default) or anthropic, the endpoint, and the
+# variable holding the key (none without key_env; never a built-in's). An
+# entry named as a built-in changes its key_env, or its base with its
+# key_env (a regional endpoint): the key goes where the file says.
+providers:
+  work:
+    base: https://llm.example.com/v1
+    key_env: WORK_API_KEY
+  gateway:
+    kind: anthropic
+    base: https://gateway.example.com
+    key_env: GATEWAY_KEY
+  moonshot:                    # another address for a built-in: its key_env too
+    base: https://api.moonshot.cn/v1
+    key_env: MOONSHOT_CN_API_KEY    # the China platform's keys
+
+# Instructions added after the base prompt, for every profile: tone,
+# procedures, what the agent is for. The base prompt and its rules stay.
+instructions: company.md
+
+max_turns: 40                  # model calls per prompt; 0 no limit
+context_window: 128000         # compaction starts near it
+summarize: false               # summarize left-out turns (costs a call)
+allow_domains: [pypi.org, "*.github.com"]   # bash reaches them unasked
+accept_edits: false            # write files without asking
+no_approvals: false            # never ask before a tool call
+no_memory: false
+no_tools: false
+workflow_calls: 0              # 0: no limit
+workflow_tokens: 0
+workflow_cost: 0               # US dollars one workflow may spend; 0 no limit
+max_cost: 0.50                 # US dollars per prompt; 0 no limit
+prices:                        # US dollars per million tokens, over the list downloaded each day (OpenRouter's)
+  my-finetune:
+    input: 0.40
+    output: 1.60
+    cache_read: 0.10           # left out: the input price (cache_write too)
+# sessions_dir: /srv/ringil/sessions
+# allow_http: false            # plain HTTP to a host that is not loopback
+images: false                  # the model reads images (RINGIL_IMAGES=1 too)
+embed_input_type: false        # send the input type to the embedding model
+
+# The model that finds memories by meaning: embed_model at the chat
+# model's endpoint by default, or an Ollama server's own API (local, no
+# key). Asymmetric models want a prefix on the questions, or on both.
+embedder:
+  kind: openai                 # or ollama
+  # url: http://127.0.0.1:11434
+  # model: qwen3-embedding:0.6b
+  # query_prefix: "Instruct: Given a question, find the notes that answer it\nQuery: "
+  # document_prefix: ""
+  # dimensions: 0
+
+# Where memories are kept: a SQLite database in the config directory by
+# default (by words, and by meaning with an embedder), a Chroma server or
+# a Mem0 server, each memory in a collection (Mem0: a user_id) of its own:
+# <prefix>-user for the user, <prefix>-chat-<chat> for the profiles with
+# memory: chat. Chroma finds memories by meaning: it needs an embedder.
+# Mem0 has its own, and its own model, which keeps the facts it finds in
+# what is remembered (raw: true keeps the text as it is).
+memory_store:
+  kind: sqlite                 # or chroma, mem0
+  # url: http://127.0.0.1:8000
+  # collection_prefix: acme
+  # headers: {X-Chroma-Token: "${CHROMA_TOKEN}"}   # Mem0: X-API-Key
+  # raw: false                 # mem0 only
+
+# What runs without asking, as coding agents do it. Reading runs; changing
+# files, destructive and outward calls ask; bash runs in its sandbox and
+# asks for what leaves it. Rules first (deny wins over ask, ask over
+# allow), then the mode: default, accept-edits (file changes run), plan
+# (reading only) or bypass (everything but deny). --accept-edits and
+# --no-approvals win for one command. Answering "p" to a question adds its
+# rule to allow here. Rules on bash read the command's text: a best effort
+# (what a command decodes and runs, no rule sees); bash's boundary is its
+# sandbox.
+permissions:
+  mode: default
+  allow: ["bash(go test:*)", "write_file(src/**)"]
+  deny: ["bash(rm -rf:*)", "fetch(domain:example.org)"]
+
+# The proxy every request of ringil goes through, https alone (tunnelled:
+# the proxy never reads it). Only from here: HTTPS_PROXY and ALL_PROXY in
+# the environment are ignored, so that a variable planted there cannot put
+# a proxy between ringil and its providers. No credentials in the URL.
+# proxy:
+#   url: http://proxy.example.com:3128
+#   no_proxy: [internal.example.com, 10.0.0.0/8]
+
+# Where the keys are kept: read by the CLI, by serve and its channels (a
+# Telegram bot's token too), the MCP servers and the remote agents. A key
+# the store has is the store's: the same name in the environment or the
+# --env-file too is an error, never a silent choice; a name it lacks comes
+# from them. Where each key came from is in the audit, by name.
+# `ringil secrets set NAME` saves one (its value from standard input,
+# without echo), `ringil secrets rm NAME` removes it; `ringil secrets move
+# keyring|file|vault` moves them all, each read back before ringil.yaml
+# switches; `move env --to-file PATH` writes them to a new private env file
+# (a container's, read with --env-file).
+secrets:
+  store: keyring               # the system's: Keychain, Credential Manager, GNOME Keyring/KWallet
+  # keyring_service: ringil
+  # store: vault               # HashiCorp Vault (or OpenBao), KV version 2
+  # vault: {url: https://vault.example.com:8200, path: ringil, mount: secret, token_env: VAULT_TOKEN}
+  # store: file                # an encrypted file, for a machine with neither
+  # file: /home/me/.config/ringil/secrets.enc
+  # passphrase_env: RINGIL_SECRETS_PASSPHRASE
+
+# Voice in the chats: a model that hears voice messages and one that
+# speaks the answers, at an OpenAI-compatible provider: the main model's,
+# or provider. RINGIL_TRANSCRIBE_MODEL and _PROVIDER (and RINGIL_SPEECH_*)
+# in the environment win.
+transcribe:
+  model: example-whisper
+speech:
+  model: example-tts
+  voice: alloy
+  provider: openai
+
+# Every revision of this file, of its instructions and of the skills is
+# recorded here, by name and hash, never their text; each run of serve
+# logs the digest of the revision it ran on. SQLite with a hash chain
+# (argus): a record altered or removed is found; a .jsonl file is plain
+# lines, without the chain.
+# audit_file: /var/log/ringil/audit.db   # default <config>/ringil/audit.db
+no_audit: false
+
+# Profiles: roles with their own models (and no other), instructions,
+# tools and memory. --profile NAME picks one; serve offers them all.
+profiles:
+  support:
+    description: answers the customers
+    instructions: support.md   # after the global instructions
+    tools: [read_file, glob, grep]   # the only tools; [] for none
+    memory: chat               # each chat its own; "off" none
+    max_turns: 10
+  local:
+    models: [ollama:local-model]   # another provider: its own endpoint and key
+    images: true
+  claude:
+    models: [anthropic:claude-haiku-5-5, openrouter:anthropic/claude-haiku-5.5]
+
+# MCP servers, with the keys of the common format: a server's entry in
+# JSON from a vendor's page goes here as it is (JSON is YAML).
+mcp_servers:
+  files:
+    command: mcp-files
+    args: [--root, /srv/docs]
+    env: {FILES_TOKEN: "${FILES_TOKEN}"}
+    sandbox: true              # isolated: else a plain process with your rights
+    mounts: [/srv/docs]        # what it sees, read-only
+    allow_domains: [api.example.com]   # its only network, through the egress proxy
+  composio:
+    type: http
+    url: https://connect.composio.dev/mcp
+    headers: {x-consumer-api-key: "${COMPOSIO_KEY}"}
+  crm:
+    type: http
+    url: https://crm.example.com/mcp
+    oauth: {}                  # login from the browser
+    trust_annotations: false   # confirm every call
+    disabled: false
+
+# Remote agents (A2A): each becomes a tool.
+agents:
+  warehouse:
+    url: https://wh.example.com
+    headers: {X-Api-Key: "${WH_KEY}"}
+
+# ringil serve: the local API, triggers and chats.
+serve:
+  listen: 127.0.0.1:8765       # loopback only
+  max_runs: 4
+  a2a: false                   # also answer as an A2A agent at /a2a
+  no_triggers: false
+  webhooks: 127.0.0.1:8766     # POST /hooks/NAME, signed; TLS in front of it
+  language: en                 # the bot's own messages: en or it
+  replies: voice               # voice or text
+  new_after: 24h               # a silent chat starts a new conversation; or never
+  member_profile: support      # members talk with it (it lists its tools)
+  # public_profile: support    # anyone else too: a public bot
+  max_per_hour: 30             # messages a member or the public has answered; negative none
+  telegram:                    # the token: RINGIL_TELEGRAM_TOKEN
+    owners: ["623292473"]
+    members: []
+    # company_group: "-1001234567890"
+    member_phones: ["+39 333 1234567"]

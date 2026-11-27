@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Systems to test: all, or some of linux windows macos'
+        default: all
+
+permissions:
+  contents: read
+
+# Until the SDK has a tag, the app finds it next to itself (replace
+# ../ringil-agent-sdk in go.mod): both repositories are checked out side by
+# side. The SDK is private: SDK_DEPLOY_KEY is a read-only deploy key of it.
+jobs:
+  # Which systems to test. All three by default; a commit message with
+  # [ci windows], [ci linux] or [ci macos] (combinable) tests only those:
+  # macOS minutes cost ten times Linux ones.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.pick.outputs.os }}
+    steps:
+    - id: pick
+      env:
+        MESSAGE: ${{ github.event.head_commit.message }}
+        CHOSEN: ${{ github.event.inputs.os }}
+      run: |
+        want="$CHOSEN"
+        if [ -z "$want" ]; then
+          for os in linux windows macos; do
+            case "$MESSAGE" in *"[ci $os]"*) want="$want $os";; esac
+          done
+        fi
+        list=""
+        for os in $want; do
+          case "$os" in
+            linux) list="$list,\"ubuntu-latest\"";;
+            windows) list="$list,\"windows-latest\"";;
+            macos) list="$list,\"macos-latest\"";;
+          esac
+        done
+        if [ -z "$list" ]; then list=',"ubuntu-latest","macos-latest","windows-latest"'; fi
+        echo "os=[${list#,}]" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ringil
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: ringil
+    - uses: actions/checkout@v4
+      with:
+        repository: agilira/ringil-agent-sdk
+        ssh-key: ${{ secrets.SDK_DEPLOY_KEY }}
+        path: ringil-agent-sdk
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+        cache-dependency-path: ringil/go.sum
+    - name: Sandbox prerequisites
+      if: runner.os == 'Linux'
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor;
+      # the sandbox needs them, as on a developer machine with bubblewrap.
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q bubblewrap socat
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        echo "RINGIL_REQUIRE_SANDBOX=1" >> "$GITHUB_ENV"
+    - name: Sandbox required (macOS)
+      if: runner.os == 'macOS'
+      run: echo "RINGIL_REQUIRE_SANDBOX=1" >> "$GITHUB_ENV"
+    - name: App
+      run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
+
+  lint:
+    name: Lint and security
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ringil
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: ringil
+    - uses: actions/checkout@v4
+      with:
+        repository: agilira/ringil-agent-sdk
+        ssh-key: ${{ secrets.SDK_DEPLOY_KEY }}
+        path: ringil-agent-sdk
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.27.x'
+        check-latest: true
+        cache-dependency-path: ringil/go.sum
+    - name: Install tools
+      run: |
+        go install honnef.co/go/tools/cmd/staticcheck@latest
+        go install github.com/kisielk/errcheck@latest
+        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+    - name: Format
+      run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+    - name: Checks
+      run: make lint security
+    - name: Cross-platform vet
+      run: GOARCH=arm64 go vet ./... && GOOS=windows go vet ./... && GOOS=darwin go vet ./...

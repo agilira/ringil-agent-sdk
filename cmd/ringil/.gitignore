@@ -1,0 +1,18 @@
+coverage.out
+coverage.html
+*.test
+
+# Workspaces are local, never committed
+go.work
+go.work.sum
+
+# Local credentials for live tests, never committed
+.env
+
+# Build output
+/ringil
+/ringil.exe
+
+# Our notes and plans stay local: only code, README, license are published
+docs/*
+!docs/ringil.example.yaml

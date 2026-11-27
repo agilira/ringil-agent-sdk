@@ -1,0 +1,129 @@
+// delegate.go: sub-agents in the terminal agent
+//
+// Copyright (c) 2026 AGILira - A. Giordano
+// SPDX-License-Identifier: MPL-2.0
+
+package main
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/agilira/orpheus/pkg/orpheus"
+
+	agent "github.com/agilira/ringil-agent-sdk"
+	"github.com/agilira/ringil-agent-sdk/artifact"
+	"github.com/agilira/ringil-agent-sdk/delegate"
+	"github.com/agilira/ringil-agent-sdk/notes"
+	"github.com/agilira/ringil-agent-sdk/todo"
+)
+
+const exploreRole = "You are a research sub-agent. Search and read to answer the task you are given, then report what you found: concrete facts, file paths and line numbers, and what you could not establish. Do not guess. Your report is all the asking agent will see."
+
+const generalRole = "You are a sub-agent working on one task for another agent. Do the task with your tools, then report concisely what you did, what you found and anything left open. Your report is all the asking agent will see."
+
+// delegateTool gives the agent two kinds of worker: explore, read-only,
+// for searches that would fill its context, and general, with the same
+// tools as the parent but no delegation of its own. Each task gets a
+// scratchpad of its own and reads the project notes and rules.
+func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools agent.Registry) (*delegate.Crew, error) {
+	explore, err := agent.NewRegistry(c.readTools...)
+	if err != nil {
+		return nil, err
+	}
+	general, err := sharedTools(parentTools)
+	if err != nil {
+		return nil, err
+	}
+	instructions, err := c.instructions() // the company's rules hold for delegated work too
+	if err != nil {
+		return nil, err
+	}
+	crew, err := delegate.NewCrew(delegate.Team{
+		Config: agent.Config{
+			Instructions: instructions,
+			Provider:     p,
+			Approve:      c.decide,
+			MaxTurns:     c.maxTurns(ctx),
+			MaxCost:      c.maxCost,
+			Observers:    append([]agent.Observer{c.showWorker}, c.observers(ctx.Context())...),
+			KeepImages:   c.keepImages(ctx),
+			Loop:         agent.Loop{Action: agent.LoopWarn},
+		},
+		Workers: []delegate.Worker{
+			{Name: "explore", Description: "searches and reads files, read-only; for questions like where is X, how does Y work", Role: exploreRole, Tools: explore, Prepare: c.prepareWorker},
+			{Name: "general", Description: "does a self-contained task with the same tools as you, except delegating and your own notes, task list and memory", Role: generalRole, Tools: general, Prepare: c.prepareWorker},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.crew = crew
+	c.closers = append(c.closers, func() error { crew.Close(); return nil })
+	return crew, nil
+}
+
+// personal are the parent's own: its notebooks, task list and memory. A
+// worker gets its own scratchpad and list instead, and no memory.
+var personal = withNames(map[string]bool{notes.DefaultName: true, todo.ToolName: true, "remember": true, "recall": true, "forget": true},
+	artifact.ToolNames)
+
+// withNames is set with names added.
+func withNames(set map[string]bool, names []string) map[string]bool {
+	for _, n := range names {
+		set[n] = true
+	}
+	return set
+}
+
+func sharedTools(parent agent.Registry) (agent.Registry, error) {
+	var names []string
+	for _, s := range parent.Specs() {
+		if !personal[s.Name] {
+			names = append(names, s.Name)
+		}
+	}
+	return parent.Select(names...)
+}
+
+// prepareWorker gives a task its own scratchpad, the project notes read
+// only, and the project rules.
+func (c *cli) prepareWorker(context.Context, string) (delegate.Setup, error) {
+	dir, err := os.MkdirTemp("", "ringil-worker-")
+	if err != nil {
+		return delegate.Setup{}, err
+	}
+	scopes := []notes.Scope{{Name: "scratchpad", Dir: filepath.Join(dir, "scratch")}}
+	if c.projectNotes != "" {
+		scopes = append(scopes, notes.Scope{Name: "project", Dir: c.projectNotes, ReadOnly: true})
+	}
+	nb, err := notes.New(scopes...)
+	if err != nil {
+		if rerr := os.RemoveAll(dir); rerr != nil {
+			return delegate.Setup{}, rerr
+		}
+		return delegate.Setup{}, err
+	}
+	return delegate.Setup{
+		Tools:   append([]agent.Tool{nb.Tool(), todo.Tool()}, c.artifactTools(true)...),
+		Context: c.runContext(nb, true), // workers exist only for unrestricted roles
+		Done:    func() error { return os.RemoveAll(dir) },
+	}, nil
+}
+
+// showWorker prints what a worker does, indented under the parent's call.
+func (c *cli) showWorker(ev agent.Event) {
+	tag := "    [" + ev.Worker + " " + strconv.Itoa(ev.Task) + "] "
+	switch ev.Kind {
+	case agent.EventToolStart:
+		c.note(strings.TrimPrefix(tag, "  ") + "-> " + ev.Call.Name + " " + short(string(ev.Call.Input)))
+	case agent.EventDone:
+		c.workerIn.Add(int64(ev.Result.Usage.Input))
+		c.workerOut.Add(int64(ev.Result.Usage.Output))
+		c.workerCost.Add(int64(ev.Result.Usage.Cost * 1e9)) // nano-dollars: an atomic integer
+		c.note(strings.TrimPrefix(tag, "  ") + "done, " + strconv.Itoa(ev.Result.Turns) + " model calls")
+	}
+}

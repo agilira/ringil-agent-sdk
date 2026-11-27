@@ -1,0 +1,6 @@
+.git
+docs
+coverage.*
+*.test
+/ringil
+/ringil.exe
