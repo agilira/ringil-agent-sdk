@@ -260,7 +260,34 @@ func (c *cli) profileUsers(name string) []string {
 	if c.serveCtx != nil && a2aProfile(c.serveCtx) == name {
 		users = append(users, "serve --profile")
 	}
-	return append(append(users, c.triggersOf(func(t trigger.Trigger) bool { return t.Profile == name })...), c.workflowsWith(name)...)
+	users = append(append(users, c.triggersOf(func(t trigger.Trigger) bool { return t.Profile == name })...), c.workflowsWith(name)...)
+	return append(users, c.cardsFor(name)...)
+}
+
+// cardsFor names the projects' cards given to an agent.
+func (c *cli) cardsFor(agent string) []string {
+	s, err := c.projectStore()
+	if err != nil {
+		return []string{"the projects (" + describe(err) + ")"}
+	}
+	defer closeQuietly(s)
+	list, err := s.List()
+	if err != nil {
+		return []string{"the projects, one of which cannot be read (" + describe(err) + ")"}
+	}
+	var out []string
+	for _, p := range list {
+		cards, err := s.Cards(p.ID)
+		if err != nil {
+			out = append(out, "project "+p.ID+" (its board cannot be read)")
+		}
+		for _, card := range cards {
+			if card.Agent == agent {
+				out = append(out, "card "+card.ID+" of project "+p.ID)
+			}
+		}
+	}
+	return out
 }
 
 // triggersOf names the triggers that match.

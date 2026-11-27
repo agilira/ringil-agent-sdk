@@ -146,6 +146,7 @@ func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
 	c.mountTriggers(ctx, srv)
 	c.mountWorkflows(ctx, srv)
 	c.mountMore(ctx, srv)
+	c.mountProjects(srv)
 	c.mountState(ctx, srv)
 	c.mountSetup(ctx, srv)
 	return srv, where, nil
@@ -220,9 +221,14 @@ func (c *cli) runInstance(ctx *orpheus.Context, name string) func(context.Contex
 		if c.metrics != nil { // a slice of its own: c.events is every run's
 			r.events = slices.Concat(r.events, []agent.Observer{c.metrics.Observer(name)})
 		}
-		r.runConversation = serve.ConversationOf(run)
+		r.runConversation, r.project = serve.ConversationOf(run), serve.ProjectOf(run)
+		r.handDepth = handDepthOf(serve.SourceOf(run))
+		if err := r.checkRunProject(); err != nil {
+			return serve.Instance{}, err
+		}
 		r.setUpTrigger(serve.SourceOf(run))
 		r.automating = serve.SourceOf(run) == channel.Automate
+		r.projecting = serve.SourceOf(run) == channel.Project
 		r.inbox = c.inboxOf(r.runConversation)
 		r.role, r.roleName = role, name
 		a, err := r.agent(ctx)

@@ -281,7 +281,7 @@ func sessionEntry(root *os.Root, e os.DirEntry) (agent.SessionInfo, bool) {
 		return agent.SessionInfo{}, false // removed while listing
 	}
 	l := readLabels(root, id)
-	return agent.SessionInfo{ID: id, Updated: info.ModTime(), Size: info.Size(), Title: l.Title, Pinned: l.Pinned, Profile: l.Profile}, true
+	return agent.SessionInfo{ID: id, Updated: info.ModTime(), Size: info.Size(), Title: l.Title, Pinned: l.Pinned, Profile: l.Profile, Project: l.Project}, true
 }
 
 // Delete removes a session that nobody has open.
@@ -435,7 +435,7 @@ func readLabels(root *os.Root, id string) agent.Labels {
 		}
 		l.Title = agent.CleanTitle(l.Title)
 		if l.Check() != nil {
-			l.Profile = ""
+			l.Profile, l.Project = "", ""
 		}
 		return l
 	}
@@ -457,6 +457,19 @@ func readSmall(root *os.Root, file string, max int64) ([]byte, error) {
 		return nil, os.ErrNotExist
 	}
 	return io.ReadAll(io.LimitReader(f, max))
+}
+
+// Labels implements agent.LabelStore.
+func (s *store) Labels(ctx context.Context, id string) (agent.Labels, error) {
+	if err := ctx.Err(); err != nil {
+		return agent.Labels{}, err
+	}
+	if err := agent.ValidateSessionID(id); err != nil {
+		return agent.Labels{}, err
+	}
+	var l agent.Labels
+	err := s.withRoot(func(root *os.Root) error { l = readLabels(root, id); return nil })
+	return l, err
 }
 
 // Label implements agent.LabelStore: the labels are written whole beside

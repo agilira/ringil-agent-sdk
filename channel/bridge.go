@@ -428,7 +428,7 @@ func (b *Bridge) dispatch(ctx context.Context, m Message, r role) {
 // commanded runs /automate (which may bring files) or another command
 // (which may not); false when text is no command.
 func (b *Bridge) commanded(ctx context.Context, m Message, r role, text string) bool {
-	return b.automate(ctx, m, r, text) || (len(m.Files) == 0 && b.command(ctx, m, r, text))
+	return b.automate(ctx, m, r, text) || b.project(ctx, m, r, text) || (len(m.Files) == 0 && b.command(ctx, m, r, text))
 }
 
 // command runs a chat command; false when text is not one. In a group,
@@ -568,7 +568,7 @@ func (b *Bridge) launch(ctx, prep context.Context, chatID, text string, files []
 	case problem != "":
 		reply = problem
 	default:
-		snap, err := b.cfg.Server.StartFrom(c.source, b.profileFor(c.role, c.group), c.conv, msg)
+		snap, err := b.cfg.Server.StartFrom(serve.Request{Source: c.source, Profile: b.profileFor(c.role, c.group), Conversation: c.conv, Input: msg})
 		if err == nil {
 			c.run = snap.ID
 			return snap.ID, ""

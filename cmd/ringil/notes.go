@@ -42,7 +42,7 @@ func (c *cli) notebooks(ctx *orpheus.Context) (*notes.Notes, error) {
 	if err != nil {
 		return nil, err
 	}
-	project := filepath.Join(root, "projects", projectKey(cwd), "notes")
+	project := c.projectNotesDir(root, cwd)
 	c.projectNotes = project
 	// The agent keeps its project notes as Claude Code keeps its memory,
 	// without asking at each change (found 21/11: every note was a

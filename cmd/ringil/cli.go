@@ -37,6 +37,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/metrics"
 	"github.com/agilira/ringil-agent-sdk/notes"
 	"github.com/agilira/ringil-agent-sdk/price"
+	"github.com/agilira/ringil-agent-sdk/project"
 	"github.com/agilira/ringil-agent-sdk/provider/anthropic"
 	"github.com/agilira/ringil-agent-sdk/provider/chatgpt"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
@@ -146,6 +147,12 @@ type cli struct {
 	// run of serve, the saved workflows its tools use.
 	wfRuns  *wfRuns
 	library *workflow.Library
+	// project, in a run of serve on a project (serve.ProjectOf), is its
+	// id; projects the store its tools use.
+	project  string
+	projects *project.Store
+	// handDepth is how deep in a chain of hand-offs the run is.
+	handDepth int
 	// workflowLife is serve's: the workflows it runs in the background
 	// end with it.
 	workflowLife context.Context
@@ -179,6 +186,8 @@ type cli struct {
 	// automating: a run started with /automate or `ringil automate`, the
 	// only kind that may make triggers.
 	automating bool
+	// projecting: a run started with /project, to make a project.
+	projecting bool
 	// roleName is the profile a run of serve talks with; finalTools the
 	// run's tools once made; triggers the runner serve runs (shared).
 	roleName   string
@@ -350,6 +359,9 @@ func (c *cli) app() *orpheus.App {
 		AddSubcommand(orpheus.NewCommand("rm", "Delete triggers").SetHandler(c.withConfig(c.cmdTriggerRemove)).SetUsage("trigger rm <name...>")).
 		AddSubcommand(orpheus.NewCommand("pause", "Stop triggers, keeping them").SetHandler(c.withConfig(c.cmdTriggerPause)).SetUsage("trigger pause <name...>")).
 		AddSubcommand(orpheus.NewCommand("resume", "Let paused triggers run again").SetHandler(c.withConfig(c.cmdTriggerResume)).SetUsage("trigger resume <name...>")))
+	app.AddCommand(orpheus.NewCommand("project", "List the projects: boards several agents and people work on in turn").SetHandler(c.withConfig(c.cmdProjects)).
+		AddSubcommand(orpheus.NewCommand("new", "Make a project").SetHandler(c.withConfig(c.cmdProjectNew)).SetUsage("project new <name> [--brief TEXT]").
+			AddFlag("brief", "", "", "what it is for and what done means, for every agent who works on it")))
 	app.AddCommand(orpheus.NewCommand("rules", "List the project rules the agent follows (AGENTS.md, CLAUDE.md, ...)").SetHandler(c.withConfig(c.cmdRules)))
 	app.AddCommand(orpheus.NewCommand("skill", "List installed skills").SetHandler(c.withConfig(c.cmdSkills)).
 		AddSubcommand(orpheus.NewCommand("install", "Install a skill from a directory with a SKILL.md").SetHandler(c.withConfig(c.cmdSkillInstall)).SetUsage("skill install <dir>")).
@@ -432,7 +444,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 // /automate run add) and the operator's instructions. The skills come as
 // a context block, so one installed during a session is listed.
 func (c *cli) prompts() (system, instructions string, err error) {
-	system = c.automateSystem(c.chatSystem(agent.DefaultSystem))
+	system = c.projectSystem(c.automateSystem(c.chatSystem(agent.DefaultSystem)))
 	instructions, err = c.instructions()
 	return system, instructions, err
 }
@@ -584,6 +596,9 @@ func (c *cli) runContext(nb *notes.Notes, withRules bool) func(context.Context) 
 		if c.catalog != nil {
 			blocks = append(blocks, agent.ContextBlock{Name: "skills", Text: c.catalog.Instructions()})
 		}
+		if text := c.projectBlock(); text != "" {
+			blocks = append(blocks, agent.ContextBlock{Name: "project", Text: text})
+		}
 		if text := c.savedList(); text != "" {
 			blocks = append(blocks, agent.ContextBlock{Name: "workflows", Text: text})
 		}
@@ -669,6 +684,8 @@ func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
 		}
 		extra = append(extra, c.workflowTools()...)
 	}
+	extra = append(extra, c.projectTools()...)
+	extra = append(extra, c.startProjectTool()...)
 	return append(extra, c.laterTools()...)
 }
 
@@ -713,16 +730,27 @@ func (c *cli) decide(ctx context.Context, call agent.ToolCall, spec agent.ToolSp
 	if p.Effect(call, spec) == agent.EffectDeny { // a deny rule, or plan mode: before anything else allows it
 		return p.Approve(ctx, call, spec)
 	}
-	if allow, decided := c.triggerAllowed(call.Name); decided { // a trigger's run may only what it was allowed
-		if (allow && !replacesSkill(call) && !p.AskedByRule(call, spec)) || p.Effect(call, spec) == agent.EffectAllow {
-			return agent.Allow(), nil // allowed when the trigger was made (unless a rule wants a person: no one is here), or what runs without asking
-		}
-		return agent.Deny("This automation was not allowed this call when it was set up, and no one can be asked now."), nil
+	if d, decided := c.triggerDecision(p, call, spec); decided {
+		return d, nil
 	}
-	if c.notesFree(ctx, p, call, spec) {
+	if c.notesFree(ctx, p, call, spec) || c.projectFree(p, call, spec) {
 		return agent.Allow(), nil
 	}
 	return p.Approve(ctx, call, spec)
+}
+
+// triggerDecision is what a trigger's run may: only what it was allowed
+// when it was made (unless a rule wants a person: no one is here), or
+// what runs without asking. Outside one, decided is false.
+func (c *cli) triggerDecision(p *agent.Policy, call agent.ToolCall, spec agent.ToolSpec) (agent.Decision, bool) {
+	allow, decided := c.triggerAllowed(call.Name)
+	switch {
+	case !decided:
+		return agent.Decision{}, false
+	case (allow && !replacesSkill(call) && !p.AskedByRule(call, spec)) || p.Effect(call, spec) == agent.EffectAllow:
+		return agent.Allow(), true
+	}
+	return agent.Deny("This automation was not allowed this call when it was set up, and no one can be asked now."), true
 }
 
 // notesReadInPlan: plan mode reads, and the notes tool's calls that change

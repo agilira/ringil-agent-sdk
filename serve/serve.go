@@ -288,14 +288,29 @@ func (s *Server) Start(profile, conversation, input string) (Snapshot, error) {
 
 // StartMessage is Start with a user message that may hold images.
 func (s *Server) StartMessage(profile, conversation string, input agent.Message) (Snapshot, error) {
-	return s.StartFrom("", profile, conversation, input)
+	return s.StartFrom(Request{Profile: profile, Conversation: conversation, Input: input})
 }
 
-// StartFrom is StartMessage for a run the host starts itself, labelled
-// with what started it (SourceOf): a trigger, a chat. The profile's New
-// reads the label and may set the run up for it (the tools a trigger was
-// allowed, say). The API never labels a run.
-func (s *Server) StartFrom(source, profile, conversation string, input agent.Message) (Snapshot, error) {
+// Request is a run the host starts (StartFrom).
+type Request struct {
+	// Source labels what started it (SourceOf): a trigger, a chat. The
+	// API never labels a run.
+	Source       string
+	Profile      string
+	Conversation string
+	// Project is the project the run works on (ProjectOf), the host's
+	// name for it; the conversation keeps it (Labels.Project). Empty: the
+	// conversation's, if it has one.
+	Project string
+	Input   agent.Message
+}
+
+// StartFrom is StartMessage with all a run can be told: labelled with
+// what started it (SourceOf), and the project it works on (ProjectOf).
+// The profile's New reads them and may set the run up for them (the tools
+// a trigger was allowed, the project's context).
+func (s *Server) StartFrom(r Request) (Snapshot, error) {
+	source, profile, conversation, input := r.Source, r.Profile, r.Conversation, r.Input
 	p, ok := s.profile(profile)
 	if !ok {
 		return Snapshot{}, fail(ErrNotFound, "no such profile")
@@ -309,14 +324,21 @@ func (s *Server) StartFrom(source, profile, conversation string, input agent.Mes
 	case conversation != "" && agent.ValidateSessionID(conversation) != nil:
 		return Snapshot{}, fail(ErrInput, "bad conversation ID")
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prune()
 	if err := s.admit(conversation); err != nil {
 		return Snapshot{}, err
 	}
+	// Under the lock, once no other run has the conversation: the project
+	// it keeps cannot change before this run labels it (audit 27/11).
+	project, err := s.projectOf(context.Background(), conversation, r.Project)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	j := newJob(rand.Text()[:20], p.Name, conversation, s)
-	j.source = source
+	j.source, j.project = source, project
 	// The run's context exists before Start returns: a Cancel right away
 	// reaches it.
 	ctx, cancel := context.WithCancel(context.WithValue(s.ctx, jobKey{}, j))
@@ -465,7 +487,7 @@ func (s *Server) work(ctx context.Context, j *job, p Profile, input agent.Messag
 		return err
 	}
 	defer closeConv()
-	s.labelRun(ctx, j.conversation, p.Name, conv, input)
+	s.labelRun(ctx, j.conversation, p.Name, j.project, conv, input)
 	err = turn(ctx, j, inst.Agent, conv, input)
 	for err == nil && inst.Crew != nil {
 		f, ok := inst.Crew.Next(ctx)

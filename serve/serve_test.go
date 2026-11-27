@@ -590,7 +590,7 @@ func TestSourceOf(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer srv.Close()
-	if _, err := srv.StartFrom("trigger:mail", "default", "", agent.UserText("hi")); err != nil {
+	if _, err := srv.StartFrom(Request{Source: "trigger:mail", Profile: "default", Input: agent.UserText("hi")}); err != nil {
 		t.Fatal(err)
 	}
 	if s := <-got; s != "trigger:mail" {

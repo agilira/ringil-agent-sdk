@@ -38,6 +38,7 @@ type Snapshot struct {
 	ID           string           `json:"id"`
 	Profile      string           `json:"profile"`
 	Conversation string           `json:"conversation,omitzero"`
+	Project      string           `json:"project,omitzero"`
 	State        State            `json:"state"`
 	Started      time.Time        `json:"started"`
 	Finished     time.Time        `json:"finished,omitzero"`
@@ -85,6 +86,15 @@ func ConversationOf(ctx context.Context) string {
 	return ""
 }
 
+// ProjectOf is the project a run works on (Request.Project, or its
+// conversation's), from the context its profile's New gets; "" for none.
+func ProjectOf(ctx context.Context) string {
+	if j, ok := ctx.Value(jobKey{}).(*job); ok {
+		return j.project
+	}
+	return ""
+}
+
 // SourceOf is what started a run, as the host labelled it with
 // StartFrom ("trigger:mail", "telegram"); "" for a run of the API, which
 // never sets it.
@@ -109,6 +119,7 @@ type pending struct {
 type job struct {
 	id, profile, conversation string
 	source                    string // who started it, the host's label
+	project                   string // the project it works on
 	srv                       *Server
 
 	mu      sync.Mutex
@@ -249,7 +260,7 @@ func (j *job) finishedAt() time.Time {
 func (j *job) snapshot() Snapshot {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	s := Snapshot{ID: j.id, Profile: j.profile, Conversation: j.conversation, State: j.state,
+	s := Snapshot{ID: j.id, Profile: j.profile, Conversation: j.conversation, Project: j.project, State: j.state,
 		Started: j.started, Finished: j.ended, Error: j.err, Events: j.next - 1, Dropped: j.dropped}
 	if j.result != nil {
 		s.Text, s.Stop, s.Turns, s.Usage = j.result.Text, j.result.Stop, j.result.Turns, j.result.Usage

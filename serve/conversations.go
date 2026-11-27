@@ -30,6 +30,8 @@ type ConversationInfo struct {
 	ID     string `json:"id"`
 	Title  string `json:"title,omitzero"`
 	Pinned bool   `json:"pinned,omitzero"`
+	// Project is the project it works on, the host's name for it.
+	Project string `json:"project,omitzero"`
 	// Profile is the agent that answered it last.
 	Profile string    `json:"profile,omitzero"`
 	Updated time.Time `json:"updated"`
@@ -52,7 +54,7 @@ func (s *Server) Conversations(ctx context.Context) ([]ConversationInfo, error) 
 	}
 	out := make([]ConversationInfo, 0, len(infos))
 	for _, i := range infos {
-		out = append(out, ConversationInfo{ID: i.ID, Title: i.Title, Pinned: i.Pinned, Profile: i.Profile, Updated: i.Updated, Size: i.Size, Running: s.running(i.ID)})
+		out = append(out, ConversationInfo{ID: i.ID, Title: i.Title, Pinned: i.Pinned, Profile: i.Profile, Project: i.Project, Updated: i.Updated, Size: i.Size, Running: s.running(i.ID)})
 	}
 	slices.SortStableFunc(out, func(a, b ConversationInfo) int {
 		switch {
@@ -181,6 +183,8 @@ type ConversationChange struct {
 	// Title, empty, removes it.
 	Title  *string `json:"title,omitempty"`
 	Pinned *bool   `json:"pinned,omitempty"`
+	// Project moves it to a project (the host's name), or out of one ("").
+	Project *string `json:"project,omitempty"`
 }
 
 // ChangeConversation changes a conversation's title or pin.
@@ -188,8 +192,8 @@ func (s *Server) ChangeConversation(ctx context.Context, id string, c Conversati
 	if err := agent.ValidateSessionID(id); err != nil {
 		return err
 	}
-	if c.Title == nil && c.Pinned == nil {
-		return fail(ErrInput, "nothing to change: give a title or pinned")
+	if err := c.check(); err != nil {
+		return err
 	}
 	ls, ok := s.cfg.Store.(agent.LabelStore)
 	if !ok {
@@ -203,14 +207,31 @@ func (s *Server) ChangeConversation(ctx context.Context, id string, c Conversati
 	if !s.exists(ctx, id) {
 		return fail(ErrNotFound, "no conversation "+id)
 	}
-	return ls.Label(ctx, id, func(l *agent.Labels) {
-		if c.Title != nil {
-			l.Title = *c.Title
-		}
-		if c.Pinned != nil {
-			l.Pinned = *c.Pinned
-		}
-	})
+	return ls.Label(ctx, id, c.apply)
+}
+
+// check: c changes something, and its project is a name.
+func (c ConversationChange) check() error {
+	switch {
+	case c.Title == nil && c.Pinned == nil && c.Project == nil:
+		return fail(ErrInput, "nothing to change: give a title, pinned or project")
+	case c.Project != nil && (agent.Labels{Project: *c.Project}).Check() != nil:
+		return fail(ErrInput, "bad project name")
+	}
+	return nil
+}
+
+// apply makes the change on l.
+func (c ConversationChange) apply(l *agent.Labels) {
+	if c.Title != nil {
+		l.Title = *c.Title
+	}
+	if c.Pinned != nil {
+		l.Pinned = *c.Pinned
+	}
+	if c.Project != nil {
+		l.Project = *c.Project
+	}
 }
 
 // DeleteConversation removes a stored conversation that has no run going.
@@ -259,7 +280,7 @@ func (s *Server) exists(ctx context.Context, id string) bool {
 // labelRun marks a conversation with the profile of the run starting on
 // it, and gives a new one its title from its first message: the words
 // the user wrote, or what they attached.
-func (s *Server) labelRun(ctx context.Context, id, profile string, conv agent.Conversation, input agent.Message) {
+func (s *Server) labelRun(ctx context.Context, id, profile, project string, conv agent.Conversation, input agent.Message) {
 	ls, ok := s.cfg.Store.(agent.LabelStore)
 	if !ok || id == "" {
 		return
@@ -270,10 +291,45 @@ func (s *Server) labelRun(ctx context.Context, id, profile string, conv agent.Co
 	}
 	_ = ls.Label(ctx, id, func(l *agent.Labels) { // labels are not worth failing the run
 		l.Profile = profile
+		if project != "" {
+			l.Project = project
+		}
 		if l.Title == "" {
 			l.Title = title
 		}
 	})
+}
+
+// projectOf is the project of a run: the one asked, which must be the
+// conversation's when it has one; else the conversation's.
+func (s *Server) projectOf(ctx context.Context, conversation, asked string) (string, error) {
+	if asked != "" && (agent.Labels{Project: asked}).Check() != nil {
+		return "", fail(ErrInput, "bad project name")
+	}
+	if conversation == "" || s.cfg.Store == nil {
+		return asked, nil
+	}
+	has, err := s.conversationProject(ctx, conversation)
+	switch {
+	case err != nil:
+		return "", err
+	case asked == "":
+		return has, nil
+	case has != "" && has != asked:
+		return "", fail(ErrInput, "the conversation belongs to another project")
+	}
+	return asked, nil
+}
+
+// conversationProject is the project a stored conversation is on, "" for
+// none, a conversation not there yet, or a store without labels.
+func (s *Server) conversationProject(ctx context.Context, conversation string) (string, error) {
+	ls, ok := s.cfg.Store.(agent.LabelStore)
+	if !ok {
+		return "", nil
+	}
+	l, err := ls.Labels(ctx, conversation)
+	return l.Project, err
 }
 
 // firstTitle is a new conversation's title from its first message.
@@ -297,6 +353,15 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		failure(w, status(err), err)
 		return
+	}
+	if p, ok := r.URL.Query()["project"]; ok { // ?project= : those of none
+		kept := list[:0]
+		for _, c := range list {
+			if c.Project == p[0] {
+				kept = append(kept, c)
+			}
+		}
+		list = kept
 	}
 	respond(w, http.StatusOK, list)
 }

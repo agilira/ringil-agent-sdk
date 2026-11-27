@@ -81,6 +81,8 @@ const (
 	mAskTrigger       msg = "ask_trigger"
 	mNothing          msg = "nothing"
 	mAutomateOwner    msg = "automate_owner"
+	mProjectOwner     msg = "project_owner"
+	mProjectHelp      msg = "project_help"
 	mAutomateHelp     msg = "automate_help"
 	mAutomationSays   msg = "automation_says"
 	mAutomationFailed msg = "automation_failed"
@@ -90,7 +92,7 @@ const (
 
 var texts = map[string]speech{
 	English: {
-		mHello:            "Hello. Write to me and I will answer. /new starts a new conversation, /stop stops what I am doing, /voice and /text choose how I answer voice messages, /automate makes something happen by itself from now on.",
+		mHello:            "Hello. Write to me and I will answer. /new starts a new conversation, /stop stops what I am doing, /voice and /text choose how I answer voice messages, /automate makes something happen by itself from now on, /project makes a project several agents work on.",
 		mHelloPhone:       "If you work here, share your phone number with the button below.",
 		mAskPhone:         "To talk with me, share your phone number with the button below.",
 		mPhoneButton:      "Share my phone number",
@@ -149,6 +151,8 @@ var texts = map[string]speech{
 		mAskTrigger:       "May I make the trigger {}? It will run by itself, with no one to ask: its runs may use without asking: {}.",
 		mNothing:          "nothing",
 		mAutomateOwner:    "Only an owner, in their own chat, can make automations.",
+		mProjectOwner:     "Only an owner, in their own chat, can make projects.",
+		mProjectHelp:      "Say what the project is, for example: /project the Q1 plan, with the numbers from the analyst and a deck. I will show you the board before making it.",
 		mAutomateHelp:     "Say what to automate, for example: /automate every weekday at 8, summarize my mail. I will show you what it does before making it.",
 		mAutomationSays:   "Automation {}:",
 		mAutomationFailed: "Automation {} failed: {}",
@@ -156,7 +160,7 @@ var texts = map[string]speech{
 		mAskDeleteTrigger: "May I delete the automation {}? It will not set off again.",
 	},
 	Italian: {
-		mHello:            "Ciao. Scrivimi e ti rispondo. /new apre una nuova conversazione, /stop ferma quello che sto facendo, /voice e /text scelgono come rispondo ai vocali, /automate fa succedere qualcosa da solo d'ora in poi.",
+		mHello:            "Ciao. Scrivimi e ti rispondo. /new apre una nuova conversazione, /stop ferma quello che sto facendo, /voice e /text scelgono come rispondo ai vocali, /automate fa succedere qualcosa da solo d'ora in poi, /project crea un progetto su cui lavorano più agenti.",
 		mHelloPhone:       "Se lavori qui, condividi il tuo numero con il bottone qui sotto.",
 		mAskPhone:         "Per parlare con me, condividi il tuo numero con il bottone qui sotto.",
 		mPhoneButton:      "Condividi il mio numero",
@@ -215,6 +219,8 @@ var texts = map[string]speech{
 		mAskTrigger:       "Posso creare il trigger {}? Partirà da solo, senza nessuno a cui chiedere: le sue run potranno usare senza chiedere: {}.",
 		mNothing:          "niente",
 		mAutomateOwner:    "Solo un proprietario, nella sua chat, può creare automazioni.",
+		mProjectOwner:     "Solo un proprietario, nella sua chat, può creare progetti.",
+		mProjectHelp:      "Dimmi qual è il progetto, per esempio: /project il piano del Q1, con i numeri dell'analista e una presentazione. Prima di crearlo ti mostro la bacheca.",
 		mAutomateHelp:     "Dimmi cosa automatizzare, per esempio: /automate ogni giorno feriale alle 8 riassumimi la posta. Prima di crearla ti mostro cosa farà.",
 		mAutomationSays:   "Automazione {}:",
 		mAutomationFailed: "L'automazione {} non è riuscita: {}",

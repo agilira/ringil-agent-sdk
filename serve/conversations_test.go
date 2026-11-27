@@ -6,6 +6,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -228,4 +229,92 @@ func TestConversationPinAndProfile(t *testing.T) {
 	}
 	a.pin("old", false)
 	first(t, a.conversations(), "old", false) // the latest: the run just now
+}
+
+// A run on a project marks its conversation: the next runs of it keep
+// the project, another is refused, and the list is filtered by it.
+func TestConversationProject(t *testing.T) {
+	store, err := file.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	p := Profile{Name: "default", New: func(ctx context.Context) (Instance, error) {
+		seen = append(seen, ProjectOf(ctx))
+		a, err := agent.New(agent.Config{Provider: fake.New(fake.Reply("ok"))})
+		return Instance{Agent: a}, err
+	}}
+	a := newAPI(t, Config{Profiles: []Profile{p}, Store: store})
+	a.runBody(`{"profile":"default","conversation":"c1","project":"launch-q4","input":"hi"}`, http.StatusCreated)
+	a.runBody(`{"profile":"default","conversation":"c1","input":"again"}`, http.StatusCreated)
+	a.runBody(`{"profile":"default","conversation":"c1","project":"other","input":"x"}`, http.StatusBadRequest)
+	a.runBody(`{"profile":"default","conversation":"c2","input":"none"}`, http.StatusCreated)
+	a.runBody(`{"profile":"default","project":"../x","input":"x"}`, http.StatusBadRequest)
+	if strings.Join(seen, ",") != "launch-q4,launch-q4," {
+		t.Fatalf("ProjectOf %q", seen)
+	}
+	a.onlyConversation("?project=launch-q4", "c1")
+	a.onlyConversation("?project=", "c2")
+}
+
+// runBody posts a run and waits for its end when it starts.
+func (a *api) runBody(body string, want int) {
+	a.t.Helper()
+	code, out := a.do("POST", "/v1/runs", body)
+	if code != want {
+		a.t.Fatalf("%s: %d %s", body, code, out)
+	}
+	if code != http.StatusCreated {
+		return
+	}
+	var s Snapshot
+	_ = json.Unmarshal([]byte(out), &s)
+	a.until(s.ID, func(s Snapshot) bool { return s.State != Running && s.State != Waiting })
+}
+
+// onlyConversation: the list filtered by query holds only id.
+func (a *api) onlyConversation(query, id string) {
+	a.t.Helper()
+	var list []ConversationInfo
+	a.json("GET", "/v1/conversations"+query, http.StatusOK, &list)
+	if len(list) != 1 || list[0].ID != id {
+		a.t.Fatalf("%s: %+v", query, list)
+	}
+}
+
+// Two runs on one new conversation, each with its own project, at once:
+// one of them is refused, never both run.
+func TestConversationProjectRace(t *testing.T) {
+	store, err := file.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New(fake.Reply("a"), fake.Reply("b"))})}, Store: store})
+	first, err := a.srv.StartFrom(Request{Profile: "default", Conversation: "race", Project: "x", Input: agent.UserText("hi")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.srv.Wait(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.srv.StartFrom(Request{Profile: "default", Conversation: "race", Project: "y", Input: agent.UserText("hi")}); status(err) != http.StatusBadRequest {
+		t.Fatalf("a run of another project on it: %v", err)
+	}
+}
+
+// A conversation is moved to a project, and out of it.
+func TestConversationMovedToAProject(t *testing.T) {
+	a := storedAPI(t, fake.Reply("ok"))
+	a.ran("c1", "hi")
+	if code, out := a.do("PATCH", "/v1/conversations/c1", `{"project":"q1-plan"}`); code != http.StatusNoContent {
+		t.Fatalf("%d %s", code, out)
+	}
+	a.onlyConversation("?project=q1-plan", "c1")
+	if code, _ := a.do("PATCH", "/v1/conversations/c1", `{"project":"../x"}`); code != http.StatusBadRequest {
+		t.Fatal("a bad project was taken")
+	}
+	if code, _ := a.do("PATCH", "/v1/conversations/c1", `{"project":""}`); code != http.StatusNoContent {
+		t.Fatal("out of the project")
+	}
+	a.onlyConversation("?project=", "c1")
 }

@@ -221,6 +221,22 @@ FEATURES
     as commands in ringil.yaml, as Claude Code's: event JSON on standard
     input, exit 2 blocks, a clean environment, the process group ended
     with the hook.
+  - Projects (package project): several agents and people work on one in
+    turn. A board of cards in columns (a card given to an agent in a
+    column marked to start hands it the work), a timeline only added to
+    (who did what, when: cards, runs, changes, decisions, comments) and
+    notes; every agent of the project is told its brief, board and latest
+    events at each run, and has project_board, project_card and
+    project_log. serve.Request (StartFrom) carries the project, which the
+    conversation keeps (Labels.Project); GET /v1/conversations?project=.
+  - ringil: /v1/projects (board, timeline, notes); runs on a project
+    write their starts, ends and changes on its timeline; a card handed
+    to an agent starts its run, at most ten times an hour; the folder's
+    project notes of the CLI are a project's.
+  - A project is made by the user (the app, /project in a chat, ringil
+    project new) or on the agent's proposal with start_project, which
+    always asks, showing the project; the conversation then belongs to
+    it (PATCH /v1/conversations/{id} "project" moves one by hand).
   - ringil lives in this repository, at cmd/ringil, a module of its own
     with its history: the SDK and the CLI change in one commit, the CI
     tests both.

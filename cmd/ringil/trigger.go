@@ -430,7 +430,7 @@ func (c *cli) startTrigger(octx *orpheus.Context, srv *serve.Server) trigger.Run
 		if t.Workflow != "" {
 			return c.triggerWorkflow(ctx, octx, t, f, triggerSource+key)
 		}
-		snap, err := srv.StartFrom(triggerSource+key, profile, conversation, agent.UserText(triggerInput(t, f, rand.Text()[:12])))
+		snap, err := srv.StartFrom(serve.Request{Source: triggerSource + key, Profile: profile, Conversation: conversation, Input: agent.UserText(triggerInput(t, f, rand.Text()[:12]))})
 		if err != nil {
 			return trigger.Outcome{}, err
 		}

@@ -70,6 +70,7 @@ type SessionInfo struct {
 	Title   string
 	Pinned  bool
 	Profile string
+	Project string
 }
 
 // Labels are what a host keeps of a session beside its history, for a
@@ -82,6 +83,9 @@ type Labels struct {
 	// Profile is the agent that answered last, by the host's name: 0-64
 	// letters, digits, - and _.
 	Profile string `json:"profile,omitempty"`
+	// Project is the project it works on, by the host's name: 1-80
+	// letters, digits, . _ -, from a letter or digit; "" for none.
+	Project string `json:"project,omitempty"`
 }
 
 // Check validates labels as a store keeps them.
@@ -89,10 +93,16 @@ func (l Labels) Check() error {
 	if !validProfile.MatchString(l.Profile) {
 		return errors.New(ErrSessionInput, "a session's profile is 0-64 letters, digits, - and _")
 	}
+	if !validProject.MatchString(l.Project) {
+		return errors.New(ErrSessionInput, "a session's project is 1-80 letters, digits, . _ -, from a letter or digit, or none")
+	}
 	return nil
 }
 
-var validProfile = regexp.MustCompile(`^[A-Za-z0-9_-]{0,64}$`)
+var (
+	validProfile = regexp.MustCompile(`^[A-Za-z0-9_-]{0,64}$`)
+	validProject = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]{0,79})?$`)
+)
 
 // LabelStore is a Store that keeps Labels for each session, beside its
 // history (session/file does).
@@ -102,6 +112,8 @@ type LabelStore interface {
 	// current ones, and the result, cleaned and checked, is written whole.
 	// The changes of one store are made one at a time.
 	Label(ctx context.Context, id string, change func(*Labels)) error
+	// Labels reads the labels of the session id: zero for none.
+	Labels(ctx context.Context, id string) (Labels, error)
 }
 
 // MaxTitle bounds a session's title, in bytes.

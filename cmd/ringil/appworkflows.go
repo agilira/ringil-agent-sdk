@@ -87,23 +87,7 @@ func (a agentCrew) RunCounted(ctx context.Context, worker, task string) (string,
 
 // start starts a step's run, waiting while serve is full, a while.
 func (a agentCrew) start(ctx context.Context, worker, task string) (serve.Snapshot, error) {
-	deadline := time.Now().Add(busyFor)
-	for {
-		snap, err := a.srv.StartFrom(a.source, worker, "", agent.UserText(task))
-		switch {
-		case err == nil:
-			return snap, nil
-		case !errors.HasCode(err, serve.ErrBusy):
-			return snap, err
-		case time.Now().After(deadline):
-			return snap, errors.Wrap(err, ErrUsage, "serve stayed full for "+busyFor.String()+": raise serve.max_runs, or run fewer things at once")
-		}
-		select {
-		case <-ctx.Done():
-			return snap, ctx.Err()
-		case <-time.After(busyWait):
-		}
-	}
+	return startWaiting(ctx, a.srv, serve.Request{Source: a.source, Profile: worker, Input: agent.UserText(task)})
 }
 
 // agentRunner is a runner of saved workflows on serve's agents, with the
@@ -622,7 +606,13 @@ func (c *cli) savedList() string {
 	var b strings.Builder
 	b.WriteString("<saved_workflows>\nWorkflows the user saved; run one with run_saved_workflow when the user asks for it:\n")
 	for _, s := range list {
-		b.WriteString("- " + s.Name + ": " + oneLine(s.Description, 200) + " (" + strconv.Itoa(len(s.Plan.Steps)) + " steps)\n")
+		b.WriteString("- ")
+		b.WriteString(s.Name)
+		b.WriteString(": ")
+		b.WriteString(oneLine(s.Description, 200))
+		b.WriteString(" (")
+		b.WriteString(strconv.Itoa(len(s.Plan.Steps)))
+		b.WriteString(" steps)\n")
 	}
 	b.WriteString("</saved_workflows>")
 	return b.String()

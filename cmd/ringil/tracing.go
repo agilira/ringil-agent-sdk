@@ -173,6 +173,9 @@ func parseHeaders(s string) map[string]string {
 // on without traces.
 func (c *cli) observers(ctx context.Context) []agent.Observer {
 	out := append([]agent.Observer(nil), c.events...)
+	if o := c.projectObserver(); o != nil {
+		out = append(out, o)
+	}
 	tp, err := c.tracer(ctx)
 	switch {
 	case err != nil && c.traceWarned.CompareAndSwap(false, true):
