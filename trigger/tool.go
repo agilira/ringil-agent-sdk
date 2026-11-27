@@ -62,6 +62,7 @@ type createIn struct {
 	Path    string          `json:"path,omitempty" desc:"file: the absolute path of the file or directory to watch"`
 	Skill   string          `json:"skill,omitempty" desc:"The skill each run follows (make it first with create_skill if needed)"`
 	Prompt  string          `json:"prompt,omitempty" desc:"What each run is told to do, besides the skill"`
+	Flow    string          `json:"workflow,omitempty" desc:"A saved workflow each run runs instead (save it first with save_workflow); prompt, if any, is added to its brief"`
 	Allow   []string        `json:"allow,omitempty" desc:"Tools the runs may use without asking (no one is there to ask): only what the task needs; anything else that would ask is refused"`
 	From    string          `json:"from,omitempty" desc:"When it starts working: 2026-12-01 or 2026-12-01 09:00 (in time_zone); default now"`
 	Until   string          `json:"until,omitempty" desc:"When it stops working and is removed: 2026-12-31 (the whole day) or 2026-12-31 18:00; default never"`
@@ -73,7 +74,7 @@ type createIn struct {
 // user is shown is what is made, so no field is dropped or read another
 // way (a "Name" beside a "name").
 var createKeys = map[string]bool{"name": true, "kind": true, "when": true, "time_zone": true, "tool": true, "args": true,
-	"path": true, "skill": true, "prompt": true, "allow": true, "timeout": true, "continue": true, "from": true, "until": true}
+	"path": true, "skill": true, "prompt": true, "workflow": true, "allow": true, "timeout": true, "continue": true, "from": true, "until": true}
 
 // CreateTool is create_trigger: the agent makes a trigger in the store
 // open returns, which runs while the host runs the triggers (`ringil
@@ -152,13 +153,15 @@ func (s strict) Call(ctx context.Context, input json.RawMessage) (agent.ToolOutp
 
 func (in createIn) trigger() Trigger {
 	return Trigger{Name: in.Name, Kind: in.Kind, When: in.When, TimeZone: in.Zone, Tool: in.Tool, Args: in.Args,
-		Path: in.Path, Skill: in.Skill, Prompt: in.Prompt, Allow: in.Allow, Timeout: in.Timeout, Continue: in.Keep,
+		Path: in.Path, Skill: in.Skill, Prompt: in.Prompt, Workflow: in.Flow, Allow: in.Allow, Timeout: in.Timeout, Continue: in.Keep,
 		From: in.From, Until: in.Until}
 }
 
 // neverAllowed are tools a trigger's runs may never use unasked: making
 // triggers (a trigger would widen itself, with no one seeing).
-var neverAllowed = map[string]bool{"create_trigger": true, "delete_trigger": true}
+// Nor saving or running saved workflows: a trigger's run would rewrite
+// the workflow it runs, or start others (audit 27/11).
+var neverAllowed = map[string]bool{"create_trigger": true, "delete_trigger": true, "save_workflow": true, "run_saved_workflow": true}
 
 // refused: what create_trigger never makes.
 func refused(t Trigger) error {
@@ -243,6 +246,9 @@ func listLine(t Trigger, st Status) string {
 	line := "- " + t.Name + ": " + Describe(t)
 	if t.Skill != "" {
 		line += "; skill " + t.Skill
+	}
+	if t.Workflow != "" {
+		line += "; workflow " + t.Workflow
 	}
 	if p := strings.TrimSpace(t.Prompt); p != "" {
 		line += "; does: " + clipTo(p, 200)

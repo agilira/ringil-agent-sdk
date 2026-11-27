@@ -76,7 +76,7 @@ func readCatalog(dir string) (*catalogState, error) {
 	}
 	defer closeQuietly(root)
 	for _, e := range entries {
-		if !e.IsDir() || !validName(e.Name()) {
+		if !e.IsDir() || !ValidName(e.Name()) {
 			continue
 		}
 		m, err := readManifest(root, e.Name())

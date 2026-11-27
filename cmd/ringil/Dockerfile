@@ -1,6 +1,6 @@
 # Dockerfile: ringil serve in a container
 #
-#   docker build -t ringil .
+#   docker build -f cmd/ringil/Dockerfile -t ringil .     # from the repository's root
 #   docker run -d --name ringil -p 127.0.0.1:8765:8765 -v ringil:/data ringil
 #   docker exec ringil ringil serve link      # the app's sign-in link
 #
@@ -15,20 +15,10 @@
 ARG GO_IMAGE=golang:1.27-bookworm@sha256:ce59b41415e2524ae99926fe1f37ce48ba8c194dcbd2a56a65436cdcefa2bd34
 ARG RUN_IMAGE=debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
 
-# The SDK at the tag of a release (--build-arg SDK_REF=v0.1.0), else main;
-# a local copy with
-#   docker build --build-context sdk=../ringil-agent-sdk -t ringil .
-FROM ${GO_IMAGE} AS sdkgit
-ARG SDK_REF=main
-RUN git clone --depth 1 --branch "${SDK_REF}" https://github.com/agilira/ringil-agent-sdk.git /sdk
-FROM scratch AS sdk
-COPY --from=sdkgit /sdk /
-
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
-COPY --from=sdk / ringil-agent-sdk
-COPY . ringil
-WORKDIR /src/ringil
+COPY . .
+WORKDIR /src/cmd/ringil
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ringil . && mkdir -p /out/data
 
 FROM ${RUN_IMAGE}

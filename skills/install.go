@@ -134,7 +134,7 @@ func restore(root *os.Root, aside string) {
 	if err == nil {
 		err = json.Unmarshal(data, &m)
 	}
-	if err == nil && validName(m.Info.Name) {
+	if err == nil && ValidName(m.Info.Name) {
 		if _, taken := root.Lstat(m.Info.Name); taken != nil && root.Rename(aside, m.Info.Name) == nil {
 			return
 		}
@@ -243,7 +243,7 @@ func readRegular(root *os.Root, p string) ([]byte, error) {
 
 // Remove deletes an installed skill from the catalog directory dir.
 func Remove(dir, name string) error {
-	if !validName(name) {
+	if !ValidName(name) {
 		return errors.New(ErrNotFound, "no skill named "+name)
 	}
 	root, err := os.OpenRoot(dir)

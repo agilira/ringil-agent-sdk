@@ -47,6 +47,7 @@ func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools a
 			Instructions: instructions,
 			Provider:     p,
 			Approve:      c.decide,
+			Hooks:        c.agentHooks(), // a worker's calls pass the user's hooks too
 			MaxTurns:     c.maxTurns(ctx),
 			MaxCost:      c.maxCost,
 			Observers:    append([]agent.Observer{c.showWorker}, c.observers(ctx.Context())...),

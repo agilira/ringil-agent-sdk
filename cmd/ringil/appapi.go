@@ -78,6 +78,9 @@ type Settings struct {
 	Profiles     []string       `json:"profiles"`
 	Transcribe   VoiceModel     `json:"transcribe"`
 	Speech       VoiceModel     `json:"speech"`
+	// Restart names what was changed that only a start of serve takes
+	// (POST /v1/restart); empty, nothing.
+	Restart string `json:"restart,omitzero"`
 }
 
 // VoiceModel is the model of one half of the voice; no model, it is off.
@@ -133,8 +136,18 @@ func (c *cli) getSettings(octx *orpheus.Context) http.HandlerFunc {
 		if cat, err := c.skillCatalog(octx); err == nil && cat != nil {
 			out.Skills = cat.List()
 		}
+		out.Restart = c.restartNeeded()
 		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// restartNeeded names what changed since serve started that only a start
+// takes; "" for nothing.
+func (c *cli) restartNeeded() string {
+	if c.settings == nil || c.settings.started == nil {
+		return ""
+	}
+	return restartFor(c.settings.started, c.conf())
 }
 
 // providerNames are the built-in providers and the file's own, sorted.
@@ -322,7 +335,11 @@ func (c *cli) deleteSecret(octx *orpheus.Context) http.HandlerFunc {
 
 // secretStore is the store a secret goes to, and its name, checked.
 func (c *cli) secretStore(w http.ResponseWriter, r *http.Request, octx *orpheus.Context) (secrets.Store, string, bool) {
-	name := r.PathValue("name")
+	return c.secretStoreNamed(w, r, octx, r.PathValue("name"))
+}
+
+// secretStoreNamed is secretStore for the secret name.
+func (c *cli) secretStoreNamed(w http.ResponseWriter, r *http.Request, octx *orpheus.Context, name string) (secrets.Store, string, bool) {
 	if err := secrets.ValidateName(name); err != nil {
 		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", describe(err))
 		return nil, "", false

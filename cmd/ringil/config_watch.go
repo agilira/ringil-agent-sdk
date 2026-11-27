@@ -50,8 +50,6 @@ type settings struct {
 	audit        *argus.AuditLogger
 	// sources are where each key was read from, as last recorded.
 	sources sync.Map
-	// served are the profiles serve offers, fixed at its start.
-	served atomic.Pointer[map[string]bool]
 
 	watching *watch // loop's, after the start
 	applied  string // digest of the revision in force (loop's)
@@ -87,7 +85,6 @@ func (s *settings) pinned() *settings {
 		return nil
 	}
 	p := &settings{path: s.path, started: s.started, noApprovals: s.noApprovals, instructions: s.instructions, skills: s.skills}
-	p.served.Store(s.served.Load())
 	p.current.Store(s.get())
 	return p
 }
@@ -511,6 +508,7 @@ func (c *cli) applyConfig(s *settings, next *config) error {
 		s.current.Store(last)
 		return err
 	}
+	c.serveProfiles(next)
 	why := restartFor(s.started, next)
 	if why != "" {
 		c.note(s.path + ": " + why + ": changed, in force from the next start of serve")
@@ -529,12 +527,6 @@ func (s *settings) acceptable(next *config) error {
 	if _, err := os.Lstat(s.path); s.path != "" && err == nil {
 		if _, err := readPrivate(s.path); err != nil {
 			return err
-		}
-	}
-	served := s.served.Load()
-	for _, name := range []string{next.Serve.MemberProfile, next.Serve.PublicProfile} {
-		if served != nil && name != "" && !(*served)[name] {
-			return errors.New(ErrUsage, "profile "+name+" is not served yet: restart serve to give it to the chats")
 		}
 	}
 	return nil

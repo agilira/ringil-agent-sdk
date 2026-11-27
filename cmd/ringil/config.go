@@ -85,6 +85,8 @@ type config struct {
 	MCPServers map[string]mcpEntry    `argus:"mcp_servers"`
 	Agents     map[string]remoteEntry `argus:"agents"`
 	Serve      serveConfig            `argus:"serve"`
+	// Hooks are the user's commands at fixed points (apphooks.go).
+	Hooks hooksConfig `argus:"hooks"`
 }
 
 // embedderConfig is the model that finds memories by meaning: by default
@@ -306,7 +308,7 @@ func (s serveConfig) fixed() serveConfig {
 // Validate is what a file must be to be applied at all: a reload that
 // fails it is refused and the last good file stays.
 func (f *config) Validate() error {
-	checks := []func() error{f.checkGone, f.Proxy.check, f.Permissions.check, f.checkProviders, f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check, f.Secrets.check, f.checkCosts, f.checkAllModels}
+	checks := []func() error{f.checkGone, f.Proxy.check, f.Permissions.check, f.checkProviders, f.checkProfiles, f.checkPaths, f.Memory.check, f.Embedder.check, f.checkMCP, f.Serve.check, f.Secrets.check, f.checkCosts, f.checkAllModels, f.Hooks.check}
 	for _, check := range checks {
 		if err := check(); err != nil {
 			return err
@@ -389,22 +391,7 @@ func restartFor(old, next *config) string {
 	if old.AllowHTTP != next.AllowHTTP || !reflect.DeepEqual(old.Providers, next.Providers) || mainProvider(old) != mainProvider(next) {
 		changed = append(changed, "allow_http, provider and providers for the chats' voice")
 	}
-	if !sameKeys(old.Profiles, next.Profiles) {
-		changed = append(changed, "the list of profiles")
-	}
 	return strings.Join(changed, ", ")
-}
-
-func sameKeys(a, b map[string]profile) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if _, ok := b[k]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // Global settings: the flag when given, else the file, else the flag's

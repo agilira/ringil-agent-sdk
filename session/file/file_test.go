@@ -411,7 +411,7 @@ func TestReadBoundedRejectsPastLimit(t *testing.T) {
 }
 
 // titled makes a store with one session, "a".
-func titled(t *testing.T) (agent.TitleStore, string) {
+func titled(t *testing.T) (agent.LabelStore, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := New(dir)
@@ -426,20 +426,24 @@ func titled(t *testing.T) (agent.TitleStore, string) {
 		t.Fatal(err)
 	}
 	_ = sess.Close()
-	return st.(agent.TitleStore), dir
+	return st.(agent.LabelStore), dir
+}
+
+func setTitle(ts agent.LabelStore, id, title string) error {
+	return ts.Label(context.Background(), id, func(l *agent.Labels) { l.Title = title })
 }
 
 // A title is kept beside the history and listed without opening it.
 func TestTitles(t *testing.T) {
 	ts, _ := titled(t)
 	ctx := context.Background()
-	if err := ts.SetTitle(ctx, "a", "  My\ttitle  "); err != nil {
+	if err := setTitle(ts, "a", "  My\ttitle  "); err != nil {
 		t.Fatal(err)
 	}
 	if list, _ := ts.List(ctx); len(list) != 1 || list[0].Title != "My title" {
 		t.Fatalf("%+v", list)
 	}
-	if err := ts.SetTitle(ctx, "../x", "t"); err == nil {
+	if err := setTitle(ts, "../x", "t"); err == nil {
 		t.Fatal("a bad ID was accepted")
 	}
 }
@@ -471,7 +475,7 @@ func TestTitleConcurrentWrites(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := range 4 {
-				if err := ts.SetTitle(bg, "a", fmt.Sprintf("title-%d-%d", g, i)); err != nil {
+				if err := setTitle(ts, "a", fmt.Sprintf("title-%d-%d", g, i)); err != nil {
 					errs <- err
 				}
 			}
@@ -481,5 +485,74 @@ func TestTitleConcurrentWrites(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Fatal(err)
+	}
+}
+
+// label changes the labels of "a", failing the test on an error.
+func label(t *testing.T, ts agent.LabelStore, change func(*agent.Labels)) {
+	t.Helper()
+	if err := ts.Label(context.Background(), "a", change); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gone(t *testing.T, path, what string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal(what)
+	}
+}
+
+// Pin and profile are kept with the title; a change keeps what it does
+// not touch; a bad profile is refused.
+func TestLabels(t *testing.T) {
+	ts, _ := titled(t)
+	label(t, ts, func(l *agent.Labels) { l.Title, l.Pinned, l.Profile = "Sales", true, "writer" })
+	label(t, ts, func(l *agent.Labels) { l.Pinned = false })
+	list, _ := ts.List(context.Background())
+	if got := list[0]; got.Title != "Sales" || got.Pinned || got.Profile != "writer" {
+		t.Fatalf("%+v", got)
+	}
+	if err := ts.Label(context.Background(), "a", func(l *agent.Labels) { l.Profile = "../x" }); !errors.HasCode(err, agent.ErrSessionInput) {
+		t.Fatalf("a bad profile was kept: %v", err)
+	}
+}
+
+// All zero, the labels' file goes; it goes with its session too.
+func TestLabelsGo(t *testing.T) {
+	ts, dir := titled(t)
+	label(t, ts, func(l *agent.Labels) { l.Pinned = true })
+	label(t, ts, func(l *agent.Labels) { *l = agent.Labels{} })
+	gone(t, filepath.Join(dir, "a.labels"), "empty labels left a file")
+	label(t, ts, func(l *agent.Labels) { l.Pinned = true })
+	if err := ts.Delete(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	gone(t, filepath.Join(dir, "a.labels"), "the labels outlived their session")
+}
+
+// A title file of before is listed, and moved into the labels at their
+// first change.
+func TestOldTitleMoves(t *testing.T) {
+	ts, dir := titled(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(dir, "a.title"), []byte("Old title"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := ts.List(ctx); list[0].Title != "Old title" {
+		t.Fatalf("%+v", list)
+	}
+	if err := ts.Label(ctx, "a", func(l *agent.Labels) { l.Pinned = true }); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := ts.List(ctx)
+	if list[0].Title != "Old title" || !list[0].Pinned {
+		t.Fatalf("%+v", list)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.title")); !os.IsNotExist(err) {
+		t.Fatal("the old title file stayed")
+	}
+	if err := ts.Label(ctx, "a", nil); err != nil {
+		t.Fatalf("nil change func: %v", err)
 	}
 }

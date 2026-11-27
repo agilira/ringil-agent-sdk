@@ -31,7 +31,8 @@ func (c *cli) stateRoot() (string, error) {
 }
 
 // stateSources are what an export holds and an import replaces: the
-// conversations, memory, notes, workflows, artifacts, skills, triggers
+// conversations, memory, notes, workflows (saved, and their runs), the
+// agents' instructions, artifacts, skills, triggers
 // (their webhooks' secrets with them), ringil.yaml, AGENTS.md and the
 // user's instructions, the
 // chat apps' records, and the documents sent in the chats. Left out: the
@@ -43,7 +44,7 @@ func (c *cli) stateSources(ctx *orpheus.Context) (map[string]backup.Source, erro
 		return nil, err
 	}
 	sources := map[string]backup.Source{}
-	for _, n := range []string{"memory", "projects", "workflows", "artifacts", "app-artifacts", "scratch", "skills", "triggers"} {
+	for _, n := range []string{"memory", "projects", "workflows", "artifacts", "app-artifacts", "scratch", "skills", "triggers", savedDir, profilesDir} {
 		sources[n] = backup.Source{Path: filepath.Join(root, n)}
 	}
 	files := map[string]string{"agents": "AGENTS.md"}

@@ -38,7 +38,7 @@ func checkParsedSkill(t *testing.T, raw string) {
 	if err != nil {
 		return
 	}
-	if !validName(info.Name) || strings.TrimSpace(info.Description) == "" {
+	if !ValidName(info.Name) || strings.TrimSpace(info.Description) == "" {
 		t.Fatalf("parse returned invalid info: %+v", info)
 	}
 	if !utf8.ValidString(info.Description) || utf8.RuneCountInString(info.Description) > 1024 {

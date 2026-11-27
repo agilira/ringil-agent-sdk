@@ -101,6 +101,9 @@ jobs:
     - name: Secrets (store)
       working-directory: secrets/store
       run: go mod verify && go vet ./... && go test -race -timeout 5m ./...
+    - name: CLI (ringil)
+      working-directory: cmd/ringil
+      run: go mod verify && go vet ./... && go test -race -timeout 8m ./...
     - name: Secrets (Vault, live)
       # A Vault dev server on the Linux runner: the store against the real
       # API at every push.
@@ -131,9 +134,12 @@ jobs:
       run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
     - name: Checks
       run: make lint security
+    - name: Checks (CLI)
+      working-directory: cmd/ringil
+      run: test -z "$(gofmt -l .)" && make lint security
     - name: Cross-platform vet
       # The sandbox has per-architecture and per-OS code paths.
       run: |
-        for m in . mcp otel a2a channel/slack memory/sqlite provider/anthropic secrets/keyring secrets/store; do
+        for m in . mcp otel a2a channel/slack memory/sqlite provider/anthropic secrets/keyring secrets/store cmd/ringil; do
           (cd $m && GOARCH=arm64 go vet ./... && GOOS=windows go vet ./... && GOOS=darwin go vet ./...) || exit 1
         done

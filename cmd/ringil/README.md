@@ -4,13 +4,14 @@ L'app ringil: CLI, `serve` (canali, trigger, API) e, in arrivo, la TUI. Usa
 [ringil-agent-sdk](https://github.com/agilira/ringil-agent-sdk); le garanzie di sicurezza
 sono quelle dell'SDK ([SECURITY.md](https://github.com/agilira/ringil-agent-sdk/blob/main/SECURITY.md)).
 
-Finché l'SDK non ha un tag, l'app lo trova accanto a sé: clona i due repo nella stessa
-cartella (`ringil` e `ringil-agent-sdk`).
+Sta nel repository dell'SDK, in `cmd/ringil`, come modulo a sé: chi importa l'SDK non
+scarica le dipendenze della CLI. Finché l'SDK non ha un tag, la CLI lo usa dalla cartella
+sopra (`replace ../..` in go.mod).
 
 ## CLI
 
 ```sh
-make chat                                   # chat con le chiavi di ENV_FILE (default ../ringil-agent-sdk/.env)
+make chat                                   # chat con le chiavi di ENV_FILE (default ../../.env)
 ./ringil run "che ore sono a Tokyo?"
 ./ringil -S lavoro chat          # sessione salvata: la riapri e riprende
 ./ringil sessions                # elenco; "sessions rm <nome>" per cancellare
@@ -67,7 +68,7 @@ export, e gli strumenti sui file dell'agente non le vedono.
 In Docker:
 
 ```sh
-docker build -t ringil .
+docker build -f cmd/ringil/Dockerfile -t ringil .   # dalla radice del repository
 docker run -d --name ringil -p 127.0.0.1:8765:8765 -v ringil:/data ringil
 docker exec ringil ringil serve link
 ```

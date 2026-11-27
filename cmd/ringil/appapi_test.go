@@ -39,6 +39,9 @@ func settingsAPI(t *testing.T, body string, vars map[string]string, fn func(call
 		if err != nil {
 			t.Fatal(err)
 		}
+		h.c.server, h.c.serveCtx = srv, ctx // the agents follow the file, as under serve
+		h.c.serving.Store(&serving{srv: srv, ctx: ctx})
+		defer func() { h.c.server, h.c.serveCtx = nil, nil; h.c.serving.Store(nil) }()
 		h.c.mountSettings(ctx, srv)
 		ts := httptest.NewServer(srv.Handler())
 		defer ts.Close()

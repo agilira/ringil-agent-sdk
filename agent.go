@@ -123,10 +123,10 @@ type Config struct {
 	// (&Policy{Mode: ModeBypass}).Approve runs everything, by the host's
 	// explicit choice.
 	Approve func(ctx context.Context, call ToolCall, spec ToolSpec) (Decision, error)
-	// AfterTool, when set, sees every result before the model does and
-	// returns the one the model gets (to redact it, shorten it, add to
-	// it). Its CallID is kept whatever it returns.
-	AfterTool func(ctx context.Context, call ToolCall, result ToolResult) ToolResult
+	// Hooks are the host's functions at fixed points of a run: before it
+	// starts, before each model call, around each tool call, after it
+	// ends. See Hooks.
+	Hooks Hooks
 	// Context, when set, is called at the start of every run: its blocks
 	// (the project's rules, the index of the notes, today's date) go with
 	// that run's input as PartContext of the user message, each only when
@@ -243,16 +243,34 @@ func (l *loop) Stream(ctx context.Context, conv Conversation, input Message) ite
 			}
 			defer end()
 		}
-		r := newRun(l.cfg, conv, &ev)
-		r.compactor = l.compactor
-		err := r.begin(ctx, input)
-		if err == nil {
-			err = r.execute(ctx)
-		}
-		if err != nil && !stderrors.Is(err, errStopped) {
+		if err := l.turn(ctx, conv, input, &ev); err != nil && !stderrors.Is(err, errStopped) {
 			ev.fail(err)
 		}
 	}
+}
+
+// turn runs one user turn; a run that fails is told to AfterRun here (one
+// that ends is told by finish).
+func (l *loop) turn(ctx context.Context, conv Conversation, input Message, ev *eventer) error {
+	r := newRun(l.cfg, conv, ev)
+	r.compactor = l.compactor
+	err := r.begin(ctx, input)
+	if err == nil {
+		err = r.execute(ctx)
+	}
+	if err != nil && !r.ended {
+		l.cfg.Hooks.afterRun(context.WithoutCancel(ctx), nil, endOf(err))
+	}
+	return err
+}
+
+// endOf is how a run that ended with err is told to AfterRun: a reader
+// that stopped is ErrAgentStopped, as observers hear it.
+func endOf(err error) error {
+	if stderrors.Is(err, errStopped) {
+		return errors.New(ErrAgentStopped, "the run's reader stopped before it ended")
+	}
+	return err
 }
 
 // runKey carries the running run's ID to its tools, callKey the ID of the
@@ -394,6 +412,7 @@ type run struct {
 	denyStop   bool          // Approve said Stop: the run ends after this batch
 	batch      *loopDetector // the detector plus the calls admitted in the current batch
 	modelStart time.Time     // when the current model call began
+	ended      bool          // finish ran: AfterRun was told
 }
 
 func newRun(cfg Config, conv Conversation, events *eventer) *run {
@@ -459,10 +478,14 @@ func (r *run) begin(ctx context.Context, input Message) error {
 	if err := ValidateHistory(r.msgs); err != nil {
 		return err
 	}
+	input, err := r.cfg.Hooks.beforeRun(ctx, input.Clone())
+	if err != nil {
+		return err // before anything is recorded
+	}
+	input = input.Clone() // the hook's message may share the host's slices
 	if err := r.recover(ctx); err != nil {
 		return err
 	}
-	input = input.Clone()
 	recalled, err := r.recall(ctx, input.Text())
 	if err != nil {
 		return err
@@ -636,7 +659,7 @@ func (r *run) limit() StopReason {
 func (r *run) execute(ctx context.Context) error {
 	for {
 		if stop := r.limit(); stop != "" {
-			return r.finish(stop)
+			return r.finish(ctx, stop)
 		}
 		resp, err := r.callModel(ctx)
 		if err != nil {
@@ -644,16 +667,16 @@ func (r *run) execute(ctx context.Context) error {
 		}
 		if len(resp.Message.Calls) == 0 {
 			r.result.Text = resp.Message.Text()
-			return r.finish(resp.Stop)
+			return r.finish(ctx, resp.Stop)
 		}
 		if err := r.runTools(ctx, resp.Message.Calls); err != nil {
 			return err
 		}
 		if r.loopStop {
-			return r.finish(StopLoop)
+			return r.finish(ctx, StopLoop)
 		}
 		if r.denyStop {
-			return r.finish(StopDenied)
+			return r.finish(ctx, StopDenied)
 		}
 	}
 }
@@ -704,6 +727,9 @@ func empty(resp *Response) bool {
 // request sends the conversation with the given system prompt.
 func (r *run) request(ctx context.Context, system string) (*Response, error) {
 	full := &Request{System: system, Messages: r.msgs, Tools: r.toolSpecs(), MaxTokens: r.cfg.MaxTokens, Format: r.cfg.Format}
+	if err := r.cfg.Hooks.beforeModel(ctx, ModelCall{Turn: r.result.Turns, Usage: r.result.Usage, Request: full}); err != nil {
+		return nil, err
+	}
 	resp, streamed, err := r.generate(ctx, full, r.compactor.budget(r.cfg.MaxTokens))
 	if errors.HasCode(err, ErrProviderContext) && !streamed && !r.cfg.Compaction.Disabled {
 		// The estimate was wrong or the window unknown: compact harder,
@@ -917,6 +943,13 @@ func (r *run) gate(ctx context.Context, call *ToolCall) (ToolResult, error, bool
 	if !ok {
 		return ToolResult{}, nil, true
 	}
+	hooked, err := r.cfg.Hooks.beforeTool(ctx, *call, spec)
+	if err != nil {
+		return ToolResult{CallID: call.ID, Content: ModelMessage(err), IsError: true}, errors.Wrap(err, ErrToolDenied, "a hook refused the call"), false
+	}
+	if !slices.Equal(hooked.Input, call.Input) {
+		call.Input, call.BadInput = append(json.RawMessage(nil), hooked.Input...), false
+	}
 	d, err := r.cfg.approver()(ctx, *call, spec)
 	if d.Stop {
 		r.denyStop = true
@@ -1003,12 +1036,15 @@ func (r *run) loopNote(err error) string {
 	return "blocked"
 }
 
-// after gives the result to AfterTool, keeping its call's ID.
+// after gives the result to Hooks.AfterTool, keeping its call's ID.
 func (r *run) after(ctx context.Context, call ToolCall, o *outcome) {
-	if r.cfg.AfterTool == nil || ctx.Err() != nil {
+	if r.cfg.Hooks.AfterTool == nil {
 		return
 	}
-	res, ok := r.afterTool(ctx, call, o.res)
+	// Also when the run was stopped: the result is recorded either way,
+	// and the next run's model reads it (audit 27/11: a secret the hook
+	// redacts was kept as it was).
+	res, ok := r.cfg.Hooks.afterTool(context.WithoutCancel(ctx), call, o.res)
 	if !ok {
 		o.res = ToolResult{CallID: o.res.CallID, Content: "The result was withheld: the application failed to check it.", IsError: true}
 		return
@@ -1016,17 +1052,6 @@ func (r *run) after(ctx context.Context, call ToolCall, o *outcome) {
 	res.CallID = o.res.CallID
 	res.Images = checkedImages(res.Images) // the host's images pass the same check as a tool's
 	o.res = res
-}
-
-// afterTool runs Config.AfterTool; a panic in it withholds the result
-// (it may have been about to redact it) rather than end the run.
-func (r *run) afterTool(ctx context.Context, call ToolCall, res ToolResult) (out ToolResult, ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
-		}
-	}()
-	return r.cfg.AfterTool(ctx, call, res), true
 }
 
 // watch records a call that ran and warns the model, in its result, when
@@ -1123,9 +1148,13 @@ func (r *run) spec(name string) (ToolSpec, bool) {
 	return ToolSpec{}, false
 }
 
-func (r *run) finish(stop StopReason) error {
+func (r *run) finish(ctx context.Context, stop StopReason) error {
 	r.result.Stop = stop
 	r.result.Messages = append([]Message(nil), r.msgs[r.start:]...)
 	result := r.result
+	r.ended = true
+	told := result // the hook gets a copy: the event's Result is the run's own
+	told.Messages = slices.Clone(result.Messages)
+	r.cfg.Hooks.afterRun(context.WithoutCancel(ctx), &told, nil)
 	return r.emit(Event{Kind: EventDone, Stop: stop, Usage: result.Usage, Result: &result})
 }

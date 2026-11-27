@@ -4,7 +4,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Package workflow runs a plan: named steps, each a task for a worker of a
-// delegate.Crew, with the steps it needs. A step starts when its needs
+// Crew (a delegate.Crew, or the host's own agents), with the steps it
+// needs. A step starts when its needs
 // are done, steps that are ready run at the same time, and each sees only
 // its task, the brief and the reports of the steps it needs.
 //
@@ -32,6 +33,7 @@ import (
 
 	"github.com/agilira/ringil-agent-sdk/delegate"
 	"github.com/agilira/ringil-agent-sdk/dirs"
+	"github.com/agilira/ringil-agent-sdk/skills"
 )
 
 // Error codes.
@@ -47,10 +49,13 @@ const (
 
 // Step is one task of a plan.
 type Step struct {
-	Name   string   `json:"name"`
-	Worker string   `json:"worker"`
-	Task   string   `json:"task"`
-	Needs  []string `json:"needs,omitempty"`
+	Name   string `json:"name"`
+	Worker string `json:"worker"`
+	// Skill, when set, is a skill the worker follows for the task: it is
+	// told to load it first (a worker with the load_skill tool).
+	Skill string   `json:"skill,omitempty"`
+	Task  string   `json:"task"`
+	Needs []string `json:"needs,omitempty"`
 }
 
 // Plan is a set of steps and the step whose report is the result.
@@ -66,15 +71,11 @@ var stepName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 func (p Plan) Check(knownWorker func(string) bool) error {
 	byName := map[string]Step{}
 	for _, s := range p.Steps {
-		switch {
-		case !stepName.MatchString(s.Name):
-			return errors.New(ErrPlan, "step names are lowercase words: "+s.Name)
-		case byName[s.Name].Name != "":
+		if byName[s.Name].Name != "" {
 			return errors.New(ErrPlan, "two steps are named "+s.Name)
-		case knownWorker != nil && !knownWorker(s.Worker):
-			return errors.New(ErrPlan, "step "+s.Name+" names an unknown worker "+s.Worker)
-		case strings.TrimSpace(s.Task) == "":
-			return errors.New(ErrPlan, "step "+s.Name+" has no task")
+		}
+		if err := s.check(knownWorker); err != nil {
+			return err
 		}
 		byName[s.Name] = s
 	}
@@ -82,6 +83,21 @@ func (p Plan) Check(knownWorker func(string) bool) error {
 		return errors.New(ErrPlan, "a plan needs steps and an output step among them")
 	}
 	return acyclic(byName)
+}
+
+// check validates one step: its name, worker, task and skill.
+func (s Step) check(knownWorker func(string) bool) error {
+	switch {
+	case !stepName.MatchString(s.Name):
+		return errors.New(ErrPlan, "step names are lowercase words: "+s.Name)
+	case knownWorker != nil && !knownWorker(s.Worker):
+		return errors.New(ErrPlan, "step "+s.Name+" names an unknown worker "+s.Worker)
+	case strings.TrimSpace(s.Task) == "":
+		return errors.New(ErrPlan, "step "+s.Name+" has no task")
+	case s.Skill != "" && !skills.ValidName(s.Skill):
+		return errors.New(ErrPlan, "step "+s.Name+" names a skill that is not a skill's name: "+s.Skill)
+	}
+	return nil
 }
 
 // acyclic checks needs exist and never loop, by repeatedly removing steps
@@ -174,9 +190,21 @@ type Locker interface {
 	Lock(ctx context.Context, id string) (unlock func() error, err error)
 }
 
+// Crew is who does the steps: a *delegate.Crew, or the host's own (its
+// agents, each a worker by name).
+type Crew interface {
+	// Has says whether worker is one of the crew.
+	Has(worker string) bool
+	// Workers names them, for the model writing a plan.
+	Workers() []string
+	// RunCounted runs one task on worker and returns its report and what
+	// it spent.
+	RunCounted(ctx context.Context, worker, task string) (report string, spent delegate.Spend, err error)
+}
+
 // Runner runs plans on a crew.
 type Runner struct {
-	Crew *delegate.Crew
+	Crew Crew
 	// Journal makes runs resumable. Nil is a FileJournal in the program's
 	// state (dirs.Program().State, "workflows"), made at the first run;
 	// NoJournal keeps runs in memory, not resumable after a restart.
@@ -186,6 +214,22 @@ type Runner struct {
 	Parallel int
 	// OnStep reports progress: a step started, done or failed.
 	OnStep func(step, status string, err error)
+	// BeforeRun, when set, is asked before a run (or a resume) starts: an
+	// error refuses it, before the journal is touched; a panic too.
+	BeforeRun func(ctx context.Context, id string, plan Plan) error
+	// AfterRun, when set, is told how each run BeforeRun let start ended:
+	// its result, or its error. A panic in it is ignored.
+	AfterRun func(ctx context.Context, id string, res *Result, err error)
+	// BeforeStep, when set, is asked before each step starts, with the
+	// run's id: it returns the step to run (as is, or with another Task or
+	// Skill; its name, worker and needs stay the plan's), or an error that
+	// stops the run before the step starts (the step is not marked: a
+	// resume runs it). A panic stops it too.
+	BeforeStep func(ctx context.Context, id string, step Step) (Step, error)
+	// AfterStep, when set, is told how each step that ran ended: its
+	// report, or its error. It is called after the journal holds the
+	// outcome; a panic in it is ignored.
+	AfterStep func(ctx context.Context, id string, step Step, report string, err error)
 	// Budget bounds what a run may spend in total, across resumes and
 	// retries; zero fields are unbounded. A step starts only while the
 	// run is within it, and spending is counted when a step ends: the
@@ -235,8 +279,42 @@ type Result struct {
 
 // Run runs plan with id; resume continues a run the journal holds.
 func (r *Runner) Run(ctx context.Context, id string, plan Plan, brief string, resume bool) (*Result, error) {
+	if err := r.beforeRun(ctx, id, plan); err != nil {
+		return nil, err
+	}
+	res, err := r.run(ctx, id, plan, brief, resume)
+	r.afterRun(ctx, id, res, err)
+	return res, err
+}
+
+// beforeRun asks Runner.BeforeRun; a panic refuses the run.
+func (r *Runner) beforeRun(ctx context.Context, id string, plan Plan) (err error) {
+	if r.BeforeRun == nil {
+		return nil
+	}
+	defer func() {
+		if recover() != nil {
+			err = errors.New(ErrStep, "the BeforeRun hook failed before workflow "+id)
+		}
+	}()
+	if err := r.BeforeRun(ctx, id, plan); err != nil {
+		return errors.Wrap(err, ErrStep, "the BeforeRun hook refused workflow "+id)
+	}
+	return nil
+}
+
+// afterRun tells Runner.AfterRun; a panic in it is ignored.
+func (r *Runner) afterRun(ctx context.Context, id string, res *Result, err error) {
+	if r.AfterRun == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	r.AfterRun(context.WithoutCancel(ctx), id, res, err)
+}
+
+func (r *Runner) run(ctx context.Context, id string, plan Plan, brief string, resume bool) (*Result, error) {
 	r.defaultJournal()
-	if r.Crew == nil {
+	if noCrew(r.Crew) {
 		return nil, errors.New(ErrPlan, "the runner has no crew")
 	}
 	if err := plan.Check(r.Crew.Has); err != nil {
@@ -256,6 +334,12 @@ func (r *Runner) Run(ctx context.Context, id string, plan Plan, brief string, re
 		return nil, err
 	}
 	return e.result(), nil
+}
+
+// noCrew: none, or a nil *delegate.Crew in the interface.
+func noCrew(c Crew) bool {
+	dc, ok := c.(*delegate.Crew)
+	return c == nil || (ok && dc == nil)
 }
 
 func (r *Runner) lock(ctx context.Context, id string) (func() error, error) {
@@ -340,11 +424,11 @@ func change(ctx context.Context, j Journal, id, step string, fn func(*StepState)
 	case err != nil:
 		return errors.Wrap(err, ErrJournal, "cannot read the journal of "+id)
 	case st == nil:
-		return errors.New(ErrJournal, "no workflow "+id)
+		return errors.New(ErrNotFound, "no workflow run "+id)
 	}
 	s := st.Steps[step]
 	if s == nil || s.Status != Pending {
-		return errors.New(ErrJournal, "step "+step+" is not pending")
+		return errors.New(ErrNotFound, "no step "+step+" left started in "+id)
 	}
 	if fn == nil {
 		delete(st.Steps, step)

@@ -1,0 +1,9 @@
+# The build context is the repository's root (docker build -f
+# cmd/ringil/Dockerfile .); BuildKit reads this file beside the Dockerfile.
+.git
+**/docs
+**/.env
+**/coverage.*
+**/*.test
+cmd/ringil/ringil
+cmd/ringil/ringil.exe

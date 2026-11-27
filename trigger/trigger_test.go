@@ -8,6 +8,7 @@ package trigger
 import (
 	"context"
 	stderrors "errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -82,6 +83,7 @@ type recorder struct {
 	runs   []string
 	fired  []Fired
 	block  chan struct{} // runs wait on it when set
+	write  string        // a file each run writes, when set
 	events []Event
 }
 
@@ -89,8 +91,11 @@ func (r *recorder) run(ctx context.Context, j Trigger, f Fired) (Outcome, error)
 	r.mu.Lock()
 	r.runs = append(r.runs, j.Name)
 	r.fired = append(r.fired, f)
-	block := r.block
+	block, write := r.block, r.write
 	r.mu.Unlock()
+	if write != "" {
+		_ = os.WriteFile(write, []byte(time.Now().String()), 0o600)
+	}
 	if block != nil {
 		select {
 		case <-block:

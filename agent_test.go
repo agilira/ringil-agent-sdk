@@ -675,7 +675,7 @@ func TestAfterTool(t *testing.T) {
 	after := func(_ context.Context, call agent.ToolCall, res agent.ToolResult) agent.ToolResult {
 		return agent.ToolResult{CallID: "forged", Content: "[redacted " + call.Name + "=" + res.Content + "]"}
 	}
-	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), AfterTool: after}).Run(context.Background(), nil, agent.UserText("x"))
+	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), Hooks: agent.Hooks{AfterTool: after}}).Run(context.Background(), nil, agent.UserText("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +690,7 @@ func TestAfterToolPanicsAndImages(t *testing.T) {
 	calls := 0
 	p := fake.New(fake.Call("add", `{"a":1,"b":1}`), fake.Reply("ok"))
 	after := func(context.Context, agent.ToolCall, agent.ToolResult) agent.ToolResult { panic("host bug") }
-	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), AfterTool: after}).Run(context.Background(), nil, agent.UserText("x"))
+	res, err := newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), Hooks: agent.Hooks{AfterTool: after}}).Run(context.Background(), nil, agent.UserText("x"))
 	if err != nil || !res.Messages[2].Result.IsError || strings.Contains(res.Messages[2].Result.Content, "2") {
 		t.Fatalf("%v %+v", err, res)
 	}
@@ -699,7 +699,7 @@ func TestAfterToolPanicsAndImages(t *testing.T) {
 		r.Images = []agent.Part{{Type: agent.PartImage, MIME: "image/png", Data: []byte("not an image")}}
 		return r
 	}
-	res, err = newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), AfterTool: bad}).Run(context.Background(), nil, agent.UserText("x"))
+	res, err = newAgent(t, agent.Config{Provider: p, Tools: tools(t, adder(&calls)), Hooks: agent.Hooks{AfterTool: bad}}).Run(context.Background(), nil, agent.UserText("x"))
 	if err != nil || len(res.Messages[2].Result.Images) != 0 {
 		t.Fatalf("an unchecked image went through: %v", err)
 	}

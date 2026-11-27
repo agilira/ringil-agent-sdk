@@ -180,6 +180,13 @@ func TestCheckKinds(t *testing.T) {
 		"kind":         {Name: "a", Kind: "email", Prompt: "x"},
 		"allow":        {Name: "a", When: "@daily", Prompt: "x", Allow: []string{"rm -rf"}},
 		"every 10s":    {Name: "a", Kind: Tool, Tool: "t", When: "@every 10s", Prompt: "x"},
+		"flow name":    {Name: "a", When: "@daily", Workflow: "../x"},
+		"flow+skill":   {Name: "a", When: "@daily", Workflow: "weekly", Skill: "pptx"},
+		"flow+profile": {Name: "a", When: "@daily", Workflow: "weekly", Profile: "writer"},
+		"flow+keep":    {Name: "a", When: "@daily", Workflow: "weekly", Continue: true},
+	}
+	if _, err := (Trigger{Name: "a", When: "@daily", Workflow: "weekly"}).Check(); err != nil {
+		t.Errorf("a workflow alone is a run: %v", err)
 	}
 	for name, tr := range bad {
 		if _, err := tr.Check(); err == nil {

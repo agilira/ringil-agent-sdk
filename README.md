@@ -32,9 +32,9 @@ opzioni, non obblighi.
 
 ## L'app ringil
 
-La CLI, `serve` e la TUI stanno nel repo [ringil](https://github.com/agilira/ringil),
-che usa l'SDK come qualsiasi altro host. Dove questo README dice «CLI» o nomina
-`ringil.yaml`, parla di quell'app.
+La CLI e `serve` stanno in [`cmd/ringil`](cmd/ringil), un modulo a sé che usa l'SDK
+come qualsiasi altro host: chi importa l'SDK non ne scarica le dipendenze. Dove questo
+README dice «CLI» o nomina `ringil.yaml`, parla di quell'app.
 
 ## Agente
 

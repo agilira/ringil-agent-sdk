@@ -74,7 +74,13 @@ type Trigger struct {
 	// data.
 	Skill  string `json:"skill,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
-	// Profile is the role that runs it; empty is "default".
+	// Workflow is a saved workflow (package workflow) the run is instead
+	// of an agent's turn: its steps run, with Prompt and what set the
+	// trigger off added to its brief. With a workflow, no skill: each
+	// step names its own.
+	Workflow string `json:"workflow,omitempty"`
+	// Profile is the role that runs it; empty is "default". None with a
+	// Workflow, whose steps name theirs.
 	Profile string `json:"profile,omitempty"`
 	// Continue carries on one conversation across runs (the agent
 	// remembers what it did last time); off, each run starts afresh.
@@ -112,6 +118,8 @@ var (
 	validName  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,48}$`)
 	validSkill = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)
 	validTool  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	// validWorkflow is workflow's rule for a saved workflow's name.
+	validWorkflow = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$`)
 )
 
 // target is a digest of what sets the trigger off.
@@ -150,11 +158,10 @@ func (t Trigger) Check() (When, error) {
 
 // checkRun checks what a run does.
 func (t Trigger) checkRun() error {
+	if err := t.checkWhat(); err != nil {
+		return err
+	}
 	switch {
-	case t.Skill == "" && strings.TrimSpace(t.Prompt) == "":
-		return errors.New(ErrConfig, "a skill or a prompt is needed")
-	case t.Skill != "" && !validSkill.MatchString(t.Skill):
-		return errors.New(ErrConfig, "skill names are 1-64 lower-case letters, digits and -")
 	case len(t.Prompt) > MaxInput:
 		return errors.New(ErrConfig, "the prompt is larger than 64 KiB")
 	case len(t.Deliver) > maxShort:
@@ -167,6 +174,33 @@ func (t Trigger) checkRun() error {
 		return err
 	}
 	return t.checkAllow()
+}
+
+// checkWhat checks what the run is: a workflow, or a skill or a prompt.
+func (t Trigger) checkWhat() error {
+	if t.Workflow != "" {
+		return t.checkWorkflow()
+	}
+	switch {
+	case t.Skill == "" && strings.TrimSpace(t.Prompt) == "":
+		return errors.New(ErrConfig, "a skill, a prompt or a workflow is needed")
+	case t.Skill != "" && !validSkill.MatchString(t.Skill):
+		return errors.New(ErrConfig, "skill names are 1-64 lower-case letters, digits and -")
+	}
+	return nil
+}
+
+// checkWorkflow checks a trigger that runs a workflow.
+func (t Trigger) checkWorkflow() error {
+	switch {
+	case !validWorkflow.MatchString(t.Workflow):
+		return errors.New(ErrConfig, "workflow names are 1-40 letters, digits, - and _, from a letter or digit")
+	case t.Skill != "":
+		return errors.New(ErrConfig, "a trigger runs a workflow or follows a skill, not both: the workflow's steps name their skills")
+	case t.Profile != "" || t.Continue:
+		return errors.New(ErrConfig, "a trigger that runs a workflow has no profile nor continue: its steps name their agents, each run of a step is new")
+	}
+	return nil
 }
 
 func (t Trigger) checkAllow() error {

@@ -28,6 +28,7 @@ import (
 	"github.com/agilira/ringil-agent-sdk/serve"
 	"github.com/agilira/ringil-agent-sdk/tools/files"
 	"github.com/agilira/ringil-agent-sdk/trigger"
+	"github.com/agilira/ringil-agent-sdk/workflow"
 )
 
 func (c *cli) triggerStore() (*trigger.Store, error) {
@@ -141,7 +142,7 @@ func oneLine(s string, max int) string {
 func (c *cli) cmdTriggerAdd(ctx *orpheus.Context) error {
 	args := ctx.Positional()
 	if len(args) < 1 {
-		return errors.New(ErrUsage, "usage: ringil trigger add NAME [--kind time|tool|file|message|webhook] [--skill S] PROMPT...")
+		return errors.New(ErrUsage, "usage: ringil trigger add NAME [--kind time|tool|file|message|webhook] [--skill S | --workflow W] [PROMPT...]")
 	}
 	prompt, err := c.triggerPrompt(args[1:])
 	if err != nil {
@@ -152,6 +153,9 @@ func (c *cli) cmdTriggerAdd(ctx *orpheus.Context) error {
 		return err
 	}
 	if err := c.checkTriggerProfile(t.Profile); err != nil {
+		return err
+	}
+	if err := c.checkTriggerWorkflow(t.Workflow); err != nil {
 		return err
 	}
 	store, err := c.triggerStore()
@@ -176,7 +180,7 @@ func triggerFromFlags(ctx *orpheus.Context, name, prompt string) (trigger.Trigge
 		TimeZone: ctx.GetFlagString("time-zone"), CatchUp: ctx.GetFlagBool("catch-up"),
 		Tool: ctx.GetFlagString("tool"), Path: ctx.GetFlagString("path"),
 		Chat: ctx.GetFlagString("chat"), Match: ctx.GetFlagString("match"),
-		Skill: ctx.GetFlagString("skill"), Prompt: prompt, Profile: ctx.GetFlagString("profile"),
+		Skill: ctx.GetFlagString("skill"), Workflow: ctx.GetFlagString("workflow"), Prompt: prompt, Profile: ctx.GetFlagString("profile"),
 		Continue: ctx.GetFlagBool("continue"), Timeout: ctx.GetFlagString("timeout"),
 		From: ctx.GetFlagString("from"), Until: ctx.GetFlagString("until"), Allow: splitList(ctx.GetFlagString("allow")), Deliver: ctx.GetFlagString("deliver"),
 	}
@@ -220,8 +224,31 @@ func (c *cli) checkTriggerProfile(profile string) error {
 	if profile == "" || profile == "default" {
 		return nil
 	}
-	if _, ok := c.conf().Profiles[profile]; !ok {
+	f := c.conf()
+	if c.settings != nil && c.settings.path != "" {
+		if disk, err := c.settings.onDisk(c); err == nil {
+			f = disk // as the file is now: an agent just removed, or just made (audit 27/11)
+		}
+	}
+	if _, ok := f.Profiles[profile]; !ok {
 		return errors.New(ErrUsage, "no profile "+profile+" in "+c.configName())
+	}
+	return nil
+}
+
+// checkTriggerWorkflow: the workflow a trigger runs, if any, is saved,
+// and runs under serve (its steps are serve's agents).
+func (c *cli) checkTriggerWorkflow(name string) error {
+	if name == "" {
+		return nil
+	}
+	lib, err := c.savedWorkflows()
+	if err != nil {
+		return err
+	}
+	defer closeQuietly(lib)
+	if _, err := lib.Get(name); err != nil {
+		return errors.Wrap(err, ErrUsage, "no saved workflow "+name)
 	}
 	return nil
 }
@@ -276,7 +303,8 @@ func (c *cli) startTriggers(octx *orpheus.Context, ctx context.Context, srv *ser
 	if err != nil {
 		return nil, err
 	}
-	runner, err := trigger.New(trigger.Config{Store: store, Run: c.triggerRun(srv), Call: c.triggerCall(octx), OnEvent: c.triggerEvent})
+	before, after := c.automationHooks()
+	runner, err := trigger.New(trigger.Config{Store: store, Run: c.triggerRun(octx, srv), Call: c.triggerCall(octx), OnEvent: c.triggerEvent, BeforeRun: before, AfterRun: after})
 	if err != nil {
 		closeQuietly(store)
 		return nil, err
@@ -333,8 +361,8 @@ const triggerSource = "trigger:"
 
 // triggerRun starts a trigger's run on the server, waits for it, and
 // sends what it answered (or how it failed) where the trigger delivers.
-func (c *cli) triggerRun(srv *serve.Server) trigger.Run {
-	run := startTrigger(srv)
+func (c *cli) triggerRun(octx *orpheus.Context, srv *serve.Server) trigger.Run {
+	run := c.startTrigger(octx, srv)
 	return func(ctx context.Context, t trigger.Trigger, f trigger.Fired) (trigger.Outcome, error) {
 		out, err := run(ctx, t, f)
 		switch {
@@ -387,8 +415,9 @@ func (c *cli) automationsText() string {
 	return strings.Join(lines, "\n")
 }
 
-// startTrigger starts a trigger's run on the server and waits for it.
-func startTrigger(srv *serve.Server) trigger.Run {
+// startTrigger starts a trigger's run on the server and waits for it:
+// an agent's turn, or the saved workflow it runs.
+func (c *cli) startTrigger(octx *orpheus.Context, srv *serve.Server) trigger.Run {
 	return func(ctx context.Context, t trigger.Trigger, f trigger.Fired) (trigger.Outcome, error) {
 		profile := or(t.Profile, "default")
 		conversation := ""
@@ -398,6 +427,9 @@ func startTrigger(srv *serve.Server) trigger.Run {
 		key := rand.Text()
 		allowed.Store(key, slices.Clone(t.Allow)) // what this run may: the trigger as it was set off
 		defer allowed.Delete(key)
+		if t.Workflow != "" {
+			return c.triggerWorkflow(ctx, octx, t, f, triggerSource+key)
+		}
 		snap, err := srv.StartFrom(triggerSource+key, profile, conversation, agent.UserText(triggerInput(t, f, rand.Text()[:12])))
 		if err != nil {
 			return trigger.Outcome{}, err
@@ -416,6 +448,47 @@ func startTrigger(srv *serve.Server) trigger.Run {
 		}
 		return out, errors.New(ErrUsage, "the run ended "+string(end.State))
 	}
+}
+
+// triggerWorkflow runs the saved workflow of a trigger, each step a run
+// of its agent from source (the trigger's: its steps may what it was
+// allowed). The trigger's prompt joins the brief; what set it off comes
+// as data.
+func (c *cli) triggerWorkflow(ctx context.Context, octx *orpheus.Context, t trigger.Trigger, f trigger.Fired, source string) (trigger.Outcome, error) {
+	lib, err := c.savedWorkflows()
+	if err != nil {
+		return trigger.Outcome{}, err
+	}
+	s, err := lib.Get(t.Workflow)
+	closeQuietly(lib)
+	if err != nil {
+		return trigger.Outcome{}, err
+	}
+	if p := strings.TrimSpace(t.Prompt); p != "" {
+		s.Brief = strings.TrimSpace(s.Brief + "\n\n" + p)
+	}
+	r, err := c.agentRunner(octx, source)
+	if err != nil {
+		return trigger.Outcome{}, err
+	}
+	id := workflow.NewRunID(s.Name)
+	res, err := r.RunSaved(ctx, id, s, firedText(t, f))
+	if err != nil {
+		return trigger.Outcome{Run: id}, err
+	}
+	return trigger.Outcome{Run: id, Text: res.Output}, nil
+}
+
+// firedText says what set a trigger off, for a workflow's brief.
+func firedText(t trigger.Trigger, f trigger.Fired) string {
+	text := "Started by the trigger " + t.Name + " (" + or(string(f.Kind), "time") + ") at " + f.At.Format(time.RFC3339) + "."
+	if f.ByHand {
+		text = "Started by hand from the trigger " + t.Name + " at " + f.At.Format(time.RFC3339) + "."
+	}
+	if f.Detail != "" {
+		text += "\n" + f.Detail
+	}
+	return text
 }
 
 // allowed are the tools each trigger run may use without asking, by the
@@ -444,7 +517,11 @@ func triggerInput(t trigger.Trigger, f trigger.Fired, fence string) string {
 	if p := strings.TrimSpace(t.Prompt); p != "" {
 		parts = append(parts, p)
 	}
-	parts = append(parts, "This run was set off by the trigger "+t.Name+" ("+string(or(string(f.Kind), "time"))+") at "+f.At.Format(time.RFC3339)+".")
+	if f.ByHand {
+		parts = append(parts, "The user ran the trigger "+t.Name+" by hand now ("+f.At.Format(time.RFC3339)+"), not what sets it off.")
+	} else {
+		parts = append(parts, "This run was set off by the trigger "+t.Name+" ("+string(or(string(f.Kind), "time"))+") at "+f.At.Format(time.RFC3339)+".")
+	}
 	if f.Detail != "" {
 		detail := strings.ReplaceAll(f.Detail, fence, "")
 		parts = append(parts, "What happened, as it came from outside, between the lines DATA "+fence+" and END "+fence+
@@ -557,6 +634,9 @@ func (c *cli) checkTrigger(_ context.Context, t trigger.Trigger) error {
 	if err := c.checkLookTool(t.Tool); err != nil {
 		return err
 	}
+	if err := c.checkTriggerWorkflow(t.Workflow); err != nil {
+		return agent.ToolError(ErrUsage, agent.ModelMessage(err))
+	}
 	for _, name := range t.Allow {
 		if _, ok := specOf(c.finalTools, name); !ok {
 			return agent.ToolError(ErrUsage, "no such tool: "+name)
@@ -586,8 +666,29 @@ func (c *cli) inOwnState(path string) bool {
 	if err != nil {
 		return true
 	}
-	rel, err := filepath.Rel(filepath.Join(base, "ringil"), path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	state := realPath(filepath.Join(base, "ringil"))
+	path = realPath(path)
+	// Inside it, or above it: a directory above lists the state's names
+	// (audit 27/11, through a link too).
+	return within(state, path) || within(path, state)
+}
+
+// realPath is path with its links followed, as far as it exists.
+func realPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
+}
+
+// within: path is dir or inside it.
+func within(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // triggerDefaults fills what the agent left out of a trigger it makes.
@@ -599,7 +700,7 @@ func (c *cli) triggerDefaults(_ context.Context, t *trigger.Trigger) {
 	if t.Deliver == "" {
 		t.Deliver = chat
 	}
-	if t.Profile == "" && c.roleName != "default" {
+	if t.Profile == "" && c.roleName != "default" && t.Workflow == "" { // a workflow's steps name their agents
 		t.Profile = c.roleName
 	}
 }

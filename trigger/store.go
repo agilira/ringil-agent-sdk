@@ -59,6 +59,11 @@ type Status struct {
 	Seen string `json:"seen,omitempty"`
 	// Skipped counts times a run was due while the last was still going.
 	Skipped int `json:"skipped,omitempty"`
+	// Refused counts runs Config.BeforeRun refused; LastRefused and
+	// LastRefusal are when the last was, and why.
+	Refused     int       `json:"refused,omitempty"`
+	LastRefused time.Time `json:"last_refused,omitzero"`
+	LastRefusal string    `json:"last_refusal,omitempty"`
 }
 
 // Store keeps triggers in triggers.json, which people edit (through the CLI), and

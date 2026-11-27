@@ -40,7 +40,12 @@ func (r *Runner) runPlan(ctx context.Context, in planIn) (string, error) {
 		return "", agent.ToolError(ErrStep, "The workflow stopped: "+err.Error()+" (id "+id+")."+r.partial(ctx, id))
 	}
 	var b strings.Builder
-	b.WriteString("Workflow " + id + " done.\n\nResult (" + in.Output + "):\n" + res.Output)
+	b.WriteString("Workflow ")
+	b.WriteString(id)
+	b.WriteString(" done.\n\nResult (")
+	b.WriteString(in.Output)
+	b.WriteString("):\n")
+	b.WriteString(res.Output)
 	var names []string
 	for n := range res.Reports {
 		if n != in.Output {
@@ -49,7 +54,8 @@ func (r *Runner) runPlan(ctx context.Context, in planIn) (string, error) {
 	}
 	sort.Strings(names)
 	if len(names) > 0 {
-		b.WriteString("\n\nOther steps done: " + strings.Join(names, ", "))
+		b.WriteString("\n\nOther steps done: ")
+		b.WriteString(strings.Join(names, ", "))
 	}
 	return b.String(), nil
 }

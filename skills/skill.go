@@ -48,15 +48,17 @@ type Info struct {
 	Description string `json:"description"`
 }
 
-// validName follows the Agent Skills rule: lowercase letters, digits and
+// nameRule is the Agent Skills rule: lowercase letters, digits and
 // hyphens, 1-64 characters, no leading, trailing or double hyphen.
 var nameRule = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-func validName(name string) bool { return len(name) <= 64 && nameRule.MatchString(name) }
+// ValidName says whether name is a skill's name: lowercase words joined
+// by -, at most 64 bytes.
+func ValidName(name string) bool { return len(name) <= 64 && nameRule.MatchString(name) }
 
 func (i Info) validate() error {
 	switch {
-	case !validName(i.Name):
+	case !ValidName(i.Name):
 		return errors.New(ErrInvalid, "skill names are 1-64 lowercase letters, digits and single hyphens")
 	case strings.TrimSpace(i.Description) == "" || !utf8.ValidString(i.Description) || utf8.RuneCountInString(i.Description) > 1024:
 		return errors.New(ErrInvalid, "a skill needs a description of 1-1024 characters")

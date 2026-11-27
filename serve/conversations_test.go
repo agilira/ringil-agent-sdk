@@ -104,6 +104,8 @@ func TestConversationsRefusals(t *testing.T) {
 		{"PATCH", "/v1/conversations/bad%20id", `{"title":"x"}`, http.StatusBadRequest},
 		{"DELETE", "/v1/conversations/bad%20id", "", http.StatusBadRequest},
 		{"PATCH", "/v1/conversations/nope", `{"title":"x"}`, http.StatusNotFound},
+		{"PATCH", "/v1/conversations/x", `{}`, http.StatusBadRequest},
+		{"PATCH", "/v1/conversations/x", `{"pinned":"yes"}`, http.StatusBadRequest},
 		{"DELETE", "/v1/conversations/nope", "", http.StatusNotFound},
 	} {
 		if code, out := a.do(c.method, c.path, c.body); code != c.code {
@@ -175,4 +177,55 @@ func TestRunAttachments(t *testing.T) {
 			t.Errorf("%s: %d %s", name, code, out)
 		}
 	}
+}
+
+// conversations lists the conversations afresh: a field left out would
+// keep the value of a list decoded before.
+func (a *api) conversations() []ConversationInfo {
+	a.t.Helper()
+	var list []ConversationInfo
+	a.json("GET", "/v1/conversations", http.StatusOK, &list)
+	return list
+}
+
+func (a *api) pin(id string, on bool) {
+	a.t.Helper()
+	body := `{"pinned":false}`
+	if on {
+		body = `{"pinned":true}`
+	}
+	if code, out := a.do("PATCH", "/v1/conversations/"+id, body); code != http.StatusNoContent {
+		a.t.Fatalf("pin %s %v: %d %s", id, on, code, out)
+	}
+}
+
+// first is the list's first conversation, checked to be id with pinned.
+func first(t *testing.T, list []ConversationInfo, id string, pinned bool) ConversationInfo {
+	t.Helper()
+	if len(list) == 0 || list[0].ID != id || list[0].Pinned != pinned {
+		t.Fatalf("want %s first (pinned %v): %+v", id, pinned, list)
+	}
+	return list[0]
+}
+
+// A pinned conversation comes first, whatever its date, and keeps its
+// title through a run; each names the agent that answered it last.
+func TestConversationPinAndProfile(t *testing.T) {
+	a := storedAPI(t, fake.Reply("a"), fake.Reply("b"), fake.Reply("c"))
+	a.ran("old", "first")
+	a.ran("new", "second")
+	a.pin("old", true)
+	list := a.conversations()
+	if got := first(t, list, "old", true); got.Title != "first" || got.Profile != "default" {
+		t.Fatalf("%+v", got)
+	}
+	if list[1].Pinned || list[1].Profile != "default" {
+		t.Fatalf("%+v", list[1])
+	}
+	a.ran("old", "third") // a run does not unpin it nor retitle it
+	if got := first(t, a.conversations(), "old", true); got.Title != "first" {
+		t.Fatalf("after a run %+v", got)
+	}
+	a.pin("old", false)
+	first(t, a.conversations(), "old", false) // the latest: the run just now
 }

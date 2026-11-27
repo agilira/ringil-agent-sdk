@@ -567,7 +567,7 @@ func TestConversationsListsTheStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids, err := a.srv.Conversations(context.Background())
-	if err != nil || len(ids) != 1 || ids[0] != (ConversationInfo{ID: "telegram-5", Title: "hi", Updated: ids[0].Updated, Size: ids[0].Size}) {
+	if err != nil || len(ids) != 1 || ids[0] != (ConversationInfo{ID: "telegram-5", Title: "hi", Profile: "default", Updated: ids[0].Updated, Size: ids[0].Size}) {
 		t.Fatalf("%v %v", ids, err)
 	}
 	none := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
@@ -627,4 +627,43 @@ func TestDefaultStoreKeepsConversations(t *testing.T) {
 	if entries, err := os.ReadDir(filepath.Join(d.State, "sessions")); err != nil || len(entries) == 0 {
 		t.Fatalf("nothing kept in %s: %v", d.State, err)
 	}
+}
+
+// SetProfiles changes the agents the next runs choose among; a bad list
+// changes nothing.
+func TestSetProfiles(t *testing.T) {
+	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New(fake.Reply("ok"))})}})
+	writer := profile(t, "writer", agent.Config{Provider: fake.New(fake.Reply("written"))})
+	if err := a.srv.SetProfiles([]Profile{writer, writer}); err == nil {
+		t.Fatal("two profiles of one name were taken")
+	}
+	if _, err := a.srv.Start("default", "", "hi"); err != nil {
+		t.Fatalf("a bad list changed the profiles: %v", err)
+	}
+	if err := a.srv.SetProfiles([]Profile{writer}); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.srv.Profiles(); len(got) != 1 || got[0].Name != "writer" {
+		t.Fatalf("%+v", got)
+	}
+	if _, err := a.srv.Start("default", "", "hi"); status(err) != http.StatusNotFound {
+		t.Fatalf("a profile gone still ran: %v", err)
+	}
+	if end := a.ranProfile("writer"); end.Text != "written" {
+		t.Fatalf("%+v", end)
+	}
+}
+
+// ranProfile runs profile once and returns how it ended.
+func (a *api) ranProfile(profile string) Snapshot {
+	a.t.Helper()
+	run, err := a.srv.Start(profile, "", "hi")
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	end, err := a.srv.Wait(context.Background(), run.ID)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	return end
 }

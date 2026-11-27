@@ -8,11 +8,13 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/agilira/go-errors"
 
 	"github.com/agilira/ringil-agent-sdk/delegate"
+	"github.com/agilira/ringil-agent-sdk/skills"
 )
 
 // maxInputReports bounds the reports a step receives, so a step needing
@@ -20,6 +22,7 @@ import (
 const maxInputReports = 128 << 10
 
 type stepDone struct {
+	step   Step // as it ran: BeforeStep may have changed its task
 	name   string
 	report string
 	spent  delegate.Spend
@@ -65,27 +68,40 @@ func (e *execution) startReady(ctx context.Context, running map[string]bool, res
 		if running[s.Name] || e.status(s.Name) != "" || !e.ready(s) {
 			continue
 		}
-		// Checked only for a step about to start: a run whose last step
-		// reached the budget is complete, not over it.
-		if e.overBudget() {
-			return errors.New(ErrBudget, "the workflow's budget is spent; raise it and resume to go on")
-		}
-		if err := e.mark(ctx, s.Name); err != nil {
+		if err := e.start(ctx, s, running, results); err != nil {
 			return err
 		}
-		running[s.Name] = true
-		e.report(s.Name, "started", nil)
-		go func(s Step) {
-			results <- e.runStep(ctx, s)
-		}(s)
 	}
+	return nil
+}
+
+// start starts a step that is ready, once the budget and BeforeStep let
+// it, marking it first.
+func (e *execution) start(ctx context.Context, s Step, running map[string]bool, results chan<- stepDone) error {
+	// Checked only for a step about to start: a run whose last step
+	// reached the budget is complete, not over it.
+	if e.overBudget() {
+		return errors.New(ErrBudget, "the workflow's budget is spent; raise it and resume to go on")
+	}
+	s, err := e.beforeStep(ctx, s)
+	if err != nil {
+		return err
+	}
+	if err := e.mark(ctx, s.Name); err != nil {
+		return err
+	}
+	running[s.Name] = true
+	e.report(s.Name, "started", nil)
+	go func(s Step) {
+		results <- e.runStep(ctx, s)
+	}(s)
 	return nil
 }
 
 // runStep runs one step; a panic anywhere in it (a hook, a provider)
 // fails the step instead of the whole process.
 func (e *execution) runStep(ctx context.Context, s Step) (d stepDone) {
-	d.name = s.Name
+	d.step, d.name = s, s.Name
 	defer func() {
 		if r := recover(); r != nil {
 			d.err = errors.New(ErrStep, "step "+s.Name+" panicked")
@@ -151,6 +167,7 @@ func (e *execution) finish(ctx context.Context, d stepDone) error {
 	if err := e.save(ctx); err != nil {
 		return err
 	}
+	e.afterStep(ctx, d)
 	if d.err != nil {
 		e.report(d.name, "failed", d.err)
 		return errors.Wrap(d.err, ErrStep, "step "+d.name+" failed")
@@ -191,10 +208,45 @@ func (e *execution) report(step, status string, err error) {
 	}
 }
 
-// input is what a step's worker sees: its task, the brief, and the
-// reports of the steps it needs, as data.
+// beforeStep asks Runner.BeforeStep for the step to run: only its Task
+// and Skill may change, and the result must still be a step of a plan.
+func (e *execution) beforeStep(ctx context.Context, s Step) (out Step, err error) {
+	if e.r.BeforeStep == nil {
+		return s, nil
+	}
+	defer func() {
+		if recover() != nil {
+			out, err = s, errors.New(ErrStep, "the BeforeStep hook failed before step "+s.Name)
+		}
+	}()
+	got, err := e.r.BeforeStep(ctx, e.id, s)
+	if err != nil {
+		return s, errors.Wrap(err, ErrStep, "the BeforeStep hook stopped the workflow before step "+s.Name)
+	}
+	next := s
+	next.Task, next.Skill = got.Task, got.Skill
+	if strings.TrimSpace(next.Task) == "" || (next.Skill != "" && !skills.ValidName(next.Skill)) {
+		return s, errors.New(ErrStep, "the BeforeStep hook gave step "+s.Name+" no task, or a skill that is not a skill's name")
+	}
+	return next, nil
+}
+
+// afterStep tells Runner.AfterStep; a panic in it is ignored.
+func (e *execution) afterStep(ctx context.Context, d stepDone) {
+	if e.r.AfterStep == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	e.r.AfterStep(context.WithoutCancel(ctx), e.id, d.step, d.report, d.err)
+}
+
+// input is what a step's worker sees: its skill, its task, the brief,
+// and the reports of the steps it needs, as data.
 func (e *execution) input(s Step) string {
 	text := s.Task
+	if s.Skill != "" {
+		text = "Follow the skill " + s.Skill + " (load it with load_skill first).\n\n" + text
+	}
 	if e.brief != "" {
 		text += "\n\n<brief>\n" + e.brief + "\n</brief>"
 	}

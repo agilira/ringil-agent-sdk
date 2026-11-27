@@ -8,6 +8,7 @@ package serve
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,8 +27,11 @@ const (
 
 // ConversationInfo is a stored conversation, as a list of chats shows it.
 type ConversationInfo struct {
-	ID      string    `json:"id"`
-	Title   string    `json:"title,omitzero"`
+	ID     string `json:"id"`
+	Title  string `json:"title,omitzero"`
+	Pinned bool   `json:"pinned,omitzero"`
+	// Profile is the agent that answered it last.
+	Profile string    `json:"profile,omitzero"`
 	Updated time.Time `json:"updated"`
 	Size    int64     `json:"size"`
 	// Running: a run of it is going; its messages are read from its events
@@ -35,8 +39,9 @@ type ConversationInfo struct {
 	Running bool `json:"running,omitzero"`
 }
 
-// Conversations lists the conversations the server keeps, the latest
-// first; none without a store.
+// Conversations lists the conversations the server keeps: the pinned
+// first, then the others, each part the latest first; none without a
+// store.
 func (s *Server) Conversations(ctx context.Context) ([]ConversationInfo, error) {
 	if s.cfg.Store == nil {
 		return nil, nil
@@ -47,8 +52,17 @@ func (s *Server) Conversations(ctx context.Context) ([]ConversationInfo, error) 
 	}
 	out := make([]ConversationInfo, 0, len(infos))
 	for _, i := range infos {
-		out = append(out, ConversationInfo{ID: i.ID, Title: i.Title, Updated: i.Updated, Size: i.Size, Running: s.running(i.ID)})
+		out = append(out, ConversationInfo{ID: i.ID, Title: i.Title, Pinned: i.Pinned, Profile: i.Profile, Updated: i.Updated, Size: i.Size, Running: s.running(i.ID)})
 	}
+	slices.SortStableFunc(out, func(a, b ConversationInfo) int {
+		switch {
+		case a.Pinned == b.Pinned:
+			return b.Updated.Compare(a.Updated)
+		case a.Pinned:
+			return -1
+		}
+		return 1
+	})
 	return out, nil
 }
 
@@ -161,16 +175,27 @@ func attachments(parts []agent.Part) []Attachment {
 	return out
 }
 
-// Rename sets a conversation's title; empty removes it.
-func (s *Server) Rename(ctx context.Context, id, title string) error {
+// ConversationChange is what an app changes of a conversation's labels:
+// a field left nil stays as it is.
+type ConversationChange struct {
+	// Title, empty, removes it.
+	Title  *string `json:"title,omitempty"`
+	Pinned *bool   `json:"pinned,omitempty"`
+}
+
+// ChangeConversation changes a conversation's title or pin.
+func (s *Server) ChangeConversation(ctx context.Context, id string, c ConversationChange) error {
 	if err := agent.ValidateSessionID(id); err != nil {
 		return err
 	}
-	ts, ok := s.cfg.Store.(agent.TitleStore)
-	if !ok {
-		return fail(ErrNotFound, "the server keeps no conversation titles")
+	if c.Title == nil && c.Pinned == nil {
+		return fail(ErrInput, "nothing to change: give a title or pinned")
 	}
-	release, err := s.hold(id, holdTitle)
+	ls, ok := s.cfg.Store.(agent.LabelStore)
+	if !ok {
+		return fail(ErrNotFound, "the server keeps no conversation labels")
+	}
+	release, err := s.hold(id, holdLabel)
 	if err != nil {
 		return err
 	}
@@ -178,7 +203,14 @@ func (s *Server) Rename(ctx context.Context, id, title string) error {
 	if !s.exists(ctx, id) {
 		return fail(ErrNotFound, "no conversation "+id)
 	}
-	return ts.SetTitle(ctx, id, title)
+	return ls.Label(ctx, id, func(l *agent.Labels) {
+		if c.Title != nil {
+			l.Title = *c.Title
+		}
+		if c.Pinned != nil {
+			l.Pinned = *c.Pinned
+		}
+	})
 }
 
 // DeleteConversation removes a stored conversation that has no run going.
@@ -224,25 +256,38 @@ func (s *Server) exists(ctx context.Context, id string) bool {
 	return false
 }
 
-// titleFirst gives a new conversation its title from its first message:
-// the words the user wrote, or what they attached.
-func (s *Server) titleFirst(ctx context.Context, id string, conv agent.Conversation, input agent.Message) {
-	ts, ok := s.cfg.Store.(agent.TitleStore)
-	if !ok || id == "" || len(conv.Messages()) > 0 {
+// labelRun marks a conversation with the profile of the run starting on
+// it, and gives a new one its title from its first message: the words
+// the user wrote, or what they attached.
+func (s *Server) labelRun(ctx context.Context, id, profile string, conv agent.Conversation, input agent.Message) {
+	ls, ok := s.cfg.Store.(agent.LabelStore)
+	if !ok || id == "" {
 		return
 	}
-	title := input.Text()
-	if strings.TrimSpace(title) == "" {
-		switch a := attachments(input.Parts); {
-		case len(a) == 0:
-			return
-		case a[0].Type == agent.PartDocument:
-			title = "PDF document"
-		default:
-			title = "Image"
-		}
+	title := ""
+	if len(conv.Messages()) == 0 {
+		title = firstTitle(input)
 	}
-	_ = ts.SetTitle(ctx, id, title) // a title is not worth failing the run
+	_ = ls.Label(ctx, id, func(l *agent.Labels) { // labels are not worth failing the run
+		l.Profile = profile
+		if l.Title == "" {
+			l.Title = title
+		}
+	})
+}
+
+// firstTitle is a new conversation's title from its first message.
+func firstTitle(input agent.Message) string {
+	if title := input.Text(); strings.TrimSpace(title) != "" {
+		return title
+	}
+	switch a := attachments(input.Parts); {
+	case len(a) == 0:
+		return ""
+	case a[0].Type == agent.PartDocument:
+		return "PDF document"
+	}
+	return "Image"
 }
 
 // HTTP handlers.
@@ -283,16 +328,12 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, h)
 }
 
-type renameIn struct {
-	Title string `json:"title"`
-}
-
-func (s *Server) rename(w http.ResponseWriter, r *http.Request) {
-	var in renameIn
+func (s *Server) changeConversation(w http.ResponseWriter, r *http.Request) {
+	var in ConversationChange
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if err := s.Rename(r.Context(), r.PathValue("id"), in.Title); err != nil {
+	if err := s.ChangeConversation(r.Context(), r.PathValue("id"), in); err != nil {
 		failure(w, status(err), err)
 		return
 	}

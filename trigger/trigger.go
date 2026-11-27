@@ -56,6 +56,8 @@ type Fired struct {
 	// answer, the files created, changed or removed, the message, the
 	// request's body. Empty for a time. At most MaxDetail bytes.
 	Detail string
+	// ByHand: the user ran it now (RunNow), not what sets it off.
+	ByHand bool
 }
 
 // MaxDetail bounds what a run is told of what set it off.
@@ -83,6 +85,8 @@ const (
 	Finished EventKind = "finished"
 	Failed   EventKind = "failed"
 	Skipped  EventKind = "skipped"
+	// Refused: Config.BeforeRun refused the run; it did not start.
+	Refused EventKind = "refused"
 	// LookFailed: a Tool or File trigger could not look; it looks again
 	// at its next time.
 	LookFailed EventKind = "look_failed"
@@ -122,6 +126,16 @@ type Config struct {
 	Call Call
 	// OnEvent hears of every start, end and skip; it must not block.
 	OnEvent func(Event)
+	// BeforeRun, when set, is asked before each run: it returns what the
+	// run is told set it off (as is, or changed: Detail redacted), or an
+	// error that refuses the run (Refused, the error in the status). A
+	// panic refuses it too.
+	BeforeRun func(ctx context.Context, t Trigger, f Fired) (Fired, error)
+	// AfterRun, when set, is told how each run that started ended: its
+	// outcome, or its error (a timeout is ErrTimeout). It is called before
+	// the status is written and the Finished or Failed event goes out; a
+	// panic in it is ignored.
+	AfterRun func(ctx context.Context, t Trigger, f Fired, out Outcome, err error)
 	// Poll is how often the triggers are re-read; default 30s.
 	Poll  time.Duration
 	Clock Clock
@@ -437,8 +451,7 @@ func (s *Runner) fire(ctx context.Context, t Trigger, at time.Time) {
 		}
 		return
 	}
-	s.run(ctx, t, Fired{Kind: t.kind(), At: s.cfg.Clock.Now(), Detail: clipTo(detail, MaxDetail)})
-	if t.kind() == File {
+	if s.run(ctx, t, Fired{Kind: t.kind(), At: s.cfg.Clock.Now(), Detail: clipTo(detail, MaxDetail)}) && t.kind() == File {
 		s.rebase(t) // what its own run wrote does not set it off again
 	}
 }
@@ -470,8 +483,17 @@ func (s *Runner) start(ctx context.Context, t Trigger, f Fired) {
 	s.run(ctx, t, f)
 }
 
-// run runs a trigger held for it.
-func (s *Runner) run(ctx context.Context, t Trigger, f Fired) {
+// ErrRefused: Config.BeforeRun refused a run.
+const ErrRefused errors.ErrorCode = "TRIGGER_REFUSED"
+
+// run runs a trigger held for it; false when BeforeRun refused it.
+func (s *Runner) run(ctx context.Context, t Trigger, f Fired) bool {
+	f, err := s.beforeRun(ctx, t, f)
+	if err != nil {
+		s.refused(t.Name, f.At, err)
+		s.cfg.OnEvent(Event{Kind: Refused, Trigger: t.Name, At: f.At, Err: err})
+		return false
+	}
 	s.begin(t.Name, f.At)
 	s.cfg.OnEvent(Event{Kind: Started, Trigger: t.Name, At: f.At})
 	limit, _ := t.limit() // checked when loaded
@@ -486,12 +508,42 @@ func (s *Runner) run(ctx context.Context, t Trigger, f Fired) {
 		err = errors.New(ErrTimeout, "stopped after "+limit.String())
 	}
 	cancel()
+	s.afterRun(ctx, t, f, out, err)
 	s.end(t.Name, out, err)
 	kind := Finished
 	if err != nil {
 		kind = Failed
 	}
 	s.cfg.OnEvent(Event{Kind: kind, Trigger: t.Name, At: f.At, Run: out.Run, Err: err})
+	return true
+}
+
+// beforeRun asks Config.BeforeRun; its Fired keeps the trigger's kind and
+// time, and a Detail clipped as Fire clips it.
+func (s *Runner) beforeRun(ctx context.Context, t Trigger, f Fired) (out Fired, err error) {
+	if s.cfg.BeforeRun == nil {
+		return f, nil
+	}
+	defer func() {
+		if recover() != nil {
+			out, err = f, errors.New(ErrRefused, "refused: the BeforeRun hook failed")
+		}
+	}()
+	got, err := s.cfg.BeforeRun(ctx, t, f)
+	if err != nil {
+		return f, errors.Wrap(err, ErrRefused, "refused: "+clipTo(err.Error(), 300))
+	}
+	f.Detail = clipTo(got.Detail, MaxDetail)
+	return f, nil
+}
+
+// afterRun tells Config.AfterRun; a panic in it is ignored.
+func (s *Runner) afterRun(ctx context.Context, t Trigger, f Fired, out Outcome, err error) {
+	if s.cfg.AfterRun == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	s.cfg.AfterRun(context.WithoutCancel(ctx), t, f, out, err)
 }
 
 // hold marks a trigger busy; false when it already is.
@@ -516,6 +568,19 @@ func (s *Runner) skipped(name string) {
 	defer s.mu.Unlock()
 	st := s.status[name]
 	st.Skipped++
+	s.status[name] = st
+	s.save()
+}
+
+// refused records a run BeforeRun refused: not a run, the last one's
+// record stays.
+func (s *Runner) refused(name string, at time.Time, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.running, name)
+	st := s.status[name]
+	st.Refused++
+	st.LastRefused, st.LastRefusal = at, clipTo(err.Error(), 500)
 	s.status[name] = st
 	s.save()
 }
@@ -559,7 +624,14 @@ const ErrRunning errors.ErrorCode = "TRIGGER_RUNNING"
 // what happened (clipped to MaxDetail). Its run goes on after Fire
 // returns; one set off while the last is still going is skipped, and
 // Fire returns ErrRunning.
-func (s *Runner) Fire(name, detail string) (err error) {
+func (s *Runner) Fire(name, detail string) error { return s.fireNow(name, detail, false) }
+
+// RunNow runs a trigger of any kind now, because the user asked (an
+// app's "run now"): paused or outside its period too, never twice at
+// once (ErrRunning). Its Fired is ByHand, with no Detail.
+func (s *Runner) RunNow(name string) error { return s.fireNow(name, "", true) }
+
+func (s *Runner) fireNow(name, detail string, byHand bool) (err error) {
 	started := false
 	s.mu.Lock()
 	ctx := s.ctx
@@ -581,21 +653,30 @@ func (s *Runner) Fire(name, detail string) (err error) {
 	if !ok {
 		return errors.New(ErrNotFound, "no trigger "+name)
 	}
-	if err := s.fireable(p.trigger); err != nil {
-		return err
+	if !byHand {
+		if err := s.fireable(p.trigger); err != nil {
+			return err
+		}
 	}
-	f := Fired{Kind: p.trigger.kind(), At: s.cfg.Clock.Now(), Detail: clipTo(detail, MaxDetail)}
+	f := Fired{Kind: p.trigger.kind(), At: s.cfg.Clock.Now(), Detail: clipTo(detail, MaxDetail), ByHand: byHand}
 	if !s.hold(name) { // here, not in the run: the caller hears of it
 		s.skipped(name)
 		s.cfg.OnEvent(Event{Kind: Skipped, Trigger: name, At: f.At})
 		return errors.New(ErrRunning, "trigger "+name+" is still running its last run")
 	}
 	started = true
-	go func() {
-		defer s.wg.Done()
-		s.run(ctx, p.trigger, f)
-	}()
+	go s.runHeld(ctx, p.trigger, f)
 	return nil
+}
+
+// runHeld runs a trigger held for it by Fire or RunNow, counted in wg; a
+// File trigger then takes note of what its run wrote, so that it does not
+// set itself off again.
+func (s *Runner) runHeld(ctx context.Context, t Trigger, f Fired) {
+	defer s.wg.Done()
+	if s.run(ctx, t, f) && t.kind() == File {
+		s.rebase(t)
+	}
 }
 
 // fireable: t is set off by the host, and may be now.

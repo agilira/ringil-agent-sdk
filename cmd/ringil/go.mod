@@ -1,4 +1,4 @@
-module github.com/agilira/ringil
+module github.com/agilira/ringil-agent-sdk/cmd/ringil
 
 go 1.27.0
 
@@ -19,7 +19,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
-	golang.org/x/net v0.60.0
+	golang.org/x/net v0.62.0
 	golang.org/x/term v0.48.0
 )
 
@@ -80,20 +80,20 @@ require (
 )
 
 // Until the library has a tag, the CLI builds against the code next to it.
-replace github.com/agilira/ringil-agent-sdk => ../ringil-agent-sdk
+replace github.com/agilira/ringil-agent-sdk => ../..
 
-replace github.com/agilira/ringil-agent-sdk/mcp => ../ringil-agent-sdk/mcp
+replace github.com/agilira/ringil-agent-sdk/mcp => ../../mcp
 
-replace github.com/agilira/ringil-agent-sdk/a2a => ../ringil-agent-sdk/a2a
+replace github.com/agilira/ringil-agent-sdk/a2a => ../../a2a
 
-replace github.com/agilira/ringil-agent-sdk/memory/sqlite => ../ringil-agent-sdk/memory/sqlite
+replace github.com/agilira/ringil-agent-sdk/memory/sqlite => ../../memory/sqlite
 
-replace github.com/agilira/ringil-agent-sdk/provider/anthropic => ../ringil-agent-sdk/provider/anthropic
+replace github.com/agilira/ringil-agent-sdk/provider/anthropic => ../../provider/anthropic
 
-replace github.com/agilira/ringil-agent-sdk/secrets/keyring => ../ringil-agent-sdk/secrets/keyring
+replace github.com/agilira/ringil-agent-sdk/secrets/keyring => ../../secrets/keyring
 
-replace github.com/agilira/ringil-agent-sdk/secrets/store => ../ringil-agent-sdk/secrets/store
+replace github.com/agilira/ringil-agent-sdk/secrets/store => ../../secrets/store
 
-replace github.com/agilira/ringil-agent-sdk/channel/slack => ../ringil-agent-sdk/channel/slack
+replace github.com/agilira/ringil-agent-sdk/channel/slack => ../../channel/slack
 
-replace github.com/agilira/ringil-agent-sdk/otel => ../ringil-agent-sdk/otel
+replace github.com/agilira/ringil-agent-sdk/otel => ../../otel

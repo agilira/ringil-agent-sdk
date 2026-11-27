@@ -137,6 +137,18 @@ type cli struct {
 	// server, under `ringil serve`, decides the calls the chat would ask
 	// about, through its API; there is no terminal.
 	server *serve.Server
+	// serveCtx is serve's command, for the profiles it builds again when
+	// ringil.yaml changes them; serving the two, for the watcher, which
+	// runs before serve has them.
+	serveCtx *orpheus.Context
+	serving  atomic.Pointer[serving]
+	// wfRuns are the saved workflows serve is running; library, in a
+	// run of serve, the saved workflows its tools use.
+	wfRuns  *wfRuns
+	library *workflow.Library
+	// workflowLife is serve's: the workflows it runs in the background
+	// end with it.
+	workflowLife context.Context
 	// inboxRoot, under serve with a chat app, is where the documents sent
 	// in the chats are kept, a directory per conversation; inbox, in a
 	// run, is its own conversation's, granted to the file tools.
@@ -327,6 +339,7 @@ func (c *cli) app() *orpheus.App {
 			AddFlag("chat", "", "", "message: the chat to listen to, as telegram-CHATID (a group's ID is negative); only owners' and members' messages are heard").
 			AddFlag("match", "", "", "message: words the message must have (default: any message)").
 			AddFlag("skill", "", "", "the skill its runs follow").
+			AddFlag("workflow", "", "", "run this saved workflow instead of a prompt (the prompt, if any, joins its brief)").
 			AddFlag("allow", "", "", "tools its runs may use without asking, comma-separated; any other that would ask is refused").
 			AddFlag("deliver", "", "", "where to send what its runs answer (a chat)").
 			AddFlag("profile", "", "", "the role that runs it (default: the flags and environment of serve)").
@@ -348,6 +361,12 @@ func (c *cli) app() *orpheus.App {
 		AddFlag("dir", "", "", "working directory inside the sandbox"))
 	app.SetDefaultCommand("chat")
 	return app
+}
+
+// serving is serve and its command, once both are there.
+type serving struct {
+	srv *serve.Server
+	ctx *orpheus.Context
 }
 
 // ErrUsage marks a mistake in how the command was invoked.
@@ -393,6 +412,7 @@ func (c *cli) agent(ctx *orpheus.Context) (agent.Agent, error) {
 		Tools:         c.live,
 		Memory:        mem,
 		Approve:       c.decide,
+		Hooks:         c.agentHooks(),
 		System:        system,
 		Instructions:  instructions,
 		Context:       c.runContext(nb, !c.restricted()),
@@ -564,6 +584,9 @@ func (c *cli) runContext(nb *notes.Notes, withRules bool) func(context.Context) 
 		if c.catalog != nil {
 			blocks = append(blocks, agent.ContextBlock{Name: "skills", Text: c.catalog.Instructions()})
 		}
+		if text := c.savedList(); text != "" {
+			blocks = append(blocks, agent.ContextBlock{Name: "workflows", Text: text})
+		}
 		if nb != nil {
 			n, err := nb.Context(ctx)
 			if err != nil {
@@ -644,6 +667,7 @@ func (c *cli) extraTools(mem agent.Memory, cat *skills.Catalog) []agent.Tool {
 		if c.automating {
 			extra = append(extra, c.createTrigger())
 		}
+		extra = append(extra, c.workflowTools()...)
 	}
 	return append(extra, c.laterTools()...)
 }

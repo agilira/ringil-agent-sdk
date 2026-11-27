@@ -6,7 +6,7 @@
 
 TOOLS_DIR := $(HOME)/go/bin
 # The live keys stay in the SDK's .env until they get one of their own here.
-ENV_FILE ?= ../ringil-agent-sdk/.env
+ENV_FILE ?= ../../.env
 
 RED := \033[0;31m
 GREEN := \033[0;32m

@@ -47,9 +47,9 @@ var writeTimeout = 30 * time.Second
 //	POST   /v1/runs/{id}/cancel                  stop it
 //	POST   /v1/runs/{id}/approvals/{approval}    {"allow": true|false} decide a waiting tool call
 //	DELETE /v1/runs/{id}                         forget a finished run
-//	GET    /v1/conversations                     the conversations kept, the latest first
+//	GET    /v1/conversations                     the conversations kept: the pinned first, each part the latest first
 //	GET    /v1/conversations/{id}/messages       a page of its messages (?from=&limit=; the last 200 by default)
-//	PATCH  /v1/conversations/{id}                {"title"} rename it
+//	PATCH  /v1/conversations/{id}                {"title"?,"pinned"?} rename it, pin or unpin it
 //	DELETE /v1/conversations/{id}                delete it
 //	GET    /v1/conversations/{id}/artifacts      the latest version of each artifact of the conversation
 //	GET    /v1/conversations/{id}/artifacts/{name}  {"latest","versions"}
@@ -80,7 +80,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/runs/{id}", s.forget)
 	mux.HandleFunc("GET /v1/conversations", s.listConversations)
 	mux.HandleFunc("GET /v1/conversations/{id}/messages", s.history)
-	mux.HandleFunc("PATCH /v1/conversations/{id}", s.rename)
+	mux.HandleFunc("PATCH /v1/conversations/{id}", s.changeConversation)
 	mux.HandleFunc("DELETE /v1/conversations/{id}", s.deleteConversation)
 	mux.HandleFunc("GET /v1/conversations/{id}/artifacts", s.listArtifacts)
 	mux.HandleFunc("GET /v1/conversations/{id}/artifacts/{name}", s.artifactVersions)

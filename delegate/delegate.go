@@ -72,7 +72,7 @@ type Team struct {
 	// against the same limits), Approve (a worker's risky calls are
 	// confirmed like the parent's), Instructions (a company's rules hold
 	// for the work it delegates too), Compaction, Loop, ContextWindow,
-	// AfterTool and the rest. The crew sets each worker's Tools, System
+	// Hooks and the rest. The crew sets each worker's Tools, System
 	// and Context; MaxTurns is the worker's, else this one's, else 30;
 	// Provider the worker's when it has one. Observers receive every event
 	// of every worker, with Event.Worker, Event.Task and Event.Parent set:

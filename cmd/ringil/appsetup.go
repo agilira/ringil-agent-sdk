@@ -175,7 +175,7 @@ func (c *cli) changeLocked(mutate func(next *config), apply func(*edit)) error {
 
 // writePrivateFile writes data to path whole, private to the user.
 func writePrivateFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { // #nosec G703 -- callers give paths of their own (an agent's name checked by profileName)
 		return errors.Wrap(err, ErrUsage, "cannot create "+filepath.Dir(path))
 	}
 	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+rand.Text()[:8]+".tmp")

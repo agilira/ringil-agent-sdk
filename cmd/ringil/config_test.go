@@ -297,10 +297,13 @@ func TestWhatNeedsARestart(t *testing.T) {
 		t.Errorf("who the chats talk with was told to need a restart: %q", got)
 	}
 	got := restartFor(old, &config{Profiles: map[string]profile{"v": {}}, Serve: serveConfig{Listen: "b"}, MCPServers: map[string]mcpEntry{"f": {}}})
-	for _, want := range []string{"mcp_servers", "serve", "the list of profiles"} {
+	for _, want := range []string{"mcp_servers", "serve"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q does not name %s", got, want)
 		}
+	}
+	if strings.Contains(got, "profiles") { // serve takes a new list at once
+		t.Errorf("the list of profiles was told to need a restart: %q", got)
 	}
 }
 
@@ -349,20 +352,6 @@ func TestRestartIsToldAgainstTheStart(t *testing.T) {
 		}
 		return nil
 	})
-}
-
-// Audit 20/11: a chat profile serve does not offer yet is refused at a
-// reload, rather than failing at every message.
-func TestAChatProfileMustBeServed(t *testing.T) {
-	s := &settings{path: writeConfig(t, t.TempDir(), "x: 1\n")}
-	s.served.Store(&map[string]bool{"default": true, "team": true})
-	team := map[string]profile{"team": {Tools: &[]string{}, Memory: "chat"}, "new": {Tools: &[]string{}, Memory: "chat"}}
-	if err := s.acceptable(&config{Profiles: team, Serve: serveConfig{MemberProfile: "team"}}); err != nil {
-		t.Errorf("a served profile: %v", err)
-	}
-	if err := s.acceptable(&config{Profiles: team, Serve: serveConfig{PublicProfile: "new"}}); err == nil {
-		t.Error("a profile not served was given to the chats")
-	}
 }
 
 // Audit 20/11: no_approvals reaches the chats at a reload; the flag wins.

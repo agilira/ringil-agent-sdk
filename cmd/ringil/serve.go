@@ -58,7 +58,9 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 		closeQuietly(l)
 		return err
 	}
-	c.server = srv
+	c.server, c.serveCtx = srv, ctx
+	c.serving.Store(&serving{srv: srv, ctx: ctx})
+	c.serveProfiles(c.conf()) // a revision applied while serve was being made
 	defer srv.Close()
 	if c.conf().Serve.A2A {
 		if err := c.exposeA2A(srv, a2aProfile(ctx), l.Addr().String()); err != nil {
@@ -113,13 +115,14 @@ func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	c.wfRuns = &wfRuns{}
 	c.log = slog.New(slog.NewTextHandler(c.errOut, nil))
 	c.events = []agent.Observer{eventlog.Slog(c.log)}
 	c.metrics = metrics.New()
-	profiles, err := c.servedProfiles(ctx)
-	if err != nil {
+	if err := c.checkProfileFlag(ctx); err != nil {
 		return nil, "", err
 	}
+	profiles := c.profilesFor(ctx, c.conf())
 	app, err := appFiles(c.conf().Serve.App)
 	if err != nil {
 		return nil, "", err
@@ -138,32 +141,46 @@ func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
 	}
 	srv.Mount("GET /metrics", c.metrics.Handler()) // behind the token: the counts tell what the agents do
 	c.mountSettings(ctx, srv)
+	c.mountProfiles(ctx, srv)
+	c.mountHooks(srv)
+	c.mountTriggers(ctx, srv)
+	c.mountWorkflows(ctx, srv)
+	c.mountMore(ctx, srv)
 	c.mountState(ctx, srv)
 	c.mountSetup(ctx, srv)
 	return srv, where, nil
 }
 
-// servedProfiles are "default" (the flags and environment) and every
-// profile of ringil.yaml.
-func (c *cli) servedProfiles(ctx *orpheus.Context) ([]serve.Profile, error) {
-	roles := c.conf().Profiles
+// checkProfileFlag: --profile names default or a profile of the file.
+func (c *cli) checkProfileFlag(ctx *orpheus.Context) error {
 	if p := ctx.GetGlobalFlagString("profile"); p != "" && p != "default" {
-		if _, ok := roles[p]; !ok {
-			return nil, errors.New(ErrUsage, "no profile "+p+" in "+c.configName())
+		if _, ok := c.conf().Profiles[p]; !ok {
+			return errors.New(ErrUsage, "no profile "+p+" in "+c.configName())
 		}
 	}
+	return nil
+}
+
+// profilesFor are the agents serve runs for f: "default" (the flags and
+// environment) and every profile.
+func (c *cli) profilesFor(ctx *orpheus.Context, f *config) []serve.Profile {
 	out := []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx, "default")}}
-	if c.settings != nil {
-		served := map[string]bool{"default": true}
-		for name := range roles {
-			served[name] = true
-		}
-		c.settings.served.Store(&served)
+	for _, name := range names(f.Profiles) {
+		out = append(out, serve.Profile{Name: name, Description: f.Profiles[name].Description, New: c.runInstance(ctx, name)})
 	}
-	for _, name := range names(roles) {
-		out = append(out, serve.Profile{Name: name, Description: roles[name].Description, New: c.runInstance(ctx, name)})
+	return out
+}
+
+// serveProfiles gives serve the agents of a revision just applied: a new
+// one answers at once, one removed takes no new run.
+func (c *cli) serveProfiles(next *config) {
+	s := c.serving.Load()
+	if s == nil {
+		return
 	}
-	return out, nil
+	if err := s.srv.SetProfiles(c.profilesFor(s.ctx, next)); err != nil {
+		c.note("the agents were not updated: " + err.Error())
+	}
 }
 
 // servedRole is profile name as ringil.yaml has it now; nil for default.
@@ -173,7 +190,7 @@ func (c *cli) servedRole(name string) (*profile, error) {
 	}
 	p, ok := c.conf().Profiles[name]
 	if !ok {
-		return nil, errors.New(ErrUsage, "profile "+name+" is no longer in "+c.configName()+" (restart serve to drop it)")
+		return nil, errors.New(ErrUsage, "profile "+name+" is no longer in "+c.configName())
 	}
 	return &p, nil
 }
@@ -225,7 +242,7 @@ func (c *cli) forRun() *cli {
 		newSandbox: c.newSandbox, cwd: c.cwd, home: c.home, server: c.server, remote: c.remote, shared: true, events: c.events,
 		triggers: c.triggers, bridge: c.bridge, slackBridge: c.slackBridge, board: c.board, settings: c.settings, secrets: c.secrets,
 		signIns: c.signIns, chatgptIssuer: c.chatgptIssuer, chatgptBase: c.chatgptBase, prices: c.prices,
-		traces: c.traces, traceWarned: c.traceWarned}
+		traces: c.traces, traceWarned: c.traceWarned, wfRuns: c.wfRuns, serveCtx: c.serveCtx, workflowLife: c.workflowLife}
 }
 
 // exposeA2A offers a profile (--profile, else default) to other agents, at /a2a on the

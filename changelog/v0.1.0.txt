@@ -195,6 +195,36 @@ FEATURES
     MCP servers, skills, a provider's models), each change checked as the
     whole file before it is written to ringil.yaml.
 
+  - Hooks (agent.Hooks): BeforeRun changes or refuses the input,
+    BeforeModel stops a model call, BeforeTool changes or refuses a call
+    before Approve judges it, AfterTool changes a result (also of a run
+    stopped meanwhile), AfterRun is told the end once. Config.AfterTool is
+    now Hooks.AfterTool. trigger.Config.BeforeRun/AfterRun (a refusal is
+    counted apart, not as a run), workflow.Runner.BeforeRun/AfterRun and
+    BeforeStep/AfterStep. A hook that panics fails what it guards.
+  - Saved workflows: workflow.Library (one private file each, bounded),
+    Step.Skill, workflow.Crew as an interface (a delegate.Crew or the
+    host's own agents), NewRunID and RunSaved (what started it fenced as
+    data), the save_workflow and run_saved_workflow tools.
+    Trigger.Workflow runs a saved workflow; trigger.Runner.RunNow runs any
+    trigger by hand (Fired.ByHand).
+  - Conversations labelled: agent.LabelStore (title, pinned, the agent
+    that answered last) replaces TitleStore; session/file keeps them in
+    <id>.labels and moves an old <id>.title into them. serve lists the
+    pinned first, PATCH takes {"title","pinned"}, Server.SetProfiles
+    changes the agents live.
+  - ringil: an API for everything the app sets: agents (profiles with
+    their own instructions file, taken by serve at once), triggers (run
+    by hand, webhooks' secrets shown once), saved workflows and their
+    runs (resume, retry or resolve a step), the user's hooks, chat apps,
+    memory and the memories, Composio, remote agents, a restart. Hooks
+    as commands in ringil.yaml, as Claude Code's: event JSON on standard
+    input, exit 2 blocks, a clean environment, the process group ended
+    with the hook.
+  - ringil lives in this repository, at cmd/ringil, a module of its own
+    with its history: the SDK and the CLI change in one commit, the CI
+    tests both.
+
 SECURITY
 
   - HTTPS required except towards loopback; AllowHTTP for LAN and pods.
@@ -227,3 +257,10 @@ SECURITY
   - Fuzz targets for GitHub links and MCP entries.
   - Fuzz targets for the SSE decoder, the response parser, the argument
     validator, typed tool calls and the session file loader.
+  - A trigger's runs may never save or run workflows unasked, as they may
+    not make triggers; a trigger never watches the agent's state, through
+    a link or from a folder above it.
+  - ringil: names from the API checked before they reach a path or a key
+    of ringil.yaml; agents differing only in case refused; header values
+    only as ${NAME}, header names as HTTP tokens; a workflow's steps from
+    a trigger keep its allowed tools.

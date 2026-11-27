@@ -65,19 +65,43 @@ type SessionInfo struct {
 	ID      string
 	Updated time.Time
 	Size    int64
-	// Title is what a list of conversations shows: set by the host
-	// (TitleStore), "" when none was.
-	Title string
+	// Title, Pinned and Profile are the session's Labels, set by the host
+	// (LabelStore): zero when none were.
+	Title   string
+	Pinned  bool
+	Profile string
 }
 
-// TitleStore is a Store that keeps a title for each session, beside its
-// history (session/file does): a list of conversations shows it without
-// reading them.
-type TitleStore interface {
+// Labels are what a host keeps of a session beside its history, for a
+// list of conversations to show without reading them.
+type Labels struct {
+	// Title is cleaned (CleanTitle) when stored.
+	Title string `json:"title,omitempty"`
+	// Pinned keeps the session at the top of the list.
+	Pinned bool `json:"pinned,omitempty"`
+	// Profile is the agent that answered last, by the host's name: 0-64
+	// letters, digits, - and _.
+	Profile string `json:"profile,omitempty"`
+}
+
+// Check validates labels as a store keeps them.
+func (l Labels) Check() error {
+	if !validProfile.MatchString(l.Profile) {
+		return errors.New(ErrSessionInput, "a session's profile is 0-64 letters, digits, - and _")
+	}
+	return nil
+}
+
+var validProfile = regexp.MustCompile(`^[A-Za-z0-9_-]{0,64}$`)
+
+// LabelStore is a Store that keeps Labels for each session, beside its
+// history (session/file does).
+type LabelStore interface {
 	Store
-	// SetTitle sets the title of the session id, cleaned (CleanTitle);
-	// an empty one removes it.
-	SetTitle(ctx context.Context, id, title string) error
+	// Label changes the labels of the session id: change edits the
+	// current ones, and the result, cleaned and checked, is written whole.
+	// The changes of one store are made one at a time.
+	Label(ctx context.Context, id string, change func(*Labels)) error
 }
 
 // MaxTitle bounds a session's title, in bytes.

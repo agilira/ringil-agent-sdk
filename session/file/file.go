@@ -17,6 +17,7 @@ package file
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	stderrors "errors"
 	"io"
 	"os"
@@ -33,7 +34,12 @@ import (
 const (
 	dataExt  = ".jsonl"
 	lockExt  = ".lock"
+	labelExt = ".labels"
+	// titleExt is the title file of before the labels: read, and moved
+	// into the labels at their first change.
 	titleExt = ".title"
+	// maxLabels bounds a labels file read.
+	maxLabels = 4 << 10
 	// maxSession bounds the session file read into memory on Open; far above
 	// any real conversation, as memory/local bounds its own store.
 	maxSession = 1 << 30
@@ -57,7 +63,8 @@ func New(dir string) (agent.Store, error) {
 }
 
 type store struct {
-	dir string
+	dir     string
+	labelMu sync.Mutex // one change of labels at a time
 }
 
 // withRoot runs fn with the directory opened as an os.Root, which cannot
@@ -273,7 +280,8 @@ func sessionEntry(root *os.Root, e os.DirEntry) (agent.SessionInfo, bool) {
 	if err != nil {
 		return agent.SessionInfo{}, false // removed while listing
 	}
-	return agent.SessionInfo{ID: id, Updated: info.ModTime(), Size: info.Size(), Title: readTitle(root, id)}, true
+	l := readLabels(root, id)
+	return agent.SessionInfo{ID: id, Updated: info.ModTime(), Size: info.Size(), Title: l.Title, Pinned: l.Pinned, Profile: l.Profile}, true
 }
 
 // Delete removes a session that nobody has open.
@@ -289,7 +297,8 @@ func (s *store) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	err = s.withRoot(func(root *os.Root) error {
-		_ = root.Remove(name(id, titleExt)) // the title goes with it; none is fine
+		_ = root.Remove(name(id, labelExt)) // the labels go with it; none is fine
+		_ = root.Remove(name(id, titleExt))
 		return root.Remove(name(id, dataExt))
 	})
 	if err != nil && !os.IsNotExist(errors.RootCause(err)) {
@@ -412,43 +421,92 @@ func (s *session) Close() error {
 	return nil
 }
 
-// readTitle is the session's title, "" without one: a small file beside the
-// history, read bounded and cleaned (it could have been written by hand).
-func readTitle(root *os.Root, id string) string {
+// readLabels are the session's labels, zero without them: a small file
+// beside the history, read bounded and cleaned (it could have been
+// written by hand); without one, the title file of before.
+func readLabels(root *os.Root, id string) agent.Labels {
 	if root == nil {
-		return ""
+		return agent.Labels{}
 	}
-	f, err := root.Open(name(id, titleExt))
+	if data, err := readSmall(root, name(id, labelExt), maxLabels); err == nil {
+		var l agent.Labels
+		if json.Unmarshal(data, &l) != nil {
+			return agent.Labels{}
+		}
+		l.Title = agent.CleanTitle(l.Title)
+		if l.Check() != nil {
+			l.Profile = ""
+		}
+		return l
+	}
+	data, err := readSmall(root, name(id, titleExt), 4*agent.MaxTitle)
 	if err != nil {
-		return ""
+		return agent.Labels{}
 	}
-	defer func() { _ = f.Close() }()
-	b, err := io.ReadAll(io.LimitReader(f, 4*agent.MaxTitle))
-	if err != nil {
-		return ""
-	}
-	return agent.CleanTitle(string(b))
+	return agent.Labels{Title: agent.CleanTitle(string(data))}
 }
 
-// SetTitle implements agent.TitleStore: the title is written whole beside
-// the history (a reader never sees half of it); empty, it is removed.
-func (s *store) SetTitle(ctx context.Context, id, title string) error {
+// readSmall reads at most max bytes of a regular file.
+func readSmall(root *os.Root, file string, max int64) ([]byte, error) {
+	f, err := root.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return nil, os.ErrNotExist
+	}
+	return io.ReadAll(io.LimitReader(f, max))
+}
+
+// Label implements agent.LabelStore: the labels are written whole beside
+// the history (a reader never sees half of them); all zero, the file is
+// removed. A title file of before is moved into them.
+func (s *store) Label(ctx context.Context, id string, change func(*agent.Labels)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := agent.ValidateSessionID(id); err != nil {
 		return err
 	}
-	title = agent.CleanTitle(title)
+	s.labelMu.Lock()
+	defer s.labelMu.Unlock()
 	return s.withRoot(func(root *os.Root) error {
-		if title == "" {
-			if err := root.Remove(name(id, titleExt)); err != nil && !os.IsNotExist(err) {
-				return ioError(err, "cannot remove the title")
-			}
-			return nil
+		l := readLabels(root, id)
+		if change != nil {
+			change(&l)
 		}
-		return writeWhole(root, name(id, titleExt), title)
+		l.Title = agent.CleanTitle(l.Title)
+		if err := l.Check(); err != nil {
+			return err
+		}
+		if err := writeLabels(root, id, l); err != nil {
+			return err
+		}
+		if err := root.Remove(name(id, titleExt)); err != nil && !os.IsNotExist(err) {
+			return ioError(err, "cannot remove the old title")
+		}
+		return nil
 	})
+}
+
+// writeLabels writes l whole beside the history; all zero, it removes
+// the file.
+func writeLabels(root *os.Root, id string, l agent.Labels) error {
+	if l == (agent.Labels{}) {
+		if err := root.Remove(name(id, labelExt)); err != nil && !os.IsNotExist(err) {
+			return ioError(err, "cannot remove the labels")
+		}
+		return nil
+	}
+	data, err := json.Marshal(l)
+	if err != nil {
+		return ioError(err, "cannot encode the labels")
+	}
+	if err := writeWhole(root, name(id, labelExt), string(data)); err != nil {
+		return ioError(err, "cannot write the labels")
+	}
+	return nil
 }
 
 // writeWhole replaces file with data through a unique temporary file.
@@ -456,7 +514,7 @@ func writeWhole(root *os.Root, file, data string) error {
 	tmp := "." + file + "." + rand.Text()[:8] + ".tmp"
 	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return ioError(err, "cannot write the title")
+		return err
 	}
 	_, werr := f.WriteString(data)
 	if cerr := f.Close(); werr == nil {
@@ -467,7 +525,7 @@ func writeWhole(root *os.Root, file, data string) error {
 	}
 	if werr != nil {
 		_ = root.Remove(tmp)
-		return ioError(werr, "cannot write the title")
+		return werr
 	}
 	return nil
 }

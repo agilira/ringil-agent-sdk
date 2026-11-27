@@ -46,7 +46,7 @@ func TestConversationHeld(t *testing.T) {
 		}
 		return release
 	}
-	r1, r2, r3 := held("Chat1", holdRead), held("chat1", holdRead), held("chat1", holdTitle) // two tabs and a rename
+	r1, r2, r3 := held("Chat1", holdRead), held("chat1", holdRead), held("chat1", holdLabel) // two tabs and a rename
 	if !errors.HasCode(admit(), ErrBusy) {
 		t.Fatal("a run during a read")
 	}
@@ -66,11 +66,12 @@ func TestConversationHeld(t *testing.T) {
 	}
 }
 
-// Without a store that keeps titles, renaming is "not found", not a
+// Without a store that keeps labels, renaming is "not found", not a
 // server error.
-func TestRenameWithoutTitles(t *testing.T) {
+func TestRenameWithoutLabels(t *testing.T) {
 	a := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
-	if err := a.srv.Rename(context.Background(), "abc", "x"); status(err) != http.StatusNotFound {
+	title := "x"
+	if err := a.srv.ChangeConversation(context.Background(), "abc", ConversationChange{Title: &title}); status(err) != http.StatusNotFound {
 		t.Fatalf("%v → %d", err, status(err))
 	}
 }

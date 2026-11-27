@@ -138,20 +138,21 @@ type Config struct {
 
 // Server runs the profiles' agents for the API.
 type Server struct {
-	cfg      Config
-	profiles map[string]Profile
-	ctx      context.Context
-	stop     context.CancelFunc
-	mu       sync.Mutex
-	runs     map[string]*job
-	held     map[string]int // conversations read or changed outside a run, by lower-case ID: readers, or -1 for one that deletes
-	active   int
-	paused   int // Pause holds: no run starts while one is held
-	mounts   map[string]http.Handler
-	wg       sync.WaitGroup
-	now      func() time.Time
-	app      *appAuth
-	uploads  chan struct{} // large bodies read at once: MaxRuns
+	cfg       Config
+	profileMu sync.RWMutex
+	profiles  map[string]Profile
+	ctx       context.Context
+	stop      context.CancelFunc
+	mu        sync.Mutex
+	runs      map[string]*job
+	held      map[string]int // conversations read or changed outside a run, by lower-case ID: readers, or -1 for one that deletes
+	active    int
+	paused    int // Pause holds: no run starts while one is held
+	mounts    map[string]http.Handler
+	wg        sync.WaitGroup
+	now       func() time.Time
+	app       *appAuth
+	uploads   chan struct{} // large bodies read at once: MaxRuns
 }
 
 // fail is an error whose message the API's caller sees.
@@ -245,8 +246,31 @@ type ProfileInfo struct {
 	Description string `json:"description,omitzero"`
 }
 
+// SetProfiles replaces the profiles, checked as New checks them: the
+// next runs choose among these; the runs going keep theirs.
+func (s *Server) SetProfiles(list []Profile) error {
+	profiles, err := byName(list)
+	if err != nil {
+		return err
+	}
+	s.profileMu.Lock()
+	s.profiles = profiles
+	s.profileMu.Unlock()
+	return nil
+}
+
+// profile is the profile name, if there is one.
+func (s *Server) profile(name string) (Profile, bool) {
+	s.profileMu.RLock()
+	defer s.profileMu.RUnlock()
+	p, ok := s.profiles[name]
+	return p, ok
+}
+
 // Profiles lists the profiles by name.
 func (s *Server) Profiles() []ProfileInfo {
+	s.profileMu.RLock()
+	defer s.profileMu.RUnlock()
 	out := make([]ProfileInfo, 0, len(s.profiles))
 	for _, p := range s.profiles {
 		out = append(out, ProfileInfo{p.Name, p.Description})
@@ -272,7 +296,7 @@ func (s *Server) StartMessage(profile, conversation string, input agent.Message)
 // reads the label and may set the run up for it (the tools a trigger was
 // allowed, say). The API never labels a run.
 func (s *Server) StartFrom(source, profile, conversation string, input agent.Message) (Snapshot, error) {
-	p, ok := s.profiles[profile]
+	p, ok := s.profile(profile)
 	if !ok {
 		return Snapshot{}, fail(ErrNotFound, "no such profile")
 	}
@@ -369,12 +393,12 @@ type holdKind int
 
 const (
 	holdRead    holdKind = iota // its history: shared with other reads
-	holdTitle                   // its title, beside the history: shared with reads and with a run
+	holdLabel                   // its labels, beside the history: shared with reads and with a run
 	holdExclude                 // deleting it: alone
 )
 
 // hold keeps runs off conversation while the caller reads or changes it
-// outside a run: reads and titles share it, a delete has it alone. The
+// outside a run: reads and labels share it, a delete has it alone. The
 // caller calls release.
 func (s *Server) hold(conversation string, kind holdKind) (release func(), err error) {
 	key := strings.ToLower(conversation)
@@ -386,7 +410,7 @@ func (s *Server) hold(conversation string, kind holdKind) (release func(), err e
 		return nil, fail(ErrBusy, "the server is pausing its runs (an export or an import): try again in a moment")
 	case n < 0 || (kind == holdExclude && n > 0):
 		return nil, fail(ErrBusy, "the conversation is being read or changed: try again")
-	case kind != holdTitle && s.runningLocked(conversation):
+	case kind != holdLabel && s.runningLocked(conversation):
 		return nil, fail(ErrBusy, "the conversation has a run going")
 	}
 	if kind == holdExclude {
@@ -441,7 +465,7 @@ func (s *Server) work(ctx context.Context, j *job, p Profile, input agent.Messag
 		return err
 	}
 	defer closeConv()
-	s.titleFirst(ctx, j.conversation, conv, input)
+	s.labelRun(ctx, j.conversation, p.Name, conv, input)
 	err = turn(ctx, j, inst.Agent, conv, input)
 	for err == nil && inst.Crew != nil {
 		f, ok := inst.Crew.Next(ctx)
