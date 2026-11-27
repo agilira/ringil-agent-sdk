@@ -72,12 +72,14 @@ func (c *cli) cmdChat(ctx *orpheus.Context) error {
 // that a background worker's question waits for the prompt instead of
 // taking the user's message as its answer. A check come due meanwhile
 // is returned instead (due), and the prompt is shown again after it.
-func (c *cli) promptLine() (line string, due *later.Check, ok bool) {
+func (c *cli) promptLine(ctx context.Context) (line string, due *later.Check, ok bool) {
 	c.askMu.Lock()
 	defer c.askMu.Unlock()
 	select { // a line typed comes first
 	case line, ok = <-c.lines():
 		return line, nil, ok
+	case <-ctx.Done():
+		return "", nil, false
 	default:
 	}
 	select {
@@ -85,6 +87,8 @@ func (c *cli) promptLine() (line string, due *later.Check, ok bool) {
 		return line, nil, ok
 	case ch := <-c.due:
 		return "", &ch, true
+	case <-ctx.Done():
+		return "", nil, false
 	}
 }
 
@@ -104,30 +108,38 @@ func (c *cli) exchange(ctx context.Context, a agent.Agent, conv agent.Conversati
 }
 
 func (c *cli) chat(ctx context.Context, a agent.Agent, conv agent.Conversation) error {
-	for c.prompt() {
-		raw, due, ok := c.promptLine()
+	eof := false
+	for ctx.Err() == nil && c.prompt() {
+		raw, due, ok := c.promptLine(ctx)
 		if !ok {
+			eof = ctx.Err() == nil
 			break
 		}
 		if due != nil {
 			c.dueTurn(ctx, a, conv, *due)
 			continue
 		}
-		line := strings.TrimSpace(raw)
-		switch line {
-		case "":
-		case "/exit", "/quit":
+		if c.handleChatLine(ctx, a, &conv, strings.TrimSpace(raw)) {
 			return nil
-		case "/reset":
-			conv = c.reset()
-		default:
-			c.exchange(ctx, a, conv, line)
 		}
 	}
-	if c.scanner != nil {
-		return c.scanner.Err()
+	if eof {
+		return c.scanErr
 	}
 	return nil
+}
+
+func (c *cli) handleChatLine(ctx context.Context, a agent.Agent, conv *agent.Conversation, line string) bool {
+	switch line {
+	case "":
+	case "/exit", "/quit":
+		return true
+	case "/reset":
+		*conv = c.reset()
+	default:
+		c.exchange(ctx, a, *conv, line)
+	}
+	return false
 }
 
 // dueTurn runs a check come due while the prompt waited.

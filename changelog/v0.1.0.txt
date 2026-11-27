@@ -237,6 +237,21 @@ FEATURES
     project new) or on the agent's proposal with start_project, which
     always asks, showing the project; the conversation then belongs to
     it (PATCH /v1/conversations/{id} "project" moves one by hand).
+  - serve for the app: sessions kept across restarts (Config.Sessions,
+    a private file of hashes, two servers on one folder merged), one 401
+    SERVE_SIGNED_OUT for the app's page without a session, the router's
+    404 and 405 in the API's JSON (Allow kept), the model that answered
+    on model events, Config.CheckProject (a run on a project not there
+    refused at once), [] never null. ringil: CLI routes take only
+    application/json (415) within their bound (413); a webhook made says
+    its address. docs/app-api.md is the app's reference of the API.
+  - trigger.Store.Edit (an edit judged against the store as it is: a
+    pause meanwhile holds), telegram.Channel.Discard (what was queued
+    before), channel.Bridge.CheckPeople (people taken by all bridges or
+    none). ringil: Telegram pairing needs a one-time code; ringil.yaml
+    keeps paths relative to its folder (exports move); a trigger cannot
+    run a tool an ask rule covers; setup re-runs leave no stale fields;
+    prices keys normalised; skills' scripts refused without a sandbox.
   - ringil lives in this repository, at cmd/ringil, a module of its own
     with its history: the SDK and the CLI change in one commit, the CI
     tests both.

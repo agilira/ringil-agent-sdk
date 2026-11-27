@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/agilira/go-errors"
+
 	"github.com/agilira/ringil-agent-sdk/provider/chatgpt"
 )
 
@@ -56,6 +58,9 @@ func (s *setup) signInChatGPT() error {
 
 // chatgptModels are the subscription's models, in its order.
 func (s *setup) chatgptModels() ([]string, error) {
+	if s.session == nil {
+		return nil, errors.New(ErrUsage, "not signed in to ChatGPT")
+	}
 	ctx, cancel := context.WithTimeout(s.ctx, 20*time.Second)
 	defer cancel()
 	models, err := chatgpt.Models(ctx, s.session, s.c.chatgptBase, nil)

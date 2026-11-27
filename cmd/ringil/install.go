@@ -128,7 +128,7 @@ func missingRefs(ctx context.Context, res secrets.Resolver, names []string) ([]s
 // attachServer starts the server and adds its tools to the session's;
 // without a live session (a test) it lists them and stops it.
 func (c *cli) attachServer(ctx context.Context, name string, e mcpEntry, res secrets.Resolver) (mcp.Added, error) {
-	client, err := c.startServer(ctx, name, e, res)
+	client, stopOAuth, err := c.startServer(ctx, name, e, res)
 	if err != nil {
 		return mcp.Added{}, agent.ToolError(mcp.ErrConnect, "The server is saved in ringil.yaml but did not start: check its command or URL with the user. ("+describe(err)+")")
 	}
@@ -139,21 +139,23 @@ func (c *cli) attachServer(ctx context.Context, name string, e mcpEntry, res sec
 	}
 	sort.Strings(added.Tools)
 	if c.live == nil {
-		return added, client.Close()
+		return added, closeMCPClient(client, stopOAuth)
 	}
 	if err := c.live.Add(tools...); err != nil {
-		_ = client.Close()
+		_ = closeMCPClient(client, stopOAuth)
 		return mcp.Added{NextSession: true}, agent.ToolError(errMCPNextSession, "The server is saved, but a tool name clashes with one in use: it comes in the next session.")
 	}
-	c.closers = append(c.closers, client.Close)
+	c.addCloser(func() error { return closeMCPClient(client, stopOAuth) })
 	return added, nil
 }
 
 // saveServer writes the entry under mcp_servers.<name> through argus's
 // writer, the rest of the file untouched, after a backup.
 func (c *cli) saveServer(name string, e mcpEntry) error {
-	c.keepMu.Lock()
-	defer c.keepMu.Unlock()
+	defer c.lockKeep()()
+	if c.settings == nil || c.settings.path == "" {
+		return errors.New(ErrUsage, "no configuration file to save "+name+" in")
+	}
 	path := c.configName()
 	w, err := argus.NewConfigWriter(path, argus.FormatYAML, nil)
 	if err != nil {
@@ -165,6 +167,16 @@ func (c *cli) saveServer(name string, e mcpEntry) error {
 	if err := c.fitsOnDisk(name, e); err != nil {
 		return err
 	}
+	if err := writeServerFields(w, name, e); err != nil {
+		return err
+	}
+	if err := keepBackup(path); err != nil {
+		return err
+	}
+	return w.WriteConfig()
+}
+
+func writeServerFields(w *argus.ConfigWriter, name string, e mcpEntry) error {
 	ed := &edit{w: w}
 	key := "mcp_servers." + name + "."
 	ed.set(key+"command", e.Command)
@@ -178,13 +190,7 @@ func (c *cli) saveServer(name string, e mcpEntry) error {
 	if e.OAuth != nil {
 		ed.set(key+"oauth", map[string]interface{}{})
 	}
-	if ed.err != nil {
-		return ed.err
-	}
-	if err := keepBackup(path); err != nil {
-		return err
-	}
-	return w.WriteConfig()
+	return ed.err
 }
 
 func setMap(ed *edit, key string, m map[string]string) {

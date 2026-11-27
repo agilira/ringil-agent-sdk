@@ -54,7 +54,7 @@ gosec: ## Run gosec security scanner
 
 govulcheck: ## Run govulncheck
 	@echo "$(YELLOW)Running govulncheck...$(NC)"
-	govulncheck ./...
+	$(TOOLS_DIR)/govulncheck ./...
 
 gocyclo: ## Fail on any function with cyclomatic complexity of 10 or more
 	@echo "$(YELLOW)Running gocyclo...$(NC)"
@@ -68,7 +68,7 @@ security: gosec govulcheck ## Run security checks
 
 FUZZTIME ?= 30s
 fuzz: ## Run every fuzz target (FUZZTIME, default 30s each)
-	@for f in $$(grep -ho '^func Fuzz[A-Za-z0-9]*' *_test.go | cut -d' ' -f2); do \
+	@for f in $$( (grep -ho '^func Fuzz[A-Za-z0-9]*' *_test.go 2>/dev/null || true) | cut -d' ' -f2); do \
 		go test -run='^$$' -fuzz="^$$f"'$$' -fuzztime=$(FUZZTIME) . || exit 1; done
 
 chat: build ## Chat with the agent using the keys in ENV_FILE

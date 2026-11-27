@@ -53,7 +53,7 @@ func (c *cli) connectAgents(ctx *orpheus.Context) ([]agent.Tool, error) {
 			c.note("remote agent " + name + " left out: " + err.Error())
 			continue
 		}
-		c.closers = append(c.closers, remote.Close)
+		c.addCloser(remote.Close)
 		tools = append(tools, remote.Tool())
 	}
 	return tools, nil

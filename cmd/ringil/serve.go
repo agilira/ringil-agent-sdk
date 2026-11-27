@@ -52,10 +52,10 @@ func (c *cli) cmdServe(ctx *orpheus.Context) error {
 	if err != nil {
 		return err
 	}
+	defer closeQuietly(l) // a start that fails after it leaves no port taken; Serve closes it too
 	c.serveBoard()
 	srv, where, err := c.newServer(ctx)
 	if err != nil {
-		closeQuietly(l)
 		return err
 	}
 	c.server, c.serveCtx = srv, ctx
@@ -135,7 +135,8 @@ func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: c.conf().Serve.maxRuns(), Profiles: profiles, App: app, Voice: c.voice(ctx), Artifacts: arts, Container: c.inContainer(), Peers: peers})
+	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: c.conf().Serve.maxRuns(), Profiles: profiles, App: app, Voice: c.voice(ctx), Artifacts: arts, Container: c.inContainer(), Peers: peers,
+		Sessions: c.appSessionsFile(), CheckProject: c.checkProjectFor})
 	if err != nil {
 		return nil, "", err
 	}
@@ -243,12 +244,13 @@ func (c *cli) runInstance(ctx *orpheus.Context, name string) func(context.Contex
 // forRun is a CLI for one run of the server: the same settings and shared
 // connections, nothing of another run, no terminal.
 func (c *cli) forRun() *cli {
-	return &cli{in: strings.NewReader(""), out: io.Discard, errOut: io.Discard, getenv: c.getenv,
+	return &cli{in: strings.NewReader(""), out: io.Discard, errOut: io.Discard, log: c.log, getenv: c.getenv,
 		newProvider: c.newProvider, newAnthropic: c.newAnthropic, turnContext: c.turnContext, configDir: c.configDir, dataDir: c.dataDir, newEmbedder: c.newEmbedder,
 		newSandbox: c.newSandbox, cwd: c.cwd, home: c.home, server: c.server, remote: c.remote, shared: true, events: c.events,
 		triggers: c.triggers, bridge: c.bridge, slackBridge: c.slackBridge, board: c.board, settings: c.settings, secrets: c.secrets,
 		signIns: c.signIns, chatgptIssuer: c.chatgptIssuer, chatgptBase: c.chatgptBase, prices: c.prices,
-		traces: c.traces, traceWarned: c.traceWarned, wfRuns: c.wfRuns, serveCtx: c.serveCtx, workflowLife: c.workflowLife}
+		traces: c.traces, traceWarned: c.traceWarned, wfRuns: c.wfRuns, serveCtx: c.serveCtx, workflowLife: c.workflowLife,
+		keepLock: c.keepLock}
 }
 
 // exposeA2A offers a profile (--profile, else default) to other agents, at /a2a on the
@@ -552,13 +554,23 @@ func (c *cli) cmdServeLink(ctx *orpheus.Context) error {
 }
 
 // localOf is serve's port on this machine's loopback, whatever host
-// listen names.
+// listen names: its own when a loopback one (::1 too), else ::1 for an
+// IPv6 host, else 127.0.0.1.
 func localOf(listen string) string {
-	_, port, err := net.SplitHostPort(listen)
+	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		port = "8765"
+		host, port = "", "8765"
 	}
-	return net.JoinHostPort("127.0.0.1", port)
+	ip, _ := netip.ParseAddr(host)
+	switch {
+	case ip.IsLoopback():
+		host = ip.Unmap().String()
+	case ip.Is6() && !ip.Is4In6():
+		host = "::1"
+	default:
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // loopbackOf is listen as this machine reaches it: an address on every
@@ -596,5 +608,5 @@ func (c *cli) logIsTerminal() bool {
 // terminal, or with --open (an installer); never in a container or with
 // --no-browser.
 func (c *cli) wantsBrowser(ctx *orpheus.Context, terminal bool) bool {
-	return !c.inContainer() && !c.flagBool(ctx, "no-browser") && (terminal || c.flagBool(ctx, "open"))
+	return !c.inContainer() && !ctx.GetFlagBool("no-browser") && (terminal || ctx.GetFlagBool("open"))
 }

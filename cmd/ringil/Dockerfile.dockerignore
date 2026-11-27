@@ -3,6 +3,9 @@
 .git
 **/docs
 **/.env
+**/.env.*
+go.work
+go.work.sum
 **/coverage.*
 **/*.test
 cmd/ringil/ringil

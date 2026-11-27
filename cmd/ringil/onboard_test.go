@@ -6,12 +6,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -41,22 +44,38 @@ func modelServer(t *testing.T) string {
 	return srv.URL + "/v1"
 }
 
-// fakeBot answers getMe as @ringil_test_bot; its chat brings a group
-// message first (ignored), then the owner's /start.
+// fakeBot answers getMe as @ringil_test_bot; a /start from before the
+// pairing waits (dropped by Discard), then its chat brings a group
+// message (ignored), a /start without the code and one with a wrong code
+// (ignored), then the owner's /start with the code the setup showed.
 type fakeBot struct {
-	in   []channel.Message
-	sent []string
+	queued []channel.Message
+	in     []channel.Message
+	sent   []string
+	said   *bytes.Buffer // the setup's output, where the code is shown
 }
 
 func (b *fakeBot) Name() string     { return "telegram" }
 func (b *fakeBot) Username() string { return "ringil_test_bot" }
+func (b *fakeBot) Discard(context.Context) error {
+	b.queued = nil
+	return nil
+}
 func (b *fakeBot) Receive(ctx context.Context) (channel.Message, error) {
+	if len(b.queued) > 0 {
+		m := b.queued[0]
+		b.queued = b.queued[1:]
+		return m, nil
+	}
 	if len(b.in) == 0 {
 		<-ctx.Done()
 		return channel.Message{}, ctx.Err()
 	}
 	m := b.in[0]
 	b.in = b.in[1:]
+	if code := shownCode.FindStringSubmatch(b.said.String()); code != nil {
+		m.Text = strings.ReplaceAll(m.Text, "CODE", strings.ToLower(code[1]))
+	}
 	return m, nil
 }
 func (b *fakeBot) Send(_ context.Context, chat string, out channel.Out) error {
@@ -64,11 +83,15 @@ func (b *fakeBot) Send(_ context.Context, chat string, out channel.Out) error {
 	return nil
 }
 
+var shownCode = regexp.MustCompile(`start=([A-Z0-9]+)`)
+
 func setupHarness(t *testing.T, answers []string, vars map[string]string) (*harness, *fakeBot) {
 	t.Helper()
 	h := newHarness(t, strings.Join(answers, "\n")+"\n", fake.Reply("ready"))
 	env(h, vars)
-	bot := &fakeBot{in: []channel.Message{{Chat: "g", From: "7", Group: true, Text: "/start"}, {Chat: "42", From: "42", Text: "/start"}}}
+	bot := &fakeBot{said: h.err, queued: []channel.Message{{Chat: "99", From: "99", Text: "/start"}},
+		in: []channel.Message{{Chat: "g", From: "7", Group: true, Text: "/start CODE"}, {Chat: "8", From: "8", Text: "/start"},
+			{Chat: "9", From: "9", Text: "/start 00000000"}, {Chat: "42", From: "42", Text: "/start CODE"}}}
 	h.c.newTelegram = func(context.Context, telegram.Config) (telegramBot, error) { return bot, nil }
 	return h, bot
 }
@@ -94,7 +117,7 @@ func TestSetupFromNothing(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
 	checkWritten(t, h.dir, base, prompt)
-	if len(bot.sent) != 1 || !strings.HasPrefix(bot.sent[0], "42: ") {
+	if len(bot.sent) != 1 || !strings.HasPrefix(bot.sent[0], "42: ") { // not 99, whose /start waited from before
 		t.Fatalf("the owner was not told: %v", bot.sent)
 	}
 	keys, err := store.Open(context.Background(), store.Config{Kind: store.File, File: filepath.Join(h.dir, "ringil", "secrets.enc"), PassphraseEnv: "P"}, secrets.Map{"P": "frase lunga davvero"})
@@ -106,6 +129,33 @@ func TestSetupFromNothing(t *testing.T) {
 		if v, _, err := keys.Lookup(context.Background(), name); err != nil || v != want {
 			t.Errorf("%s: %q %v", name, v, err)
 		}
+	}
+}
+
+// Audit 27/11: the first /start from anyone paired, even one waiting from
+// before. The owner is who sends this setup's code, in a private chat.
+func TestPairingNeedsTheCode(t *testing.T) {
+	code, err := pairingCode()
+	if err != nil || len(code) != 8 || strings.Trim(code, pairingAlphabet) != "" {
+		t.Fatalf("%q %v", code, err)
+	}
+	if other, _ := pairingCode(); other == code {
+		t.Fatalf("the same code twice: %s", code)
+	}
+	for text, want := range map[string]bool{
+		"/start " + code: true, "/start " + strings.ToLower(code): true, "/start@ringil_test_bot " + code: true,
+		"/start": false, "/start " + code[:7]: false, "/start " + code + " x": false, "hi " + code: false, "/stop " + code: false,
+	} {
+		if pairs(text, code) != want {
+			t.Errorf("%q: %v", text, !want)
+		}
+	}
+	old := telegramWait
+	telegramWait = 50 * time.Millisecond
+	t.Cleanup(func() { telegramWait = old })
+	bot := &fakeBot{said: &bytes.Buffer{}, in: []channel.Message{{Chat: "8", From: "8", Text: "/start"}}}
+	if _, err := waitStart(context.Background(), bot, code); err == nil || len(bot.sent) != 0 {
+		t.Fatalf("paired without the code: %v %v", err, bot.sent)
 	}
 }
 
@@ -237,33 +287,99 @@ func TestSetupServersAndKeys(t *testing.T) {
 }
 
 // Audit 22/11: sections were replaced whole, losing what setup does not
-// ask (Mem0's headers, a collection prefix, Vault's mount); a second run
-// overwrote the backup of the first.
+// ask (Mem0's headers, a collection prefix, a store's own file); a second
+// run overwrote the backup of the first. Audit 27/11: what stays is of
+// the same kind only, and the store is opened as the file sets it (the
+// keys went to the default file, ringil.yaml naming another).
 func TestSetupMergesAndKeepsEveryBackup(t *testing.T) {
-	answers := []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n"}
-	h, _ := setupHarness(t, answers, map[string]string{})
+	// Another memory, another store: nothing of the old ones stays.
+	h, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama3", "", "1", "1", "n"}, map[string]string{})
 	h.c.setupBases = map[string]string{"ollama": "http://127.0.0.1:1/v1"}
-	writeProfiles(t, h.dir, "memory_store:\n  kind: mem0\n  url: http://m:8888\n  collection_prefix: acme\n  headers: {X-API-Key: x}\nsecrets:\n  store: vault\n  vault: {url: https://v, path: p, mount: kv}\n")
+	writeProfiles(t, h.dir, "memory_store:\n  kind: mem0\n  url: http://m:8888\n  collection_prefix: acme\n  headers: {X-API-Key: x}\n  raw: true\n"+
+		"secrets:\n  store: vault\n  vault: {url: https://v, path: p, mount: kv, token_env: MY_TOKEN}\n")
 	if code := h.run("setup"); code != exitOK {
 		t.Fatalf("exit %d: %s", code, h.err)
 	}
-	data, _ := os.ReadFile(filepath.Join(h.dir, "ringil", "ringil.yaml"))
-	for _, want := range []string{"collection_prefix: acme", "X-API-Key", "mount: kv", "kind: sqlite", "store: file"} {
-		if !strings.Contains(string(data), want) {
-			t.Errorf("lacks %q:\n%s", want, data)
-		}
-	}
-	if strings.Contains(string(data), "url: http://m:8888") {
-		t.Errorf("the Mem0 url stayed with SQLite:\n%s", data)
-	}
-	time.Sleep(1100 * time.Millisecond)                                                                                                         // a second run, a second apart
-	h2, _ := setupHarness(t, append(append([]string(nil), answers[:5]...), append([]string{"llama4"}, answers[6:]...)...), map[string]string{}) // another model: a change, so a write and a backup
+	yamlHas(t, h.dir, []string{"kind: sqlite", "store: file"}, []string{"acme", "X-API-Key", "raw", "m:8888", "vault", "mount", "MY_TOKEN"})
+	startsClean(t, h)
+
+	// The same kinds: what else they hold stays, and the keys go to the
+	// file ringil.yaml names (a second run, the same second).
+	h2, _ := setupHarness(t, []string{"y", "2", "frase lunga davvero", "frase lunga davvero", "6", "llama4", "", "1", "2", "http://m2:8888", "y", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ"}, map[string]string{})
 	h2.c.configDir, h2.dir, h2.c.setupBases = h.c.configDir, h.dir, map[string]string{"ollama": "http://127.0.0.1:1/v1"}
+	own := filepath.Join(h.dir, "own.enc")
+	writeProfiles(t, h.dir, "memory_store:\n  kind: mem0\n  url: http://m:8888\n  collection_prefix: acme\n  headers: {X-API-Key: x}\n  raw: true\n"+
+		"secrets:\n  store: file\n  file: "+own+"\n  passphrase_env: MY_PASS\n")
 	if code := h2.run("setup"); code != exitOK {
 		t.Fatalf("second run: %s", h2.err)
 	}
+	yamlHas(t, h.dir, []string{"collection_prefix: acme", "X-API-Key", "raw: true", "url: http://m2:8888", "file: " + own, "passphrase_env: MY_PASS"}, []string{"m:8888"})
+	if !strings.Contains(h2.err.String(), "set MY_PASS") {
+		t.Errorf("not told the passphrase's variable: %s", h2.err)
+	}
+	keys, err := store.Open(context.Background(), store.Config{Kind: store.File, File: own, PassphraseEnv: "P"}, secrets.Map{"P": "frase lunga davvero"})
+	if err != nil {
+		t.Fatalf("the store ringil.yaml names: %v", err)
+	}
+	defer func() { _ = keys.(interface{ Close() error }).Close() }()
+	if v, _, err := keys.Lookup(context.Background(), "RINGIL_TELEGRAM_TOKEN"); err != nil || v == "" {
+		t.Fatalf("the key is not where ringil.yaml says: %q %v", v, err)
+	}
 	if baks, _ := filepath.Glob(filepath.Join(h.dir, "ringil", "ringil.yaml.bak-*")); len(baks) != 2 {
 		t.Fatalf("backups %v", baks)
+	}
+	startsClean(t, h)
+}
+
+// Audit 27/11: the backup's name was the second's, written through
+// whatever was there. Each is new, of its own name, private, and a link
+// planted under the old name is left alone.
+func TestKeepBackupIsNewEachTime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ringil.yaml")
+	if err := os.WriteFile(path, []byte("model: m\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.Symlink(target, path+".bak-"+time.Now().Format("20060102-150405")); err != nil {
+		t.Skip("no links here:", err)
+	}
+	for range 3 {
+		if err := keepBackup(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkBackups(t, path, 3)
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("written through the link: %v", err)
+	}
+}
+
+// checkBackups: n backups of path, private regular files of its text.
+func checkBackups(t *testing.T, path string, n int) {
+	t.Helper()
+	baks, _ := filepath.Glob(path + ".bak-*-*-*")
+	if len(baks) != n {
+		t.Fatalf("backups %v", baks)
+	}
+	for _, b := range baks {
+		info, err := os.Lstat(b)
+		if data, _ := os.ReadFile(b); err != nil || !info.Mode().IsRegular() || string(data) != "model: m\n" {
+			t.Fatalf("%s: %v %q", b, info.Mode(), data)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %v", b, info.Mode())
+		}
+	}
+}
+
+// startsClean: the file the setup wrote is one ringil starts with.
+func startsClean(t *testing.T, h *harness) {
+	t.Helper()
+	next := newHarness(t, "")
+	next.c.configDir = h.c.configDir
+	if code := next.run("sessions"); code != exitOK {
+		t.Fatalf("ringil.yaml refused: %s", next.err)
 	}
 }
 
@@ -294,7 +410,7 @@ func TestSetupComposio(t *testing.T) {
 		}
 		return 12, nil
 	}
-	writeProfiles(t, h.dir, "mcp_servers:\n  apps:\n    command: npx\n    args: [composio]\n    env: {K: v}\n    url: https://Connect.Composio.dev/mcp\n    oauth: {}\n    headers: {X-Consumer-Api-Key: ck_old, X-Other: keep}\n    tools: [COMPOSIO_SEARCH_TOOLS]\n    disabled: true\n")
+	writeProfiles(t, h.dir, "mcp_servers:\n  apps:\n    command: npx\n    args: [composio]\n    env: {K: v}\n    sandbox: true\n    allow_domains: [backend.composio.dev]\n    url: https://Connect.Composio.dev/mcp\n    oauth: {}\n    headers: {X-Consumer-Api-Key: ck_old, X-Other: keep}\n    tools: [COMPOSIO_SEARCH_TOOLS]\n    disabled: true\n")
 	token := filepath.Join(h.dir, "ringil", "oauth", "apps.json")
 	if err := os.MkdirAll(filepath.Dir(token), 0o700); err != nil {
 		t.Fatal(err)
@@ -307,7 +423,8 @@ func TestSetupComposio(t *testing.T) {
 	}
 	// The entry already at Composio is updated, under its own name.
 	yamlHas(t, h.dir, []string{"apps:", "x-consumer-api-key", "${COMPOSIO_KEY}", "url: https://connect.composio.dev/mcp", "COMPOSIO_SEARCH_TOOLS", "X-Other: keep"},
-		[]string{"oauth", "disabled", "ck_", "X-Consumer-Api-Key", "command", "npx", "env", "composio:"})
+		[]string{"oauth", "disabled", "ck_", "X-Consumer-Api-Key", "command", "npx", "env", "composio:", "sandbox", "allow_domains"})
+	startsClean(t, h) // audit 27/11: allow_domains stayed without its sandbox
 	if _, err := os.Stat(token); !os.IsNotExist(err) {
 		t.Errorf("the old sign-in's token stayed: %v", err)
 	}
@@ -545,5 +662,32 @@ func TestSetupNamesKeysInTheEnvironment(t *testing.T) {
 	if code := h.run(); code != exitOK || !strings.Contains(h.err.String(), "Remove from your environment") || len(h.script.Requests()) != 1 ||
 		strings.Contains(h.err.String(), "is in the secrets store and in the environment") {
 		t.Fatalf("exit %d, %d model calls (the setup's try alone): %s", code, len(h.script.Requests()), h.err)
+	}
+}
+
+func TestCheckPromptFileMatchesRuntimeRules(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "ok.md")
+	if err := os.WriteFile(good, []byte("You help carefully."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPromptFile(good); err != nil {
+		t.Fatalf("good prompt file rejected: %v", err)
+	}
+	badUTF8 := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(badUTF8, []byte{0xff, 0xfe}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPromptFile(badUTF8); err == nil {
+		t.Fatal("invalid UTF-8 accepted")
+	}
+	link := filepath.Join(dir, "link.md")
+	if os.Symlink(good, link) == nil {
+		if err := checkPromptFile(link); err == nil {
+			t.Fatal("symlink accepted")
+		}
+	}
+	if err := checkPromptFile(filepath.Join(dir, "*.md")); err == nil {
+		t.Fatal("glob pattern accepted")
 	}
 }

@@ -72,11 +72,11 @@ gosec: ## Run gosec security scanner
 
 govulcheck: ## Run govulncheck for vulnerability scanning
 	@echo "$(YELLOW)Running govulncheck for vulnerability scanning...$(NC)"
-	@if ! command -v govulncheck >/dev/null 2>&1; then \
+	@if [ ! -f "$(TOOLS_DIR)/govulncheck" ]; then \
 		echo "$(RED)govulncheck not found. Run 'make tools' to install.$(NC)"; \
 		exit 1; \
 	fi
-	@$(call EACH,govulncheck ./...)
+	@$(call EACH,$(TOOLS_DIR)/govulncheck ./...)
 
 gocyclo: ## Fail on any function with cyclomatic complexity of 10 or more
 	@echo "$(YELLOW)Running gocyclo...$(NC)"
@@ -168,4 +168,4 @@ status: ## Show status of installed tools
 	@echo -n "staticcheck: "; [ -f "$(TOOLS_DIR)/staticcheck" ] && echo "$(GREEN)✓ installed$(NC)" || echo "$(RED)✗ missing$(NC)"
 	@echo -n "errcheck:    "; [ -f "$(TOOLS_DIR)/errcheck" ] && echo "$(GREEN)✓ installed$(NC)" || echo "$(RED)✗ missing$(NC)"
 	@echo -n "gosec:       "; [ -f "$(TOOLS_DIR)/gosec" ] && echo "$(GREEN)✓ installed$(NC)" || echo "$(RED)✗ missing$(NC)"
-	@echo -n "govulncheck: "; command -v govulncheck >/dev/null 2>&1 && echo "$(GREEN)✓ installed$(NC)" || echo "$(RED)✗ missing$(NC)"
+	@echo -n "govulncheck: "; [ -f "$(TOOLS_DIR)/govulncheck" ] && echo "$(GREEN)✓ installed$(NC)" || echo "$(RED)✗ missing$(NC)"

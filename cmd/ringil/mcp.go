@@ -119,31 +119,48 @@ func (c *cli) connectMCP(ctx *orpheus.Context) ([]agent.Tool, error) {
 		if entries[name].Disabled {
 			continue
 		}
-		client, err := c.startServer(ctx.Context(), name, entries[name], res)
+		client, stopOAuth, err := c.startServer(ctx.Context(), name, entries[name], res)
 		if err != nil {
 			c.note("MCP server " + name + " left out: " + err.Error())
 			continue
 		}
-		c.closers = append(c.closers, client.Close)
+		c.addCloser(func() error { return closeMCPClient(client, stopOAuth) })
 		tools = append(tools, client.Tools()...)
 	}
 	return tools, nil
 }
 
-func (c *cli) startServer(ctx context.Context, name string, e mcpEntry, res secrets.Resolver) (*mcp.Client, error) {
-	srv, err := c.serverOf(ctx, name, e, res)
+func (c *cli) startServer(ctx context.Context, name string, e mcpEntry, res secrets.Resolver) (*mcp.Client, func() error, error) {
+	srv, stopOAuth, err := c.serverOf(ctx, name, e, res)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	return mcp.Connect(ctx, srv)
+	client, err := mcp.Connect(ctx, srv)
+	if err != nil {
+		if stopOAuth != nil {
+			_ = stopOAuth()
+		}
+		return nil, nil, err
+	}
+	return client, stopOAuth, nil
 }
 
-func (c *cli) serverOf(ctx context.Context, name string, e mcpEntry, res secrets.Resolver) (mcp.Server, error) {
+func closeMCPClient(client *mcp.Client, stopOAuth func() error) error {
+	err := client.Close()
+	if stopOAuth != nil {
+		if serr := stopOAuth(); err == nil {
+			err = serr
+		}
+	}
+	return err
+}
+
+func (c *cli) serverOf(ctx context.Context, name string, e mcpEntry, res secrets.Resolver) (mcp.Server, func() error, error) {
 	srv := mcp.Server{Name: name, URL: e.URL, Tools: e.Tools, TrustAnnotations: e.TrustAnnotations}
-	if err := e.check(); err != nil {
-		return srv, err
+	if err := e.check(name); err != nil {
+		return srv, nil, err
 	}
 	if e.URL != "" {
 		srv.Headers = headerFunc(e.Headers, res)
@@ -151,13 +168,14 @@ func (c *cli) serverOf(ctx context.Context, name string, e mcpEntry, res secrets
 	}
 	env, err := expandAll(ctx, e.Env, res)
 	if err != nil {
-		return srv, err
+		return srv, nil, err
 	}
 	srv.Command, srv.Env = append([]string{e.Command}, e.Args...), env
 	if e.Sandbox {
-		return c.sandboxServer(srv, e)
+		srv, err = c.sandboxServer(srv, e)
+		return srv, nil, err
 	}
-	return srv, nil
+	return srv, nil, nil
 }
 
 func (c *cli) sandboxServer(srv mcp.Server, e mcpEntry) (mcp.Server, error) {
@@ -188,14 +206,29 @@ func (c *cli) sandboxServer(srv mcp.Server, e mcpEntry) (mcp.Server, error) {
 	return srv, nil
 }
 
-func (e mcpEntry) check() error {
+var mcpServerName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
+
+func (e mcpEntry) check(name string) error {
 	switch {
+	case !mcpServerName.MatchString(name):
+		return errors.New(ErrUsage, "MCP server names are 1-32 letters, digits, - and _: "+name)
 	case e.Type != "" && e.Type != "stdio" && e.Type != "http" && e.Type != "streamable-http":
 		return errors.New(ErrUsage, "unknown server type "+e.Type)
+	}
+	if err := e.checkEndpoint(); err != nil {
+		return err
+	}
+	return e.checkSandbox()
+}
+
+func (e mcpEntry) checkEndpoint() error {
+	switch {
+	case e.URL == "" && e.Command == "":
+		return errors.New(ErrUsage, "give either a command or a url")
 	case e.URL != "" && e.Command != "":
 		return errors.New(ErrUsage, "give either a command or a url, not both")
 	}
-	return e.checkSandbox()
+	return nil
 }
 
 // checkSandbox: the old network key is refused saying where it went;
@@ -212,13 +245,13 @@ func (e mcpEntry) checkSandbox() error {
 
 // withOAuth adds the browser sign-in; tokens are kept in the user's
 // config directory, private, so the next run needs no new sign-in.
-func (c *cli) withOAuth(ctx context.Context, srv mcp.Server, o *oauthEntry, res secrets.Resolver) (mcp.Server, error) {
+func (c *cli) withOAuth(ctx context.Context, srv mcp.Server, o *oauthEntry, res secrets.Resolver) (mcp.Server, func() error, error) {
 	if o == nil {
-		return srv, nil
+		return srv, nil, nil
 	}
 	secret, err := expandAll(ctx, map[string]string{"s": o.ClientSecret}, res)
 	if err != nil {
-		return srv, err
+		return srv, nil, err
 	}
 	login := mcp.Login{ClientID: o.ClientID, ClientSecret: secret["s"], Port: o.Port, Show: c.showSignIn(srv.Name), HTTPClient: c.proxiedClient()}
 	if base, err := c.configDir(); err == nil {
@@ -226,11 +259,10 @@ func (c *cli) withOAuth(ctx context.Context, srv mcp.Server, o *oauthEntry, res 
 	}
 	h, stop, err := mcp.NewLogin(login)
 	if err != nil {
-		return srv, err
+		return srv, nil, err
 	}
-	c.closers = append(c.closers, stop)
 	srv.OAuth = h
-	return srv, nil
+	return srv, stop, nil
 }
 
 func (c *cli) showSignIn(name string) func(string) {
@@ -296,10 +328,13 @@ func sortedKeys[V any](m map[string]V) []string {
 // shutdown releases what this command started, newest first: workers stop
 // before the MCP servers and notebooks they use.
 func (c *cli) shutdown() {
-	for i := len(c.closers) - 1; i >= 0; i-- {
-		if err := c.closers[i](); err != nil {
+	c.closersMu.Lock()
+	closers := c.closers
+	c.closers = nil
+	c.closersMu.Unlock()
+	for i := len(closers) - 1; i >= 0; i-- {
+		if err := closers[i](); err != nil {
 			c.note("cleanup at exit: " + err.Error())
 		}
 	}
-	c.closers = nil
 }

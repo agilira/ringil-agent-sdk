@@ -50,8 +50,12 @@ type settings struct {
 	audit        *argus.AuditLogger
 	// sources are where each key was read from, as last recorded.
 	sources sync.Map
+	// origin is the settings a pinned copy was made from: its audit and
+	// sources are the ones keySource records in.
+	origin *settings
 
 	watching *watch // loop's, after the start
+	running  bool   // the loop was started
 	applied  string // digest of the revision in force (loop's)
 	told     string // the last refusal told (loop's)
 	wake     chan struct{}
@@ -84,13 +88,18 @@ func (s *settings) pinned() *settings {
 	if s == nil {
 		return nil
 	}
-	p := &settings{path: s.path, started: s.started, noApprovals: s.noApprovals, instructions: s.instructions, skills: s.skills}
+	origin := cmp.Or(s.origin, s)
+	p := &settings{path: s.path, started: s.started, noApprovals: s.noApprovals, instructions: s.instructions, skills: s.skills,
+		audit: s.audit, origin: origin}
 	p.current.Store(s.get())
 	return p
 }
 
 func (c *cli) configPath(ctx *orpheus.Context) (path string, explicit bool) {
 	if p := ctx.GetGlobalFlagString("config"); p != "" {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
 		return p, true
 	}
 	base, err := c.configDir()
@@ -147,7 +156,7 @@ func (c *cli) loadSettings(ctx *orpheus.Context) error {
 		return err
 	}
 	c.settings = s
-	c.closers = append(c.closers, func() error { s.close(); return nil })
+	c.addCloser(func() error { s.close(); return nil })
 	return nil
 }
 
@@ -187,6 +196,7 @@ func (s *settings) start(c *cli) error {
 		}
 		if slices.Equal(w.paths, s.pathsOf(f)) {
 			s.watching, s.started, s.applied = w, f, f.digest
+			s.running = true
 			s.current.Store(f)
 			c.traceConfig(configLoaded, nil, f, "", nil)
 			go s.loop(c)
@@ -406,7 +416,7 @@ func (s *settings) onDisk(c *cli) (*config, error) {
 		if err := f.Validate(); err != nil {
 			return nil, err
 		}
-		return f, s.acceptable(f)
+		return f, s.acceptable()
 	}
 	return nil, errors.New(ErrUsage, s.path+" kept changing while it was read")
 }
@@ -470,6 +480,9 @@ func (s *settings) refuse(c *cli, err error) {
 // The name only, never the value: a key that starts coming from elsewhere
 // is in the hash chain.
 func (s *settings) keySource(name, source string) {
+	if s != nil && s.origin != nil {
+		s = s.origin
+	}
 	if s == nil || s.audit == nil {
 		return
 	}
@@ -486,8 +499,10 @@ func (s *settings) close() {
 	}
 	s.once.Do(func() {
 		close(s.stop)
-		if s.watching != nil { // the loop runs
+		if s.running { // the loop runs
 			<-s.done
+		}
+		if s.watching != nil {
 			_ = s.watching.argus.Close()
 		}
 		if s.audit != nil {
@@ -499,15 +514,14 @@ func (s *settings) close() {
 // applyConfig puts a revision in force, if the file is still a private
 // file of the user's and the chats' people take it.
 func (c *cli) applyConfig(s *settings, next *config) error {
-	if err := s.acceptable(next); err != nil {
+	if err := s.acceptable(); err != nil {
 		return err
 	}
 	last := s.get()
-	s.current.Store(next)
 	if err := c.setPeople(s, next); err != nil {
-		s.current.Store(last)
 		return err
 	}
+	s.current.Store(next)
 	c.serveProfiles(next)
 	why := restartFor(s.started, next)
 	if why != "" {
@@ -523,7 +537,7 @@ func (c *cli) applyConfig(s *settings, next *config) error {
 }
 
 // acceptable checks what a revision needs beyond the file's own rules.
-func (s *settings) acceptable(next *config) error {
+func (s *settings) acceptable() error {
 	if _, err := os.Lstat(s.path); s.path != "" && err == nil {
 		if _, err := readPrivate(s.path); err != nil {
 			return err
@@ -535,18 +549,49 @@ func (s *settings) acceptable(next *config) error {
 // setPeople gives each chat app's bridge its people from next.
 func (c *cli) setPeople(s *settings, next *config) error {
 	no := s.noApprovals(next)
+	var all []peopleFor
 	if b := c.telegramBridge(); b != nil {
-		if err := b.SetPeople(next.Serve.people(no)); err != nil {
+		all = append(all, peopleFor{b, next.Serve.people(no)})
+	}
+	if b := c.slackOf(); b != nil {
+		all = append(all, peopleFor{b, next.Serve.slackPeople(no)})
+	}
+	return takePeople(all)
+}
+
+// peopleTaker is a bridge, as setPeople changes it.
+type peopleTaker interface {
+	CheckPeople(channel.People) error
+	SetPeople(channel.People) error
+}
+
+type peopleFor struct {
+	bridge peopleTaker
+	people channel.People
+}
+
+// takePeople gives each bridge its people once every one takes them: a
+// refusal leaves the people in force as they were, on every bridge.
+func takePeople(all []peopleFor) error {
+	for _, p := range all {
+		if err := p.bridge.CheckPeople(p.people); err != nil {
 			return err
 		}
 	}
+	for _, p := range all {
+		if err := p.bridge.SetPeople(p.people); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// slackOf is Slack's bridge, when it runs.
+func (c *cli) slackOf() *channel.Bridge {
 	if c.slackBridge == nil {
 		return nil
 	}
-	if b := c.slackBridge.Load(); b != nil {
-		return b.SetPeople(next.Serve.slackPeople(no))
-	}
-	return nil
+	return c.slackBridge.Load()
 }
 
 // telegramBridge is the delivery bridge when it is Telegram's.

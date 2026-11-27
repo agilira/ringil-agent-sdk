@@ -207,7 +207,8 @@ func (c *cli) runHooks(ctx context.Context, list []hookEntry, ev hookEvent) ([]h
 // on_error: block, blocks.
 func (c *cli) runHook(ctx context.Context, e hookEntry, ev hookEvent) (hookReply, error) {
 	limit, _ := e.timeout() // checked with the file
-	ctx, cancel := context.WithTimeout(ctx, limit)
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, limit)
 	defer cancel()
 	in, err := json.Marshal(ev)
 	if err != nil {
@@ -217,8 +218,21 @@ func (c *cli) runHook(ctx context.Context, e hookEntry, ev hookEvent) (hookReply
 	cmd.Stdin = bytes.NewReader(in)
 	cmd.Env = hookEnv(ev.Event)
 	cmd.Dir = c.hookDir()
+	cmd.WaitDelay = outputWait
 	hookProcess(cmd)
 	out, errOut, err := runCommand(cmd)
+	err = cleanWaitDelay(cmd, err)
+	return c.interpretHook(parent, ctx, limit, e, ev, out, errOut, err)
+}
+
+func cleanWaitDelay(cmd *exec.Cmd, err error) error {
+	if stderrors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+		return nil
+	}
+	return err
+}
+
+func (c *cli) interpretHook(parent, ctx context.Context, limit time.Duration, e hookEntry, ev hookEvent, out, errOut []byte, err error) (hookReply, error) {
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
@@ -233,6 +247,8 @@ func (c *cli) runHook(ctx context.Context, e hookEntry, ev hookEvent) (hookReply
 			reason = "a hook of the user's refused it"
 		}
 		return hookReply{}, errors.New(errHookBlocked, reason).WithUserMessage(reason)
+	case parent.Err() != nil:
+		return hookReply{}, parent.Err()
 	case ctx.Err() == context.DeadlineExceeded:
 		return c.hookFailed(e, ev, "it took longer than "+limit.String())
 	}
@@ -303,7 +319,11 @@ func closeFiles(files ...*os.File) {
 
 // hookFailed tells a hook that failed, and blocks when it is to.
 func (c *cli) hookFailed(e hookEntry, ev hookEvent, why string) (hookReply, error) {
-	c.note("hook " + ev.Event + " (" + clean(filepath.Base(e.Command[0])) + ") failed: " + clean(why))
+	msg := "hook " + ev.Event + " (" + clean(filepath.Base(e.Command[0])) + ") failed: " + clean(why)
+	if c.log != nil {
+		c.log.Warn(msg)
+	}
+	c.note(msg)
 	if e.OnError == "block" {
 		msg := "a hook of the user's failed, and blocks when it fails"
 		return hookReply{}, errors.New(errHookBlocked, msg).WithUserMessage(msg)
@@ -369,13 +389,14 @@ func (c *cli) beforeRunHook(list []hookEntry) func(context.Context, agent.Messag
 	return func(ctx context.Context, in agent.Message) (agent.Message, error) {
 		ev := c.hookBase("before_run")
 		ev.Text = in.Text()
-		replies, err := c.runHooks(ctx, list, ev)
-		if err != nil {
-			return in, err
-		}
-		for _, r := range replies {
+		for _, e := range list {
+			r, err := c.runHook(ctx, e, ev)
+			if err != nil {
+				return in, err
+			}
 			if r.Text != nil {
 				in = withText(in, *r.Text)
+				ev.Text = in.Text()
 			}
 		}
 		return in, nil
@@ -396,12 +417,26 @@ func (c *cli) beforeToolHook(list []hookEntry) func(context.Context, agent.ToolC
 			if err != nil {
 				return call, err
 			}
-			if len(r.Input) > 0 {
-				call.Input = r.Input
+			if bad := applyHookInput(r.Input, &call); bad != "" {
+				if _, ferr := c.hookFailed(e, ev, bad); ferr != nil {
+					return call, ferr
+				}
 			}
 		}
 		return call, nil
 	}
+}
+
+func applyHookInput(raw json.RawMessage, call *agent.ToolCall) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	if trimmed[0] != '{' || !json.Valid(trimmed) {
+		return "its input is not a JSON object"
+	}
+	call.Input = trimmed
+	return ""
 }
 
 func (c *cli) afterToolHook(list []hookEntry) func(context.Context, agent.ToolCall, agent.ToolResult) agent.ToolResult {
@@ -468,13 +503,14 @@ func withText(in agent.Message, text string) agent.Message {
 func (c *cli) automationHooks() (func(context.Context, trigger.Trigger, trigger.Fired) (trigger.Fired, error), func(context.Context, trigger.Trigger, trigger.Fired, trigger.Outcome, error)) {
 	before := func(ctx context.Context, t trigger.Trigger, f trigger.Fired) (trigger.Fired, error) {
 		ev := hookEvent{Event: "before_automation", Trigger: t.Name, Kind: string(f.Kind), Detail: f.Detail, ByHand: f.ByHand, Profile: automationProfile(t)}
-		replies, err := c.runHooks(ctx, c.conf().Hooks.BeforeAutomation, ev)
-		if err != nil {
-			return f, err
-		}
-		for _, r := range replies {
+		for _, e := range c.conf().Hooks.BeforeAutomation {
+			r, err := c.runHook(ctx, e, ev)
+			if err != nil {
+				return f, err
+			}
 			if r.Detail != nil {
 				f.Detail = *r.Detail
+				ev.Detail = f.Detail
 			}
 		}
 		return f, nil
@@ -499,17 +535,13 @@ func automationProfile(t trigger.Trigger) string {
 }
 
 // workflowHooks gives a workflow runner the user's hooks, read at each
-// run and step, and has wfRuns follow its runs.
+// run and step.
 func (c *cli) workflowHooks(r *workflow.Runner) {
 	r.BeforeRun = func(ctx context.Context, id string, _ workflow.Plan) error {
-		if _, err := c.runHooks(ctx, c.conf().Hooks.BeforeWorkflow, hookEvent{Event: "before_workflow", Workflow: id}); err != nil {
-			return err
-		}
-		c.wfRuns.start(id)
-		return nil
+		_, err := c.runHooks(ctx, c.conf().Hooks.BeforeWorkflow, hookEvent{Event: "before_workflow", Workflow: id})
+		return err
 	}
 	r.AfterRun = func(ctx context.Context, id string, res *workflow.Result, err error) {
-		c.wfRuns.end(id, err)
 		ev := hookEvent{Event: "after_workflow", Workflow: id}
 		if res != nil {
 			ev.Text = res.Output
@@ -521,13 +553,14 @@ func (c *cli) workflowHooks(r *workflow.Runner) {
 	}
 	r.BeforeStep = func(ctx context.Context, id string, s workflow.Step) (workflow.Step, error) {
 		ev := hookEvent{Event: "before_step", Workflow: id, Step: &s}
-		replies, err := c.runHooks(ctx, c.conf().Hooks.BeforeStep, ev)
-		if err != nil {
-			return s, err
-		}
-		for _, rep := range replies {
+		for _, e := range c.conf().Hooks.BeforeStep {
+			rep, err := c.runHook(ctx, e, ev)
+			if err != nil {
+				return s, err
+			}
 			if rep.Task != nil {
 				s.Task = *rep.Task
+				ev.Step = &s
 			}
 		}
 		return s, nil

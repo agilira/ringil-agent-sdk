@@ -37,10 +37,13 @@ func TestHeaderReferencesResolvePerRequest(t *testing.T) {
 func TestServerEntryChecks(t *testing.T) {
 	h := newHarness(t, "")
 	res := secrets.Map(map[string]string{})
-	for _, e := range []mcpEntry{{Type: "ws", URL: "https://x"}, {URL: "https://x", Command: "y"}} {
-		if _, err := h.c.serverOf(context.Background(), "s", e, res); !errors.HasCode(err, ErrUsage) {
+	for _, e := range []mcpEntry{{Type: "ws", URL: "https://x"}, {URL: "https://x", Command: "y"}, {}} {
+		if _, _, err := h.c.serverOf(context.Background(), "s", e, res); !errors.HasCode(err, ErrUsage) {
 			t.Errorf("%+v: %v", e, err)
 		}
+	}
+	if _, _, err := h.c.serverOf(context.Background(), "../bad", mcpEntry{URL: "https://x"}, res); !errors.HasCode(err, ErrUsage) {
+		t.Errorf("bad name accepted: %v", err)
 	}
 }
 
@@ -80,11 +83,11 @@ func TestMCPServersSandboxedOnRequest(t *testing.T) {
 	h := newHarness(t, "")
 	h.c.newSandbox = func() (sandbox.Sandbox, error) { return &stubSandbox{}, nil }
 	ctx := context.Background()
-	srv, err := h.c.serverOf(ctx, "files", mcpEntry{Command: "mcp-files", Sandbox: true, AllowDomains: []string{"api.example.com"}}, secrets.Map{})
+	srv, _, err := h.c.serverOf(ctx, "files", mcpEntry{Command: "mcp-files", Sandbox: true, AllowDomains: []string{"api.example.com"}}, secrets.Map{})
 	if err != nil || srv.Sandbox == nil || srv.Proxy == nil {
 		t.Fatalf("%+v %v", srv, err)
 	}
-	srv, err = h.c.serverOf(ctx, "plain", mcpEntry{Command: "mcp-files"}, secrets.Map{})
+	srv, _, err = h.c.serverOf(ctx, "plain", mcpEntry{Command: "mcp-files"}, secrets.Map{})
 	if err != nil || srv.Sandbox != nil {
 		t.Fatalf("%+v %v", srv, err)
 	}
@@ -93,7 +96,7 @@ func TestMCPServersSandboxedOnRequest(t *testing.T) {
 func TestOldMCPSandboxKeysRefused(t *testing.T) {
 	yes := true
 	for _, e := range []mcpEntry{{Command: "x", OldNetwork: &yes}, {Command: "x", AllowDomains: []string{"a.com"}}, {Command: "x", Mounts: []string{"/x"}}} {
-		if e.check() == nil {
+		if e.check("x") == nil {
 			t.Errorf("accepted %+v", e)
 		}
 	}

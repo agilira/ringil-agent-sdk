@@ -278,12 +278,19 @@ func (m listedModel) when() int64 {
 
 // modelsRequest is the listing's request, with the key as the API wants.
 func (s *setup) modelsRequest(ctx context.Context) (*http.Request, error) {
-	url := strings.TrimRight(s.endpoint.base, "/") + "/models"
+	base := strings.TrimRight(s.endpoint.base, "/")
+	url := base + "/models"
 	if s.endpoint.kind == providerAnthropic {
-		url = anthropicAPI + "/v1/models?limit=100"
+		if base == "" {
+			base = anthropicAPI
+		}
+		url = base + "/v1/models?limit=100"
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkModelsHTTP(req.URL); err != nil {
 		return nil, err
 	}
 	if s.endpoint.kind == providerAnthropic {
@@ -293,6 +300,16 @@ func (s *setup) modelsRequest(ctx context.Context) (*http.Request, error) {
 		req.Header.Set("Authorization", "Bearer "+s.key)
 	}
 	return req, nil
+}
+
+func (s *setup) checkModelsHTTP(u *url.URL) error {
+	if u.Scheme != "http" || u.Hostname() == "localhost" || loopback(u.Hostname()) {
+		return nil
+	}
+	if s.allowHTTP || (s.c != nil && s.c.conf().AllowHTTP) {
+		return nil
+	}
+	return errors.New(ErrUsage, "plain http:// to a remote host needs allow_http")
 }
 
 // modelIDs are the listed models, newest first (by their date, in the

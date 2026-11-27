@@ -90,7 +90,8 @@ func connectComposio(ctx context.Context, key string) (int, error) {
 // composioSection writes the Composio server: the entry already pointing
 // at Composio Connect, whatever its name, or a new "composio". What the
 // key replaces goes (audit 22/11): a browser sign-in and its token, a
-// local command, the same header in another case (Go would send either).
+// local command and its sandbox (allow_domains without sandbox: true is
+// refused, audit 27/11), the same header in another case (Go would send either).
 func (s *setup) composioSection(e *edit) {
 	servers, _ := e.w.GetValue("mcp_servers").(map[string]interface{})
 	name := composioEntry(servers)
@@ -104,7 +105,7 @@ func (s *setup) composioSection(e *edit) {
 	if _, signedIn := entry["oauth"]; signedIn {
 		s.dropOAuth = name
 	}
-	for _, k := range []string{"oauth", "disabled", "command", "args", "env", "sandbox", "network", "mounts"} {
+	for _, k := range []string{"oauth", "disabled", "command", "args", "env", "sandbox", "network", "mounts", "allow_domains"} {
 		e.set(at+"."+k, nil)
 	}
 	e.merge(at, "type", "http", "url", composio.ConnectURL)

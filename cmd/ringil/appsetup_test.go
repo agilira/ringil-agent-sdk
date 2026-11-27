@@ -139,3 +139,27 @@ func TestAppStoreOwnPassphrase(t *testing.T) {
 		}
 	})
 }
+
+// secrets.store: file without an explicit file: path stores keys in
+// <config>/ringil/secrets.enc where keyStore reads them.
+func TestAppStoreFileDefaultPath(t *testing.T) {
+	vars := map[string]string{"RINGIL_SECRETS_PASSPHRASE": "frase lunga davvero"}
+	setupAPI(t, "models: [openai:m]\nsecrets: {store: file}\n", vars, func(h *harness, call func(string, string, string) (int, string), _ string) {
+		if code, out := call("PUT", "/v1/settings/secrets/OPENAI_API_KEY", `{"value":"sk-app"}`); code != http.StatusNoContent {
+			t.Fatalf("%d %s", code, out)
+		}
+		if _, err := os.Stat(filepath.Join(h.dir, "ringil", secretsEnc)); err != nil {
+			t.Fatalf("expected <config>/ringil/secrets.enc: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(h.dir, "ringil", "ringil", secretsEnc)); !os.IsNotExist(err) {
+			t.Fatalf("double-nested secrets.enc created")
+		}
+		res, err := h.c.keyStore(t.Context(), lookupEnv{h.c.getenv})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, found, err := res.Lookup(t.Context(), "OPENAI_API_KEY"); err != nil || !found || v != "sk-app" {
+			t.Fatalf("keyStore did not read key written by app: %q %v %v", v, found, err)
+		}
+	})
+}

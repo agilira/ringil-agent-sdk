@@ -65,7 +65,20 @@ func (f *config) checkCosts() error {
 			return err
 		}
 	}
+	if len(f.priceTable()) != len(f.Prices) {
+		return errors.New(ErrUsage, "prices: two names of the same model (case, . and - are the same)")
+	}
 	return nil
+}
+
+// priceTable is ringil.yaml's prices, named as Lookup looks them up (lower
+// case, dots as dashes): GPT-4.1 there was never found (audit 27/11).
+func (f *config) priceTable() price.Table {
+	mine := price.Table{}
+	for name, e := range f.Prices {
+		mine[name] = e.price()
+	}
+	return price.Table{}.Over(mine)
 }
 
 // priceList is the downloaded list of prices (price.Catalog), refreshed
@@ -82,11 +95,7 @@ func (c *cli) priceList(ctx context.Context) (price.Table, error) {
 // list's. A list that cannot be had is said once, and the model's own
 // price in ringil.yaml still counts.
 func (c *cli) priceOf(ctx context.Context, model string) (price.Price, bool) {
-	mine := price.Table{}
-	for name, e := range c.conf().Prices {
-		mine[name] = e.price()
-	}
-	if p, ok := mine.Lookup(model); ok {
+	if p, ok := c.conf().priceTable().Lookup(model); ok {
 		return p, true
 	}
 	load := c.prices

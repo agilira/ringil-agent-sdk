@@ -7,10 +7,14 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agilira/argus"
 	"github.com/agilira/go-errors"
@@ -27,23 +31,44 @@ func (s *setup) askPrompt() error {
 		if v == "" {
 			return nil
 		}
-		if err := argus.ValidateSecurePath(expandHome(s.c, v)); err != nil {
-			return errors.New(ErrUsage, "not a path ringil reads: "+describe(err))
-		}
-		info, err := os.Stat(expandHome(s.c, v))
-		switch {
-		case err != nil || !info.Mode().IsRegular():
-			return errors.New(ErrUsage, "no such file")
-		case info.Size() > agent.MaxInstructions:
-			return errors.New(ErrUsage, "at most 64 KiB")
-		}
-		return nil
+		return checkPromptFile(expandHome(s.c, v))
 	})
 	if err != nil || v == "" {
 		return err
 	}
 	s.prompt, err = filepath.Abs(expandHome(s.c, v))
 	return err
+}
+
+func checkPromptFile(path string) error {
+	if err := checkPromptPath(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || !private(info) {
+		return errors.New(ErrUsage, "instructions must be a regular private file")
+	}
+	if info.Size() > agent.MaxInstructions {
+		return errors.New(ErrUsage, "at most 64 KiB")
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- user-provided instructions file checked by ValidateSecurePath and Lstat
+	if err != nil {
+		return errors.New(ErrUsage, "cannot read instructions: "+describe(err))
+	}
+	if len(data) > agent.MaxInstructions || !utf8.Valid(data) {
+		return errors.New(ErrUsage, "instructions must be UTF-8 text of at most 64 KiB")
+	}
+	return nil
+}
+
+func checkPromptPath(path string) error {
+	if strings.ContainsAny(path, "*?[") {
+		return errors.New(ErrUsage, "an instructions file's path cannot hold * ? or [: "+path)
+	}
+	if err := argus.ValidateSecurePath(path); err != nil {
+		return errors.New(ErrUsage, "not a path ringil reads: "+describe(err))
+	}
+	return nil
 }
 
 // expandHome turns a leading ~ into the user's home.
@@ -132,12 +157,13 @@ func (s *setup) chooseMemory() error {
 	return nil
 }
 
-// telegramWait is how long the setup waits for the owner's /start.
+// telegramWait is how long the setup waits for the owner's /start: the
+// pairing code's life.
 var telegramWait = 5 * time.Minute
 
 // askTelegram sets up a Telegram bot, if wanted: its token goes to the
-// store, and whoever writes /start to it first, in a private chat, is its
-// owner (no one need look up their Telegram ID).
+// store, and whoever sends /start with the code the setup shows, in a
+// private chat, is its owner (no one need look up their Telegram ID).
 func (s *setup) askTelegram() error {
 	yes, err := s.p.Confirm("Talk with ringil on Telegram too (a bot of yours, made with @BotFather)?", false)
 	if err != nil || !yes {
@@ -154,10 +180,7 @@ func (s *setup) askTelegram() error {
 	if err := s.keep("RINGIL_TELEGRAM_TOKEN", token); err != nil {
 		return err
 	}
-	if err := s.c.line("  now write /start to @" + bot.Username() + " from your phone (waiting up to 5 minutes)"); err != nil {
-		return err
-	}
-	owner, err := waitStart(s.ctx, bot)
+	owner, err := s.pair(bot)
 	if err != nil {
 		return err
 	}
@@ -165,15 +188,52 @@ func (s *setup) askTelegram() error {
 	return s.c.line("  you are the bot's owner")
 }
 
+// pair waits for the owner: a /start with a code of this setup's, sent
+// after it began (what was waiting is dropped: anyone can write to a
+// bot, and might have first).
+func (s *setup) pair(bot telegramBot) (string, error) {
+	if err := bot.Discard(s.ctx); err != nil {
+		return "", errors.Wrap(err, ErrUsage, "Telegram: "+describe(err))
+	}
+	code, err := pairingCode()
+	if err != nil {
+		return "", err
+	}
+	if err := s.c.line("  now open https://t.me/" + bot.Username() + "?start=" + code + " on your phone, or write to @" + bot.Username() +
+		": /start " + code + " (waiting up to 5 minutes)"); err != nil {
+		return "", err
+	}
+	return waitStart(s.ctx, bot, code)
+}
+
 // telegramBot is what the setup needs of a bot; tests replace it.
 type telegramBot interface {
 	channel.Channel
 	Username() string
+	Discard(ctx context.Context) error
 }
 
-// waitStart is the sender of the first /start in a private chat, told
-// they are the owner.
-func waitStart(parent context.Context, bot telegramBot) (string, error) {
+// pairingAlphabet has no look-alikes (0 O, 1 I L): read off a screen,
+// typed on a phone.
+const pairingAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+// pairingCode is 8 random letters and digits (31^8, some 2^39), for one
+// pairing.
+func pairingCode() (string, error) {
+	b := make([]byte, 8)
+	for i := range b {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(pairingAlphabet))))
+		if err != nil {
+			return "", errors.Wrap(err, ErrUsage, "no pairing code")
+		}
+		b[i] = pairingAlphabet[n.Int64()]
+	}
+	return string(b), nil
+}
+
+// waitStart is the sender of the first /start <code> in a private chat,
+// told they are the owner; any other message is ignored.
+func waitStart(parent context.Context, bot telegramBot, code string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, telegramWait)
 	defer cancel()
 	for {
@@ -183,11 +243,11 @@ func waitStart(parent context.Context, bot telegramBot) (string, error) {
 				return "", parent.Err() // interrupted
 			}
 			if ctx.Err() != nil {
-				return "", errors.New(ErrUsage, "no /start came: run `ringil setup` again when ready")
+				return "", errors.New(ErrUsage, "no /start with the code came: run `ringil setup` again when ready")
 			}
 			return "", err
 		}
-		if m.Group || m.From == "" || !strings.HasPrefix(strings.TrimSpace(m.Text), "/start") {
+		if m.Group || m.From == "" || !pairs(m.Text, code) {
 			continue
 		}
 		if err := bot.Send(ctx, m.Chat, channel.Out{Text: "ringil: you are this bot's owner. Your messages here go to your agent."}); err != nil {
@@ -195,4 +255,14 @@ func waitStart(parent context.Context, bot telegramBot) (string, error) {
 		}
 		return m.From, nil
 	}
+}
+
+// pairs: text is /start and the code (any case), compared in
+// constant time.
+func pairs(text, code string) bool {
+	f := strings.Fields(text)
+	if len(f) != 2 || (f[0] != "/start" && !strings.HasPrefix(f[0], "/start@")) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.ToUpper(f[1])), []byte(code)) == 1
 }

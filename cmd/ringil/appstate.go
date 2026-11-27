@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	stderrors "errors"
 	"io"
 	"net/http"
 	"os"
@@ -96,14 +97,9 @@ func (c *cli) exportState(ctx *orpheus.Context, srv *serve.Server) http.HandlerF
 func (c *cli) importFromApp(srv *serve.Server) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		im := c.imports
-		im.mu.Lock()
-		if im.receiving || im.archive != "" {
-			im.mu.Unlock()
-			fail(w, http.StatusConflict, "STATE_BUSY", "an import is already on its way")
+		if !c.canImport(w, im) {
 			return
 		}
-		im.receiving = true // no export starts from here on
-		im.mu.Unlock()
 		archive, err := c.takeArchive(w, r, srv)
 		im.mu.Lock()
 		im.receiving = false
@@ -111,22 +107,47 @@ func (c *cli) importFromApp(srv *serve.Server) http.HandlerFunc {
 			im.archive = archive
 		}
 		im.mu.Unlock()
-		switch {
-		case errors.HasCode(err, backup.ErrDamaged), errors.HasCode(err, backup.ErrInput):
-			fail(w, http.StatusBadRequest, "STATE_ARCHIVE", describe(err))
-			return
-		case err != nil:
-			fail(w, http.StatusConflict, "STATE_BUSY", describe(err))
+		if err != nil {
+			replyImportError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"restarting": true,
 			"message": "serve stops, imports the archive after a copy of the state as it is, and starts again"})
 		go func() {
 			time.Sleep(200 * time.Millisecond) // the answer leaves first
-			if c.imports.stop != nil {
-				c.imports.stop()
-			}
+			im.stop()
 		}()
+	}
+}
+
+func (c *cli) canImport(w http.ResponseWriter, im *importing) bool {
+	if im.stop == nil {
+		fail(w, http.StatusConflict, "STATE_BUSY", "serve cannot restart from here")
+		return false
+	}
+	if c.wfRuns.any() {
+		fail(w, http.StatusConflict, "STATE_BUSY", "a workflow is running: try again when it ends")
+		return false
+	}
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if im.receiving || im.archive != "" {
+		fail(w, http.StatusConflict, "STATE_BUSY", "an import is already on its way")
+		return false
+	}
+	im.receiving = true // no export starts from here on
+	return true
+}
+
+func replyImportError(w http.ResponseWriter, err error) {
+	var tooBig *http.MaxBytesError
+	switch {
+	case stderrors.As(err, &tooBig):
+		fail(w, http.StatusRequestEntityTooLarge, "STATE_TOO_BIG", "the archive is larger than the server allows")
+	case errors.HasCode(err, backup.ErrDamaged), errors.HasCode(err, backup.ErrInput):
+		fail(w, http.StatusBadRequest, "STATE_ARCHIVE", describe(err))
+	default:
+		fail(w, http.StatusConflict, "STATE_BUSY", describe(err))
 	}
 }
 
@@ -138,6 +159,9 @@ func (c *cli) takeArchive(w http.ResponseWriter, r *http.Request, srv *serve.Ser
 		return "", err
 	}
 	err = c.imports.waitExports(r.Context())
+	if err == nil && c.wfRuns.any() {
+		err = errors.New(ErrUsage, "a workflow is running: try again when it ends")
+	}
 	if err == nil {
 		_, err = srv.Pause(r.Context(), pauseWait) // held: serve ends paused
 	}

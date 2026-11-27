@@ -229,3 +229,27 @@ func TestSettingsMCPTwice(t *testing.T) {
 		}
 	})
 }
+
+// providerModels checks credentials, uses custom anthropic base URLs, and
+// refuses remote http:// without allow_http.
+func TestProviderModelsSecurityAndAuth(t *testing.T) {
+	var gotKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-api-key")
+		_, _ = io.WriteString(w, `{"data":[{"id":"claude-test"}]}`)
+	}))
+	defer srv.Close()
+	yaml := "models: [openai:m]\nproviders:\n  custom: {kind: anthropic, base: \"" + srv.URL + "\", key_env: CUSTOM_KEY}\n  remotehttp: {kind: openai, base: \"http://llm.example.com/v1\", key_env: CUSTOM_KEY}\n"
+	settingsAPI(t, yaml, map[string]string{"OPENAI_API_KEY": "k", "CUSTOM_KEY": "ant-custom"}, func(call func(string, string, string) (int, string), _ string) {
+		if code, _ := call("GET", "/v1/settings/providers/chatgpt/models", ""); code != http.StatusBadRequest {
+			t.Fatalf("chatgpt without secrets store: %d", code)
+		}
+		code, out := call("GET", "/v1/settings/providers/custom/models", "")
+		if code != http.StatusOK || gotKey != "ant-custom" || !strings.Contains(out, "claude-test") {
+			t.Fatalf("custom anthropic: %d key=%q %s", code, gotKey, out)
+		}
+		if code, _ := call("GET", "/v1/settings/providers/remotehttp/models", ""); code != http.StatusBadGateway {
+			t.Fatalf("remote http allowed without allow_http: %d", code)
+		}
+	})
+}

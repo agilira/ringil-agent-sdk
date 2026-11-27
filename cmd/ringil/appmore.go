@@ -109,7 +109,7 @@ func (c *cli) getChannels(octx *orpheus.Context) http.HandlerFunc {
 			Slack: SlackIO{Owners: nonNil(s.Slack.Owners), Members: nonNil(s.Slack.Members), Running: c.slackBridge != nil && c.slackBridge.Load() != nil}}
 		if res, err := c.resolver(octx); err == nil {
 			out.Telegram.TokenSet = has(r.Context(), storeOnly(res), "RINGIL_TELEGRAM_TOKEN")
-			out.Slack.TokenSet = has(r.Context(), res, "SLACK_BOT_TOKEN") && has(r.Context(), res, "SLACK_APP_TOKEN")
+			out.Slack.TokenSet = has(r.Context(), storeOnly(res), "SLACK_BOT_TOKEN") && has(r.Context(), storeOnly(res), "SLACK_APP_TOKEN")
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
@@ -137,7 +137,7 @@ func (c *cli) putChannels(w http.ResponseWriter, r *http.Request) {
 		s.Telegram.Owners, s.Telegram.Members, s.Telegram.CompanyGroup, s.Telegram.MemberPhones = in.Telegram.Owners, in.Telegram.Members, in.Telegram.CompanyGroup, in.Telegram.MemberPhones
 		s.Slack.Owners, s.Slack.Members = in.Slack.Owners, in.Slack.Members
 		s.MemberProfile, s.PublicProfile, s.Replies, s.NewAfter, s.MaxPerHour, s.Language = in.MemberProfile, in.PublicProfile, in.Replies, in.NewAfter, in.MaxPerHour, in.Language
-		return nil
+		return c.checkChannels(next)
 	}, func(ed *edit) {
 		ed.set("serve.telegram.owners", listOrNil(in.Telegram.Owners))
 		ed.set("serve.telegram.members", listOrNil(in.Telegram.Members))
@@ -156,6 +156,70 @@ func (c *cli) putChannels(w http.ResponseWriter, r *http.Request) {
 		}
 		ed.set("serve.language", in.Language)
 	})
+}
+
+func (c *cli) checkChannels(next *config) *refusal {
+	s := next.Serve
+	hasMembers := len(s.Telegram.Members) > 0 || len(s.Telegram.MemberPhones) > 0 || s.Telegram.CompanyGroup != "" || len(s.Slack.Members) > 0
+	if hasMembers && s.MemberProfile == "" {
+		return &refusal{status: http.StatusBadRequest, code: "SETTINGS_INPUT", what: "member_profile is required when members, member_phones or company_group are set"}
+	}
+	if r := checkChannelPhones(s.Telegram.MemberPhones); r != nil {
+		return r
+	}
+	return c.checkRunningPeople(next)
+}
+
+func checkChannelPhones(phones []string) *refusal {
+	for _, p := range phones {
+		if !validMemberPhone(p) {
+			return &refusal{status: http.StatusBadRequest, code: "SETTINGS_INPUT", what: "member_phones entries must include country code (+ or 00) and 8-15 digits"}
+		}
+	}
+	return nil
+}
+
+func validMemberPhone(s string) bool {
+	if strings.Contains(s, "(0)") {
+		return false
+	}
+	cleaned := stripPhonePunct(s)
+	rest, ok := strings.CutPrefix(cleaned, "+")
+	if !ok {
+		rest, ok = strings.CutPrefix(cleaned, "00")
+	}
+	return ok && isE164Digits(rest)
+}
+
+func stripPhonePunct(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '-', '.', '(', ')':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func isE164Digits(s string) bool {
+	return len(s) >= 8 && len(s) <= 15 && s[0] != '0' && strings.Trim(s, "0123456789") == ""
+}
+
+func (c *cli) checkRunningPeople(next *config) *refusal {
+	no := c.settings != nil && c.settings.noApprovals != nil && c.settings.noApprovals(next)
+	var all []peopleFor
+	if b := c.telegramBridge(); b != nil {
+		all = append(all, peopleFor{b, next.Serve.people(no)})
+	}
+	if b := c.slackOf(); b != nil {
+		all = append(all, peopleFor{b, next.Serve.slackPeople(no)})
+	}
+	for _, p := range all {
+		if err := p.bridge.CheckPeople(p.people); err != nil {
+			return &refusal{status: http.StatusBadRequest, code: "SETTINGS_INPUT", what: describe(err)}
+		}
+	}
+	return nil
 }
 
 // Memory.
@@ -322,8 +386,12 @@ func (c *cli) getComposio(octx *orpheus.Context) http.HandlerFunc {
 
 // composioServer is the MCP server at Composio Connect, "" for none.
 func (c *cli) composioServer() string {
-	for _, name := range sortedKeys(c.conf().MCPServers) {
-		if isComposio(c.conf().MCPServers[name].URL) {
+	return composioServerIn(c.conf())
+}
+
+func composioServerIn(f *config) string {
+	for _, name := range sortedKeys(f.MCPServers) {
+		if isComposio(f.MCPServers[name].URL) {
 			return name
 		}
 	}
@@ -381,6 +449,9 @@ func checkComposioKey(ctx context.Context, key string) error {
 // addComposio adds the server at Composio Connect, with the kept key,
 // unless one is there.
 func (c *cli) addComposio(ctx context.Context, octx *orpheus.Context) error {
+	if c.settings == nil || c.settings.path == "" {
+		return errors.New(ErrUsage, "serve runs without a configuration directory: there is no ringil.yaml to change")
+	}
 	if c.composioServer() != "" {
 		return nil
 	}
@@ -396,19 +467,12 @@ func (c *cli) addComposio(ctx context.Context, octx *orpheus.Context) error {
 // deleteComposio removes the server at Composio Connect and the key.
 func (c *cli) deleteComposio(octx *orpheus.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if name := c.composioServer(); name != "" {
-			removed := false
-			c.change(statusOf(&discard{header: http.Header{}}, &removed), func(next *config) *refusal {
-				delete(next.MCPServers, name)
-				return nil
-			}, func(ed *edit) { ed.set("mcp_servers."+name, nil) })
-			if !removed {
-				fail(w, http.StatusConflict, "SETTINGS_FILE", "the Composio server could not be removed from ringil.yaml")
-				return
-			}
-		}
 		st, _, ok := c.secretStoreNamed(w, r, octx, composioKey)
 		if !ok {
+			return
+		}
+		if !c.removeComposioServer() {
+			fail(w, http.StatusConflict, "SETTINGS_FILE", "the Composio server could not be removed from ringil.yaml")
 			return
 		}
 		if err := st.Delete(r.Context(), composioKey); err != nil {
@@ -419,13 +483,28 @@ func (c *cli) deleteComposio(octx *orpheus.Context) http.HandlerFunc {
 	}
 }
 
-// discard is a ResponseWriter that keeps nothing: for a change whose
-// answer is the caller's own.
-type discard struct{ header http.Header }
+func (c *cli) removeComposioServer() bool {
+	rec := &statusRecord{header: http.Header{}}
+	target := ""
+	c.change(rec, func(next *config) *refusal {
+		target = composioServerIn(next)
+		if target == "" {
+			return notFound("no composio server")
+		}
+		delete(next.MCPServers, target)
+		return nil
+	}, func(ed *edit) { ed.set("mcp_servers."+target, nil) })
+	return rec.status == http.StatusNoContent || rec.status == http.StatusNotFound
+}
 
-func (d *discard) Header() http.Header         { return d.header }
-func (d *discard) Write(p []byte) (int, error) { return len(p), nil }
-func (d *discard) WriteHeader(int)             {}
+type statusRecord struct {
+	header http.Header
+	status int
+}
+
+func (s *statusRecord) Header() http.Header         { return s.header }
+func (s *statusRecord) Write(p []byte) (int, error) { return len(p), nil }
+func (s *statusRecord) WriteHeader(code int)        { s.status = code }
 
 // Remote agents.
 

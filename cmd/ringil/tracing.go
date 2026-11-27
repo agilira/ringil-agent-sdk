@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"maps"
+	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
@@ -85,7 +86,7 @@ func (c *cli) tracer(ctx context.Context) (*sdktrace.TracerProvider, error) {
 			c.traces.err = err
 			return
 		}
-		c.traces.tp, c.traces.err = newTracerProvider(ctx, endpoint, headers, c.getenv("OTEL_SERVICE_NAME"))
+		c.traces.tp, c.traces.err = c.newTracerProvider(ctx, endpoint, headers, c.getenv("OTEL_SERVICE_NAME"))
 		if c.traces.tp != nil {
 			c.traces.rec = ringilotel.New(c.traces.tp.Tracer("ringil"))
 			otel.SetErrorHandler(otel.ErrorHandlerFunc(c.traceFailed))
@@ -118,12 +119,12 @@ func (c *cli) traceFailed(err error) {
 	}
 }
 
-func newTracerProvider(ctx context.Context, endpoint, headers, service string) (*sdktrace.TracerProvider, error) {
-	traces, err := tracesURL(endpoint)
+func (c *cli) newTracerProvider(ctx context.Context, endpoint, headers, service string) (*sdktrace.TracerProvider, error) {
+	traces, err := tracesURL(endpoint, c.conf().AllowHTTP)
 	if err != nil {
 		return nil, err
 	}
-	opts := []otlptracehttp.Option{otlptracehttp.WithEndpointURL(traces)}
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpointURL(traces), otlptracehttp.WithHTTPClient(c.traceHTTPClient())}
 	if h := parseHeaders(headers); len(h) > 0 {
 		opts = append(opts, otlptracehttp.WithHeaders(h))
 	}
@@ -138,16 +139,42 @@ func newTracerProvider(ctx context.Context, endpoint, headers, service string) (
 	return sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res)), nil
 }
 
-// tracesURL checks where to post the traces: an http(s) address.
-func tracesURL(endpoint string) (string, error) {
-	u, err := url.Parse(endpoint)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return "", errors.New(ErrUsage, "OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) address, such as https://otel.example.com:4318")
+func (c *cli) traceHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			Proxy:                 c.proxyFor,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	if u.RawQuery != "" { // the exporter posts to scheme, host and path only
+}
+
+// tracesURL checks where to post the traces: an http(s) address without
+// credentials, query, or fragment; remote http:// requires allow_http.
+func tracesURL(endpoint string, allowHTTP bool) (string, error) {
+	u, err := url.Parse(endpoint)
+	switch {
+	case err != nil || !validTraceBase(u):
+		return "", errors.New(ErrUsage, "OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) address without credentials, such as https://otel.example.com:4318")
+	case u.RawQuery != "": // the exporter posts to scheme, host and path only
 		return "", errors.New(ErrUsage, "the OTLP endpoint cannot carry a query (?...): the exporter drops it; put a token in OTEL_EXPORTER_OTLP_HEADERS")
+	case remoteHTTP(u) && !allowHTTP:
+		return "", errors.New(ErrUsage, "plain http:// for traces needs allow_http")
 	}
 	return u.String(), nil
+}
+
+func validTraceBase(u *url.URL) bool {
+	return (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil && u.Fragment == ""
+}
+
+func remoteHTTP(u *url.URL) bool {
+	return u.Scheme == "http" && u.Hostname() != "localhost" && !loopback(u.Hostname())
 }
 
 // parseHeaders reads "key=value,key2=value2", values URL-encoded, as the

@@ -53,29 +53,18 @@ func (c *cli) projectTools() []agent.Tool {
 	if err != nil {
 		return nil
 	}
-	c.closers = append(c.closers, store.Close)
+	c.addCloser(store.Close)
 	c.projects = store
 	return store.Tools(c.project, project.ToolOptions{Actor: c.actor(), Conversation: c.runConversation, OnEvent: c.handOff})
 }
 
-// checkRunProject: the project a run is on is there and not archived.
+// checkRunProject: the project a run is on is there and not archived
+// (serve asked already; this is the run's own look, at its start).
 func (c *cli) checkRunProject() error {
 	if c.project == "" {
 		return nil
 	}
-	s, err := c.projectStore()
-	if err != nil {
-		return err
-	}
-	defer closeQuietly(s)
-	p, err := s.Get(c.project)
-	switch {
-	case err != nil:
-		return errors.Wrap(err, ErrUsage, "no project "+c.project)
-	case p.Archived:
-		return errors.New(ErrUsage, "project "+c.project+" is archived: unarchive it to work on it")
-	}
-	return nil
+	return c.checkProjectFor(context.Background(), c.project)
 }
 
 // projectBlock is the project's context for the model, at each run: its
@@ -453,7 +442,7 @@ func (c *cli) startProjectTool() []agent.Tool {
 	if err != nil {
 		return nil
 	}
-	c.closers = append(c.closers, store.Close)
+	c.addCloser(store.Close)
 	return []agent.Tool{store.StartTool(project.StartOptions{Actor: c.actor(), Started: c.projectStarted})}
 }
 
@@ -544,4 +533,36 @@ func (c *cli) cmdProjectNew(ctx *orpheus.Context) error {
 		return err
 	}
 	return c.line("Project " + clean(p.Name) + " made (" + p.ID + "): open it in the app to fill its board and give its cards to the agents.")
+}
+
+// checkProjectFor is serve's say on a project a run starts on or a
+// conversation moves to: it is there and not archived.
+func (c *cli) checkProjectFor(_ context.Context, id string) error {
+	s, err := c.projectStore()
+	if err != nil {
+		return err
+	}
+	defer closeQuietly(s)
+	p, err := s.Get(id)
+	switch {
+	case errors.HasCode(err, project.ErrNotFound):
+		return errors.New(ErrUsage, "no project "+id).WithUserMessage("no project " + id)
+	case err != nil: // there, but not readable: said as it is
+		msg := "project " + id + " cannot be read: " + describe(err)
+		return errors.New(ErrUsage, msg).WithUserMessage(msg)
+	case p.Archived:
+		msg := "project " + id + " is archived: unarchive it to work on it"
+		return errors.New(ErrUsage, msg).WithUserMessage(msg)
+	}
+	return nil
+}
+
+// appSessionsFile keeps the app's sessions (their hashes) across restarts
+// of serve; never exported (credentials).
+func (c *cli) appSessionsFile() string {
+	root, err := c.stateRoot()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(root, "app-sessions.json")
 }

@@ -380,11 +380,11 @@ func (c *cli) triggerRun(octx *orpheus.Context, srv *serve.Server) trigger.Run {
 // deliver sends a trigger's outcome to the chat it delivers to, when it
 // has one and the bridge runs.
 func (c *cli) deliver(t trigger.Trigger, out trigger.Outcome, err error) {
-	chat, ok := strings.CutPrefix(t.Deliver, "telegram-")
-	if !ok || c.bridge == nil {
+	chat, ok := deliverTarget(t.Deliver)
+	if !ok {
 		return
 	}
-	b := c.bridge.Load()
+	b := c.bridgeFor(t.Deliver)
 	if b == nil {
 		return
 	}
@@ -395,6 +395,13 @@ func (c *cli) deliver(t trigger.Trigger, out trigger.Outcome, err error) {
 	if derr := b.Automated(chat, t.Name, out.Text, failure); derr != nil {
 		c.note("trigger " + clean(t.Name) + ": cannot deliver: " + clean(oneLine(derr.Error(), 300)))
 	}
+}
+
+func deliverTarget(deliver string) (string, bool) {
+	if chat, ok := strings.CutPrefix(deliver, "telegram-"); ok {
+		return chat, true
+	}
+	return strings.CutPrefix(deliver, "slack-")
 }
 
 // automationsText lists the triggers for /automate alone, a line each.
@@ -472,7 +479,9 @@ func (c *cli) triggerWorkflow(ctx context.Context, octx *orpheus.Context, t trig
 		return trigger.Outcome{}, err
 	}
 	id := workflow.NewRunID(s.Name)
+	tok := c.wfRuns.start(id)
 	res, err := r.RunSaved(ctx, id, s, firedText(t, f))
+	c.wfRuns.endToken(id, tok, err)
 	if err != nil {
 		return trigger.Outcome{Run: id}, err
 	}
@@ -550,7 +559,11 @@ func (c *cli) triggerCall(octx *orpheus.Context) trigger.Call {
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}
-		res, err := reg.Execute(ctx, agent.ToolCall{ID: "trigger-" + rand.Text()[:8], Name: tool, Input: args})
+		call := agent.ToolCall{ID: "trigger-" + rand.Text()[:8], Name: tool, Input: args}
+		if r.policy(ctx).Effect(call, spec) != agent.EffectAllow { // ask too: no one is there to be asked
+			return "", errors.New(ErrUsage, "tool "+tool+" is not allowed without asking, and a trigger cannot ask")
+		}
+		res, err := reg.Execute(ctx, call)
 		if err != nil {
 			return "", err
 		}
@@ -642,10 +655,19 @@ func (c *cli) checkTrigger(_ context.Context, t trigger.Trigger) error {
 			return agent.ToolError(ErrUsage, "no such tool: "+name)
 		}
 	}
-	if t.Path != "" && (files.Excluded(t.Path, nil) || c.inOwnState(t.Path)) {
+	if c.forbiddenTriggerPath(t.Path) {
 		return agent.ToolError(ErrUsage, "a trigger may not watch "+t.Path+": it holds credentials or the agent's own state")
 	}
 	return nil
+}
+
+// forbiddenTriggerPath refuses paths matching exclusions (raw clean or
+// resolved through symlinks) or inside the agent's own state.
+func (c *cli) forbiddenTriggerPath(p string) bool {
+	if p == "" {
+		return false
+	}
+	return files.Excluded(filepath.Clean(p), ownStateExcluded) || files.Excluded(realPath(p), ownStateExcluded) || c.inOwnState(p)
 }
 
 // checkLookTool: the tool a trigger asks, if any, is there and only reads.
@@ -656,6 +678,9 @@ func (c *cli) checkLookTool(tool string) error {
 	spec, ok := specOf(c.finalTools, tool)
 	if !ok || spec.Annotations.Destructive || !spec.Annotations.ReadOnly {
 		return agent.ToolError(ErrUsage, "a trigger looks only with a tool there is and that only reads; "+tool+" is not one")
+	}
+	if c.policy(context.Background()).Effect(agent.ToolCall{Name: tool, Input: json.RawMessage("{}")}, spec) != agent.EffectAllow {
+		return agent.ToolError(ErrUsage, "tool "+tool+" is not allowed without asking, and a trigger cannot ask")
 	}
 	return nil
 }

@@ -82,7 +82,7 @@ func (c *cli) useState() error {
 	if err != nil {
 		return err
 	}
-	c.closers = append(c.closers, release)
+	c.addCloser(release)
 	return nil
 }
 
@@ -93,6 +93,21 @@ func (c *cli) holdingState(run func(*orpheus.Context) error) func(*orpheus.Conte
 		if err := c.useState(); err != nil {
 			return err
 		}
+		defer c.shutdown()
+		return run(ctx)
+	}
+}
+
+// configThenAlone loads ringil.yaml (sessions_dir, the instructions it
+// names) for a command that then needs the state to itself, an import:
+// what the load holds, the state's shared lock and the watcher, is let go
+// before it runs; the configuration read stays in force.
+func (c *cli) configThenAlone(run func(*orpheus.Context) error) func(*orpheus.Context) error {
+	return func(ctx *orpheus.Context) error {
+		if err := c.loadConfig(ctx); err != nil {
+			return err
+		}
+		c.shutdown()
 		defer c.shutdown()
 		return run(ctx)
 	}

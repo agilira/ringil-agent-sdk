@@ -10,6 +10,7 @@ import (
 	stderrors "errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/agilira/go-errors"
 
@@ -35,13 +36,32 @@ func (c *cli) laterTools() []agent.Tool {
 	return later.Tools(c.board, c.checkConversation)
 }
 
+// bridgeFor picks Slack's bridge for slack-* chats and Telegram's bridge
+// otherwise, without falling back to Slack for Telegram chats.
+func (c *cli) bridgeFor(conv string) *channel.Bridge {
+	if strings.HasPrefix(conv, "slack-") {
+		if c.slackBridge == nil {
+			return nil
+		}
+		return c.slackBridge.Load()
+	}
+	if c.bridge == nil {
+		return nil
+	}
+	b := c.bridge.Load()
+	if c.slackBridge != nil && b == c.slackBridge.Load() {
+		return nil
+	}
+	return b
+}
+
 // checkConversation is the key of the conversation a check comes back
 // to: the terminal's, or the chat's when it is private.
 func (c *cli) checkConversation(context.Context) string {
 	if c.server == nil {
 		return terminalChecks
 	}
-	if b := c.bridge.Load(); b != nil && b.Private(c.runConversation) {
+	if b := c.bridgeFor(c.runConversation); b != nil && b.Private(c.runConversation) {
 		return c.runConversation
 	}
 	return ""
@@ -62,18 +82,18 @@ func (c *cli) terminalBoard() {
 			return false
 		}
 	})
-	c.closers = append(c.closers, func() error { c.board.Close(); return nil })
+	c.addCloser(func() error { c.board.Close(); return nil })
 }
 
 // serveBoard sets up serve's checks: one come due starts a run in its
 // chat; a busy chat is offered it again, a chat gone ends it.
 func (c *cli) serveBoard() {
 	c.board = later.NewBoard(c.laterLimits, c.comeBack)
-	c.closers = append(c.closers, func() error { c.board.Close(); return nil })
+	c.addCloser(func() error { c.board.Close(); return nil })
 }
 
 func (c *cli) comeBack(ch later.Check) bool {
-	b := c.bridge.Load()
+	b := c.bridgeFor(ch.Conversation)
 	if b == nil {
 		return false
 	}
@@ -89,13 +109,24 @@ func (c *cli) comeBack(ch later.Check) bool {
 // waitChecks has `ringil run` stay for the checks it set, until the last
 // (Ctrl-C stops them).
 func (c *cli) waitChecks(ctx context.Context, a agent.Agent, conv agent.Conversation) error {
-	for c.board != nil && c.board.Pending(terminalChecks) > 0 {
-		c.note("waiting for " + strconv.Itoa(c.board.Pending(terminalChecks)) + " check(s); Ctrl-C stops")
+	if c.board == nil {
+		return nil
+	}
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	noted := 0
+	for n := c.board.Pending(terminalChecks); n > 0; n = c.board.Pending(terminalChecks) {
+		if n != noted {
+			c.note("waiting for " + strconv.Itoa(n) + " check(s); Ctrl-C stops")
+			noted = n
+		}
 		select {
 		case ch := <-c.due:
+			noted = 0
 			if err := c.checkTurn(ctx, a, conv, ch); err != nil {
 				return err
 			}
+		case <-tick.C:
 		case <-ctx.Done():
 			return nil
 		}

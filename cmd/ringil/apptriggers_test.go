@@ -8,6 +8,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,7 +79,7 @@ func TestAppWebhookSecret(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer closeQuietly(store)
-		if keptSecret(store, "hook") != made["secret"] {
+		if stored(store, "hook").Secret != made["secret"] {
 			t.Error("the secret changed on an edit")
 		}
 		if raw := must(t, call, "GET", "/v1/triggers", "", http.StatusOK); strings.Contains(raw, made["secret"]) || !strings.Contains(raw, `"has_secret":true`) {
@@ -177,4 +178,57 @@ func TestAppTriggerRunsAWorkflow(t *testing.T) {
 			t.Fatalf("%v %+v", err, runs)
 		}
 	})
+}
+
+// no_tools: true refuses trigger tools with 400 without panicking.
+func TestAppTriggerNoToolsNoPanic(t *testing.T) {
+	appAPI(t, "models: [openai:m]\nno_tools: true\n", nil, func(_ *harness, _ *serve.Server, call appCall) {
+		must(t, call, "PUT", "/v1/triggers/bad", `{"when":"@daily","prompt":"x","allow":["read_file"]}`, http.StatusBadRequest)
+	})
+}
+
+func TestWorkflowRunValidationAndTokens(t *testing.T) {
+	appAPI(t, "models: [openai:m]\n", nil, func(_ *harness, _ *serve.Server, call appCall) {
+		must(t, call, "GET", "/v1/workflow-runs/.bad", "", http.StatusBadRequest)
+		must(t, call, "DELETE", "/v1/workflow-runs/.bad", "", http.StatusBadRequest)
+		must(t, call, "DELETE", "/v1/workflow-runs/missing-run", "", http.StatusNotFound)
+	})
+	var r wfRuns
+	tok1 := r.start("w1")
+	tok2 := r.start("w1")
+	r.endToken("w1", tok1, nil)
+	if running, _ := r.state("w1"); !running {
+		t.Fatal("stale token stopped newer run")
+	}
+	r.endToken("w1", tok2, nil)
+	if running, _ := r.state("w1"); running {
+		t.Fatal("current token did not clear run")
+	}
+}
+
+// Audit 27/11: an edit keeps a trigger paused; a field set another way is
+// refused in any case encoding/json takes (ſ folds to s); the body is JSON.
+func TestAppTriggerEditKeepsPaused(t *testing.T) {
+	appAPI(t, "models: [openai:m]\n", nil, func(_ *harness, _ *serve.Server, call appCall) {
+		must(t, call, "PUT", "/v1/triggers/daily", `{"when":"@daily","prompt":"a"}`, http.StatusNoContent)
+		must(t, call, "POST", "/v1/triggers/daily/pause", "", http.StatusNoContent)
+		must(t, call, "PUT", "/v1/triggers/daily", `{"when":"@daily","prompt":"b"}`, http.StatusNoContent)
+		if tr := triggersOf(t, call)["daily"]; !tr.Paused || tr.Prompt != "b" {
+			t.Fatalf("after an edit %+v", tr)
+		}
+		for _, body := range []string{`{"when":"@daily","prompt":"x","pauſed":false}`, `{"when":"@daily","prompt":"x","ſecret":"` + strings.Repeat("s", 40) + `"}`} {
+			if code, out := call("PUT", "/v1/triggers/daily", body); code != http.StatusBadRequest {
+				t.Errorf("%s: %d %s", body, code, out)
+			}
+		}
+		if !triggersOf(t, call)["daily"].Paused {
+			t.Fatal("resumed by a refused edit")
+		}
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("PUT", "/v1/triggers/x", strings.NewReader(`{"when":"@daily","prompt":"x"}`))
+	r.Header.Set("Content-Type", "text/plain")
+	if _, ok := decodeTrigger(w, r); ok || w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain: %d", w.Code)
+	}
 }

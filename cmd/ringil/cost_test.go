@@ -62,6 +62,24 @@ func TestConfiguredPrice(t *testing.T) {
 	}
 }
 
+// Audit 27/11: a price named as the vendor writes it (GPT-4.1) was never
+// found, lookups being in the catalog's form (gpt-4-1).
+func TestConfiguredPriceAnyCase(t *testing.T) {
+	for _, name := range []string{`"GPT-4.1"`, "gpt-4-1", "Gpt-4-1"} {
+		h := newHarness(t, "", usedStep("ok", 2_000_000, 0))
+		env(h, map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "gpt-4.1", "OPENAI_API_KEY": "k"})
+		h.c.prices = func(context.Context) (price.Table, error) { return price.Table{}, nil }
+		writeConfig(t, h.dir, "prices:\n  "+name+":\n    input: 0.5\n    output: 1\n")
+		if code := h.run("run", "x"); code != exitOK || !strings.Contains(h.err.String(), "out tokens, $1.00]") {
+			t.Errorf("%s: exit %d %q", name, code, h.err)
+		}
+	}
+	f := &config{Prices: map[string]priceEntry{"GPT-4.1": {Input: 1, Output: 2}, "gpt-4-1": {Input: 3, Output: 4}}}
+	if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "same model") {
+		t.Fatalf("two prices of one model: %v", err)
+	}
+}
+
 // --max-cost stops the prompt once it has cost that much: the call that
 // crossed it is kept, the next one is not made.
 func TestMaxCostStopsThePrompt(t *testing.T) {

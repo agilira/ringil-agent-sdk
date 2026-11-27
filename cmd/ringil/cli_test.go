@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/agilira/go-errors"
+	"github.com/agilira/orpheus/pkg/orpheus"
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
@@ -358,9 +359,26 @@ func checkSamePath(t *testing.T, got []sandbox.Mount) {
 	}
 }
 
+// Audit 27/11: C:/data split at the drive's colon, C mounted at /data.
 func TestParseMountDriveLetter(t *testing.T) {
 	if m, err := parseMount(`C:\data:/in:rw`); err != nil || m.Target != "/in" || !m.Writable || !strings.HasSuffix(m.Source, "data") {
 		t.Fatalf("drive-letter source: %+v %v", m, err)
+	}
+	type parts struct {
+		src, dest string
+		rw        bool
+	}
+	for in, want := range map[string]parts{
+		`C:/data`: {`C:/data`, "", false}, `c:/data:rw`: {`c:/data`, "", true}, `D:/data:/in`: {`D:/data`, "/in", false},
+		`C:/data:/in:rw`: {`C:/data`, "/in", true}, `C:\data`: {`C:\data`, "", false}, `C:`: {`C:`, "", false},
+		`data:/in`: {"data", "/in", false}, `1:/in`: {"1", "/in", false},
+	} {
+		if src, dest, rw := splitMount(in, true); (parts{src, dest, rw}) != want {
+			t.Errorf("windows %q: %q %q %v", in, src, dest, rw)
+		}
+	}
+	if src, dest, _ := splitMount(`C:/data`, false); src != "C" || dest != "/data" {
+		t.Errorf("elsewhere C:/data is C at /data: %q %q", src, dest)
 	}
 }
 
@@ -665,11 +683,26 @@ func TestStartMountForScripts(t *testing.T) {
 	if !ok || strings.Join(m.Hide, ",") != ".env" {
 		t.Fatalf("mount %+v %v", m, ok)
 	}
-	for _, cwd := range []string{"/", "/tmp", "/usr/share", "/home/x", h.dir, filepath.Dir(h.dir)} {
+	own := filepath.Join(h.dir, "ringil")
+	for _, cwd := range []string{"/", "/tmp", "/usr/share", "/home/x", h.dir, filepath.Dir(h.dir), own, filepath.Join(own, "skills", "pdf")} {
 		h.c.cwd = func() (string, error) { return cwd, nil }
-		if _, ok := h.c.startMount("/home/x", filepath.Join(h.dir, "ringil")); ok {
+		if _, ok := h.c.startMount("/home/x", own); ok {
 			t.Errorf("%s mounted", cwd)
 		}
+	}
+}
+
+// Audit 27/11: without a sandbox, the skill options left the SDK to find
+// one of its own: scripts are refused instead.
+func TestNoSandboxNoScripts(t *testing.T) {
+	h := newHarness(t, "")
+	h.c.newSandbox = func() (sandbox.Sandbox, error) { return nil, errors.New(sandbox.ErrUnavailable, "none here") }
+	if o := h.c.skillOptions(); !o.NoScripts || o.Sandbox != nil {
+		t.Fatalf("%+v", o)
+	}
+	h.c.newSandbox = func() (sandbox.Sandbox, error) { return &stubSandbox{}, nil }
+	if o := h.c.skillOptions(); o.NoScripts || o.Sandbox == nil || len(o.Protected) != 1 {
+		t.Fatalf("%+v", o)
 	}
 }
 
@@ -802,7 +835,7 @@ func TestBackgroundQuestionWaitsForThePrompt(t *testing.T) {
 	c := newCLI(pr, &bytes.Buffer{}, &bytes.Buffer{})
 	chat := make(chan string, 1)
 	go func() {
-		line, _, _ := c.promptLine()
+		line, _, _ := c.promptLine(context.Background())
 		chat <- line
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -825,5 +858,45 @@ func TestBackgroundQuestionWaitsForThePrompt(t *testing.T) {
 	}
 	if ok := <-approved; !ok {
 		t.Fatal("the answer after the message did not reach the question")
+	}
+}
+
+func TestPromptLineAndConfirmUnblockOnCancel(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close(); _ = pr.Close() }()
+	c := newCLI(pr, &bytes.Buffer{}, &bytes.Buffer{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, ok := c.promptLine(ctx); ok {
+		t.Fatal("promptLine did not unblock on cancelled ctx")
+	}
+	if ok, err := c.confirm(ctx, "continue?"); ok || err == nil {
+		t.Fatalf("confirm returned (%v, %v)", ok, err)
+	}
+}
+
+func TestForRunSharesKeepLockAndWorkspaceClone(t *testing.T) {
+	h := newHarness(t, "")
+	app := orpheus.New("ringil").AddCommand(withWorkspace(orpheus.NewCommand("run", "r").SetHandler(func(ctx *orpheus.Context) error {
+		dirs, err := h.c.workspaceDirs(ctx)
+		if err != nil {
+			return err
+		}
+		dirs[0] = "/mutated"
+		again, err := h.c.workspaceDirs(ctx)
+		if err != nil {
+			return err
+		}
+		if again[0] != "/a" {
+			t.Fatalf("workspace mutated: %v", again)
+		}
+		return nil
+	})))
+	if err := app.Run([]string{"run", "--workspace", "/a", "--workspace", "/b"}); err != nil {
+		t.Fatal(err)
+	}
+	r := h.c.forRun()
+	if r.keepLock != h.c.keepLock || r.log != h.c.log {
+		t.Fatal("forRun did not copy shared keepLock and log")
 	}
 }

@@ -45,11 +45,11 @@ func TestTheChatPromptTakesACheckComeDue(t *testing.T) {
 	c := newCLI(pr, &bytes.Buffer{}, &bytes.Buffer{})
 	c.due = make(chan later.Check, 1)
 	c.due <- later.Check{ID: 3}
-	if _, due, ok := c.promptLine(); !ok || due == nil || due.ID != 3 {
+	if _, due, ok := c.promptLine(context.Background()); !ok || due == nil || due.ID != 3 {
 		t.Fatalf("%v %v", due, ok)
 	}
 	go func() { _, _ = pw.Write([]byte("hello\n")) }()
-	if line, due, ok := c.promptLine(); !ok || due != nil || line != "hello" {
+	if line, due, ok := c.promptLine(context.Background()); !ok || due != nil || line != "hello" {
 		t.Fatalf("%q %v %v", line, due, ok)
 	}
 }
@@ -124,5 +124,29 @@ func TestATerminalCheckDoesNotAsk(t *testing.T) {
 	}
 	if notes := h.err.String(); !strings.Contains(notes, "a check may not ask in the terminal: notes refused") || strings.Contains(notes, "wants to run notes") {
 		t.Fatalf("%q", notes)
+	}
+}
+
+func TestWaitChecksStopsWhenPendingClears(t *testing.T) {
+	c := newCLI(strings.NewReader(""), io.Discard, io.Discard)
+	c.laterLimits = later.Limits{MinEvery: time.Millisecond}
+	c.terminalBoard()
+	defer c.shutdown()
+	if _, err := c.board.Add(terminalChecks, "x", time.Hour, time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		c.board.StopAll(terminalChecks)
+	}()
+	done := make(chan error, 1)
+	go func() { done <- c.waitChecks(context.Background(), nil, nil) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waitChecks did not exit after pending became 0")
 	}
 }

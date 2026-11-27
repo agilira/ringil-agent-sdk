@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
-	"io"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -21,7 +20,6 @@ import (
 
 	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/serve"
-	"github.com/agilira/ringil-agent-sdk/tools/files"
 	"github.com/agilira/ringil-agent-sdk/trigger"
 )
 
@@ -120,8 +118,9 @@ func triggerFail(w http.ResponseWriter, err error) {
 }
 
 // putTrigger makes or replaces a trigger from the app: what the user
-// sets, checked as the CLI checks it. A webhook keeps its secret; a new
-// one gets one, answered once.
+// sets, checked as the CLI checks it. An edit keeps what is not set this
+// way: paused stays paused, a webhook keeps its secret; a new webhook
+// gets one, answered once.
 func (c *cli) putTrigger(octx *orpheus.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
@@ -136,26 +135,30 @@ func (c *cli) putTrigger(octx *orpheus.Context) http.HandlerFunc {
 			return
 		}
 		defer closeQuietly(store)
-		fresh := ""
-		if t.Kind == trigger.Webhook {
-			t.Secret = keptSecret(store, name)
-			if t.Secret == "" {
-				t.Secret = rand.Text() + rand.Text()
-				fresh = t.Secret
-			}
-		}
-		if err := c.checkAppTrigger(octx, &t); err != nil {
+		probe := t
+		keepFrom(&probe, stored(store, name)) // checked as it would be put
+		if err := c.checkAppTrigger(octx, &probe); err != nil {
 			triggerFail(w, err)
 			return
 		}
-		if err := store.Put(t); err != nil {
+		t.Path = probe.Path // made absolute by the check
+		var fresh string
+		err = store.Edit(name, func(old trigger.Trigger, _ bool) (trigger.Trigger, error) {
+			next := t
+			fresh = keepFrom(&next, old) // from the trigger as it is now: a pause meanwhile holds
+			return next, nil
+		})
+		if err != nil {
 			triggerFail(w, err)
 			return
 		}
 		c.reloadTriggers()
 		if fresh != "" {
-			writeJSON(w, http.StatusCreated, map[string]string{"secret": fresh, "path": trigger.WebhookPath + name,
-				"signature_header": trigger.SignatureHeader})
+			out := map[string]string{"secret": fresh, "path": trigger.WebhookPath + name, "signature_header": trigger.SignatureHeader}
+			if addr := c.conf().Serve.Webhooks; addr != "" {
+				out["url"] = "http://" + loopbackOf(addr) + trigger.WebhookPath + name // its own listener, not the API's
+			}
+			writeJSON(w, http.StatusCreated, out)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -165,15 +168,14 @@ func (c *cli) putTrigger(octx *orpheus.Context) http.HandlerFunc {
 // decodeTrigger reads a trigger's fields: one JSON object of known
 // fields, without its name (the path's) or a secret (made here).
 func decodeTrigger(w http.ResponseWriter, r *http.Request) (trigger.Trigger, bool) {
-	data, err := io.ReadAll(io.LimitReader(r.Body, 2*trigger.MaxInput+1))
-	if err != nil || len(data) > 2*trigger.MaxInput {
-		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", "the body is too large")
+	data, ok := jsonBody(w, r, 2*trigger.MaxInput)
+	if !ok {
 		return trigger.Trigger{}, false
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(data, &fields) == nil {
 		for k := range fields { // in any case: encoding/json takes "Paused" for "paused"
-			if slices.Contains([]string{"name", "secret", "paused"}, strings.ToLower(k)) {
+			if slices.ContainsFunc([]string{"name", "secret", "paused"}, func(f string) bool { return strings.EqualFold(f, k) }) {
 				fail(w, http.StatusBadRequest, "SETTINGS_INPUT", k+" is not set this way (the name is the path's; a webhook's secret is made; pause and resume have their own calls)")
 				return trigger.Trigger{}, false
 			}
@@ -189,18 +191,35 @@ func decodeTrigger(w http.ResponseWriter, r *http.Request) (trigger.Trigger, boo
 	return t, true
 }
 
-// keptSecret is the secret of the webhook named so, "" for none.
-func keptSecret(store *trigger.Store, name string) string {
-	list, err := store.Triggers()
-	if err != nil {
+// keepFrom gives t what an edit keeps of old: paused, a webhook's secret;
+// a new webhook gets a secret, answered (else "").
+func keepFrom(t *trigger.Trigger, old trigger.Trigger) (fresh string) {
+	t.Paused = old.Paused
+	if t.Kind != trigger.Webhook {
 		return ""
 	}
+	if old.Kind == trigger.Webhook {
+		t.Secret = old.Secret
+	}
+	if t.Secret == "" {
+		t.Secret = rand.Text() + rand.Text()
+		fresh = t.Secret
+	}
+	return fresh
+}
+
+// stored is the trigger named so, as the store holds it; zero for none.
+func stored(store *trigger.Store, name string) trigger.Trigger {
+	list, err := store.Triggers()
+	if err != nil {
+		return trigger.Trigger{}
+	}
 	for _, t := range list {
-		if t.Name == name && t.Kind == trigger.Webhook {
-			return t.Secret
+		if t.Name == name {
+			return t
 		}
 	}
-	return ""
+	return trigger.Trigger{}
 }
 
 // checkAppTrigger is the CLI's say on a trigger the app makes: as for
@@ -237,10 +256,23 @@ func (c *cli) checkTriggerPath(t *trigger.Trigger) error {
 		return errors.Wrap(err, ErrUsage, "bad path")
 	}
 	t.Path = abs
-	if files.Excluded(t.Path, nil) || c.inOwnState(t.Path) {
+	if c.forbiddenTriggerPath(t.Path) {
 		return errors.New(ErrUsage, "a trigger may not watch "+t.Path+": it holds credentials or the agent's own state")
 	}
 	return nil
+}
+
+var extraTriggerTools = map[string]bool{
+	"notes": true, "remember": true, "recall": true, "forget": true,
+	"load_skill": true, "read_skill_file": true, "run_skill_script": true,
+	"write_protected_file": true,
+}
+
+func hasTriggerTool(reg agent.Registry, name string) bool {
+	if reg == nil {
+		return false
+	}
+	return reg.Has(name) || extraTriggerTools[name]
 }
 
 // checkTriggerTools: the tool a trigger asks is there and only reads,
@@ -259,7 +291,7 @@ func (c *cli) checkTriggerTools(octx *orpheus.Context, t trigger.Trigger) error 
 		return errors.New(ErrUsage, "a trigger looks only with a tool there is and that only reads; "+t.Tool+" is not one")
 	}
 	for _, name := range t.Allow {
-		if !reg.Has(name) {
+		if !hasTriggerTool(reg, name) {
 			return errors.New(ErrUsage, "no such tool: "+name)
 		}
 	}

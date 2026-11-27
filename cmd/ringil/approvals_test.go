@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,6 +55,9 @@ func TestNoApprovalsLeavesChatsToTheBridge(t *testing.T) {
 }
 
 func TestEveryChatIsLeftToTheBridge(t *testing.T) {
+	if !slices.Contains(chats, "telegram") || !slices.Contains(chats, "slack") {
+		t.Fatalf("chats missing channel: %v", chats)
+	}
 	for _, name := range chats {
 		c := &cli{noApprovals: true, runConversation: name + "-42"}
 		if c.unasked() || c.chatSystem("x") == "x" {
@@ -201,7 +206,7 @@ func TestNotesFollowPermissionsRules(t *testing.T) {
 // Plan mode reads: the notes tool's views run, its changes do not, and a
 // deny rule on notes still refuses.
 func TestNotesReadInPlanMode(t *testing.T) {
-	nb, err := notes.New(notes.Scope{Name: "project", Dir: t.TempDir(), ConfirmChanges: true})
+	nb, err := notes.New(notes.Scope{Name: "project", Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,4 +229,56 @@ func TestNotesReadInPlanMode(t *testing.T) {
 			return nil
 		})
 	}
+}
+
+// Triggers stay bounded under accept-edits, honor deny rules, and refuse
+// symlink or dot-segment bypasses of excluded paths.
+func TestTriggerSecurityBounds(t *testing.T) {
+	h := newHarness(t, "")
+	writeConfig(t, h.dir, "permissions: {mode: accept-edits, deny: [now]}\n")
+	loaded(t, h.c, nil, func(ctx *orpheus.Context) error {
+		h.c.inTrigger = true
+		edit := agent.ToolSpec{Name: "write_file", Annotations: agent.Annotations{Edits: true}}
+		if ok, _ := h.c.approve(ctx.Context(), agent.ToolCall{Name: "write_file", Input: []byte(`{"path":"a.txt"}`)}, edit); ok {
+			t.Fatal("trigger allowed write_file under accept-edits without allowlist")
+		}
+		if _, err := h.c.triggerCall(ctx)(ctx.Context(), "now", nil); err == nil {
+			t.Fatal("triggerCall bypassed permissions.deny")
+		}
+		dot := filepath.Join(t.TempDir(), ".config", ".", "gh")
+		if !h.c.forbiddenTriggerPath(dot) {
+			t.Fatalf("dot path allowed: %s", dot)
+		}
+		return nil
+	})
+}
+
+// Symlinked secret directories cannot be watched by triggers.
+func TestTriggerForbiddenSymlink(t *testing.T) {
+	h := newHarness(t, "")
+	base := t.TempDir()
+	sshDir := filepath.Join(base, ".ssh")
+	link := filepath.Join(base, "watch")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sshDir, link); err != nil {
+		t.Skip("symlinks unsupported")
+	}
+	if !h.c.forbiddenTriggerPath(link) {
+		t.Fatalf("symlink to .ssh allowed: %s", link)
+	}
+}
+
+// A tool an ask rule covers is refused to a trigger: no one is there to
+// be asked (review 27/11).
+func TestTriggerRefusesWhatAsks(t *testing.T) {
+	h := newHarness(t, "")
+	writeConfig(t, h.dir, "permissions: {ask: [now]}\n")
+	loaded(t, h.c, nil, func(ctx *orpheus.Context) error {
+		if _, err := h.c.triggerCall(ctx)(ctx.Context(), "now", nil); err == nil {
+			t.Fatal("triggerCall ran a tool an ask rule covers")
+		}
+		return nil
+	})
 }

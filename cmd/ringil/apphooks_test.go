@@ -8,6 +8,8 @@
 package main
 
 import (
+	"context"
+	stderrors "errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,5 +164,50 @@ func TestHookChildIsEnded(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	if _, err := os.Stat(mark); err == nil {
 		t.Fatal("the hook's child outlived it")
+	}
+}
+
+func TestHooksChainRewritesAndIgnoreNullInput(t *testing.T) {
+	h := newHarness(t, "", fake.Call("todo_write", `{"todos":[{"content":"x","status":"pending"}]}`), fake.Reply("done"))
+	bin := t.TempDir()
+	h1 := script(t, bin, "h1", `cat >/dev/null; echo '{"text":"step1"}'`)
+	h2 := script(t, bin, "h2", `in=$(cat); case "$in" in *step1*) echo '{"text":"step2"}';; *) echo '{}';; esac`)
+	tNull := script(t, bin, "tnull", `cat >/dev/null; echo '{"input":null}'`)
+	tBad := script(t, bin, "tbad", `cat >/dev/null; echo '{"input":"bad"}'`)
+	cfg := hooksYAML(
+		"  before_run:\n    - command: ["+h1+"]\n    - command: ["+h2+"]\n",
+		"  before_tool:\n    - command: ["+tNull+"]\n    - command: ["+tBad+"]\n      on_error: block\n",
+	)
+	writeConfig(t, h.dir, cfg)
+	env(h, map[string]string{"RINGIL_PROVIDER": "openai", "RINGIL_MODEL": "m", "OPENAI_API_KEY": "k", "PATH": os.Getenv("PATH")})
+	if code := h.run("--no-approvals", "run", "hi"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, h.err)
+	}
+	reqs := h.script.Requests()
+	if len(reqs) < 2 || !strings.Contains(lastText(reqs[0]), "step2") {
+		t.Fatalf("chained rewrite failed: %+v", reqs)
+	}
+	if !strings.Contains(h.err.String(), "not a JSON object") || !lastResult(reqs[1]).IsError {
+		t.Fatalf("expected non-object before_tool input to warn and block: %q", h.err)
+	}
+}
+
+func TestHookCancelledParentDoesNotReportTimeout(t *testing.T) {
+	h := newHarness(t, "")
+	bin := t.TempDir()
+	slow := script(t, bin, "slow", "sleep 30")
+	writeConfig(t, h.dir, hooksYAML(hook("before_run", slow, "      timeout: 5s\n")))
+	env(h, map[string]string{"PATH": os.Getenv("PATH")})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	_, err := h.c.runHook(ctx, hookEntry{Command: []string{slow}, Timeout: "5s"}, hookEvent{Event: "before_run"})
+	if !stderrors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want Canceled", err)
+	}
+	if strings.Contains(h.err.String(), "it took longer than") {
+		t.Fatalf("misreported cancellation as timeout: %s", h.err)
 	}
 }

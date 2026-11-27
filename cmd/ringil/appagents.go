@@ -6,6 +6,7 @@
 package main
 
 import (
+	"cmp"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -104,8 +105,7 @@ func (c *cli) putProfile(octx *orpheus.Context) http.HandlerFunc {
 			fail(w, http.StatusBadRequest, "SETTINGS_INPUT", msg)
 			return
 		}
-		c.keepMu.Lock()
-		defer c.keepMu.Unlock()
+		defer c.lockKeep()()
 		if c.settings == nil || c.settings.path == "" {
 			fail(w, http.StatusConflict, "SETTINGS_NO_FILE", "serve runs without a configuration directory: there is no ringil.yaml for the agents")
 			return
@@ -127,7 +127,7 @@ func (c *cli) checkProfileIn(octx *orpheus.Context, name string, in profileIn) s
 	case caseTwin(c.conf().Profiles, name) != "":
 		return "agent " + caseTwin(c.conf().Profiles, name) + " differs only in case: its instructions file would be the same on some systems"
 	case in.Tools != nil:
-		return c.unknownTools(octx, *in.Tools)
+		return c.unknownTools(octx, *in.Tools, in.Memory != "off")
 	}
 	return ""
 }
@@ -142,52 +142,51 @@ func caseTwin(all map[string]profile, name string) string {
 	return ""
 }
 
-// writeProfile writes the agent's instructions file, then its entry; the
-// caller holds keepMu. A file written for an entry that is then refused
-// is put back as it was.
+// writeProfile writes the agent's instructions file, then its entry, on
+// ringil.yaml as it is on disk (the watcher's copy lags behind: an entry
+// written a moment ago keeps its instructions); the caller holds keepMu.
+// A file written for an entry that is then refused is put back as it was.
+// Paths are written from ringil.yaml's folder (asWritten).
 func (c *cli) writeProfile(w http.ResponseWriter, name string, in profileIn) {
-	cur := c.conf().Profiles[name]
-	p := profile{Description: in.Description, Models: in.Models, Instructions: cur.Instructions, Tools: in.Tools,
+	p := profile{Description: in.Description, Models: in.Models, Tools: in.Tools,
 		Memory: in.Memory, MaxTurns: in.MaxTurns, Images: in.Images, EmbedModel: in.EmbedModel}
-	rel, undo := "", func() {}
+	own, undo := "", func() {}
 	if in.Instructions != nil {
-		rel = filepath.ToSlash(filepath.Join(profilesDir, name+".md"))
-		p.Instructions = filepath.Join(filepath.Dir(c.settings.path), profilesDir, name+".md")
+		own = filepath.Join(filepath.Dir(c.settings.path), profilesDir, name+".md")
 		var err error
-		if undo, err = replaceFile(p.Instructions, []byte(*in.Instructions)); err != nil {
+		if undo, err = replaceFile(own, []byte(*in.Instructions)); err != nil {
 			fail(w, http.StatusInternalServerError, "SETTINGS_INSTRUCTIONS", describe(err))
 			return
 		}
 	}
 	if err := c.changeLocked(func(next *config) {
+		p.Instructions = cmp.Or(own, next.Profiles[name].Instructions)
 		if next.Profiles == nil {
 			next.Profiles = map[string]profile{}
 		}
 		next.Profiles[name] = p
-	}, func(ed *edit) {
-		at := "profiles." + name
-		ed.set(at, map[string]interface{}{})
-		ed.set(at+".description", p.Description)
-		ed.set(at+".models", listOrNil(p.Models))
-		if rel != "" {
-			ed.set(at+".instructions", rel)
-		} else {
-			ed.set(at+".instructions", p.Instructions)
-		}
-		if p.Tools != nil {
-			ed.set(at+".tools", *p.Tools)
-		}
-		ed.set(at+".memory", p.Memory)
-		ed.set(at+".max_turns", zeroIntAsNone(p.MaxTurns))
-		ed.set(at+".images", trueOrNone(p.Images))
-		ed.set(at+".embed_model", p.EmbedModel)
-	}); err != nil {
+	}, func(ed *edit) { setProfile(ed, "profiles."+name, p, c.asWritten(p.Instructions)) }); err != nil {
 		undo()
 		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", describe(err))
 		return
 	}
 	c.settings.signal()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// setProfile writes p at at, its instructions as instructions.
+func setProfile(ed *edit, at string, p profile, instructions string) {
+	ed.set(at, map[string]interface{}{})
+	ed.set(at+".description", p.Description)
+	ed.set(at+".models", listOrNil(p.Models))
+	ed.set(at+".instructions", instructions)
+	if p.Tools != nil {
+		ed.set(at+".tools", *p.Tools)
+	}
+	ed.set(at+".memory", p.Memory)
+	ed.set(at+".max_turns", zeroIntAsNone(p.MaxTurns))
+	ed.set(at+".images", trueOrNone(p.Images))
+	ed.set(at+".embed_model", p.EmbedModel)
 }
 
 // deleteProfile removes an agent no trigger and no chat uses, and the
@@ -235,8 +234,7 @@ func (c *cli) removeWhenUnnamed(name, path string) {
 }
 
 func (c *cli) removeIfUnnamedOnDisk(name, path string) {
-	c.keepMu.Lock()
-	defer c.keepMu.Unlock()
+	defer c.lockKeep()()
 	disk, err := c.settings.onDisk(c)
 	if err != nil {
 		return // left: a file too many is harmless, one too few stops the watcher
@@ -294,10 +292,13 @@ func (c *cli) cardsFor(agent string) []string {
 func (c *cli) triggersOf(match func(trigger.Trigger) bool) []string {
 	store, err := c.triggerStore()
 	if err != nil {
-		return nil
+		return []string{"the triggers (" + describe(err) + ")"}
 	}
 	defer closeQuietly(store)
-	list, _ := store.Triggers()
+	list, err := store.Triggers()
+	if err != nil {
+		return []string{"the triggers (" + describe(err) + ")"}
+	}
 	var out []string
 	for _, t := range list {
 		if match(t) {
@@ -311,10 +312,13 @@ func (c *cli) triggersOf(match func(trigger.Trigger) bool) []string {
 func (c *cli) workflowsWith(worker string) []string {
 	lib, err := c.savedWorkflows()
 	if err != nil {
-		return nil
+		return []string{"the workflows (" + describe(err) + ")"}
 	}
 	defer closeQuietly(lib)
-	list, _ := lib.List()
+	list, err := lib.List()
+	if err != nil {
+		return []string{"the workflows (" + describe(err) + ")"}
+	}
 	var out []string
 	for _, s := range list {
 		if slices.ContainsFunc(s.Plan.Steps, func(st workflow.Step) bool { return st.Worker == worker }) {
@@ -324,12 +328,25 @@ func (c *cli) workflowsWith(worker string) []string {
 	return out
 }
 
+var memoryTools = map[string]bool{"remember": true, "recall": true, "forget": true}
+
+func hasProfileTool(reg agent.Registry, name string, withMemory bool) bool {
+	if reg == nil {
+		return false
+	}
+	return reg.Has(name) || (withMemory && memoryTools[name])
+}
+
 // unknownTools says which of names an agent cannot list: tools there are
 // not, or tools that reach the user's own artifacts; "" when all are
 // fine.
-func (c *cli) unknownTools(octx *orpheus.Context, list []string) string {
+func (c *cli) unknownTools(octx *orpheus.Context, list []string, withMemory bool) string {
+	if len(list) == 0 {
+		return ""
+	}
 	r := c.forRun()
 	defer r.shutdown()
+	r.role = &profile{Tools: &[]string{}}
 	reg, err := r.tools(octx, nil, nil)
 	if err != nil {
 		return "the tools cannot be listed: " + describe(err)
@@ -338,7 +355,7 @@ func (c *cli) unknownTools(octx *orpheus.Context, list []string) string {
 		switch {
 		case ownersOnly[n]:
 			return "an agent that lists its tools cannot have " + n + ": it reaches the user's own artifacts"
-		case !reg.Has(n):
+		case !hasProfileTool(reg, n, withMemory):
 			return "no tool " + n
 		}
 	}

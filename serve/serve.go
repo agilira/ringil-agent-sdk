@@ -51,7 +51,9 @@ const (
 	ErrInput    errors.ErrorCode = "SERVE_INPUT"
 	ErrNotFound errors.ErrorCode = "SERVE_NOT_FOUND"
 	ErrBusy     errors.ErrorCode = "SERVE_BUSY"
-	ErrClosed   errors.ErrorCode = "SERVE_CLOSED"
+	// ErrSignedOut: the app's own page, without a live session.
+	ErrSignedOut errors.ErrorCode = "SERVE_SIGNED_OUT"
+	ErrClosed    errors.ErrorCode = "SERVE_CLOSED"
 )
 
 // Profile is an agent the API can run: a role, its provider, its tools,
@@ -111,6 +113,14 @@ type Config struct {
 	// with a link of SignInPath and then calls the API with its session
 	// cookie, from the app's own pages only; other pages stay refused.
 	App fs.FS
+	// CheckProject, when set, is asked of the project a run is started on
+	// or a conversation is moved to: an error refuses it at once (a
+	// project that is not there, or archived), as a bad request.
+	CheckProject func(ctx context.Context, project string) error
+	// Sessions, when set, is a file where the app's sessions are kept (by
+	// their hashes, private to the user), so that a restart of the server
+	// does not sign the browser out; "" keeps them in memory.
+	Sessions string
 	// Voice gives the app speech to text and text to speech; zero, the
 	// voice routes say it is off.
 	Voice Voice
@@ -179,7 +189,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	cfg.Peers = slices.Clone(cfg.Peers)
 	ctx, stop := context.WithCancel(context.Background())
-	s := &Server{cfg: cfg, profiles: profiles, ctx: ctx, stop: stop, runs: map[string]*job{}, held: map[string]int{}, now: time.Now, app: newAppAuth()}
+	s := &Server{cfg: cfg, profiles: profiles, ctx: ctx, stop: stop, runs: map[string]*job{}, held: map[string]int{}, now: time.Now, app: newAppAuth(cfg.Sessions)}
 	s.uploads = make(chan struct{}, s.maxRuns())
 	return s, nil
 }

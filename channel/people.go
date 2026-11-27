@@ -68,6 +68,13 @@ func checkPeople(cfg Config, p People, listed bool) error {
 
 var errAuthorizeAlone = errors.New(ErrConfig, "Authorize says who everyone is: no Owners, Members, MemberPhones or IsMember with it")
 
+// CheckPeople says whether SetPeople takes p, changing nothing: a
+// caller that sets several bridges checks them all first.
+func (b *Bridge) CheckPeople(p People) error {
+	_, err := peopleOf(b.cfg, p)
+	return err
+}
+
 // SetPeople changes who the Bridge talks with, from the next message: a
 // run going keeps the role it started with. A sender whose phone is taken
 // off MemberPhones is no longer a member, also on disk. An error leaves

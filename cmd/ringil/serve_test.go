@@ -7,6 +7,7 @@ package main
 
 import (
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -97,4 +98,56 @@ func checkContainerAddresses(t *testing.T) {
 	if gw, ok := gatewayOf(table); !ok || gw.String() != "172.17.0.1" {
 		t.Fatalf("gateway %v %v", gw, ok)
 	}
+}
+
+func TestWantsBrowserRespectsFlagCombination(t *testing.T) {
+	c := newCLI(strings.NewReader(""), io.Discard, io.Discard)
+	c.getenv = func(string) string { return "" }
+	c.inImage = func() bool { return false }
+	var gotTerm, gotNonTerm bool
+	app := orpheus.New("ringil").AddCommand(orpheus.NewCommand("serve", "s").
+		AddBoolFlag("no-browser", "", false, "nb").
+		AddBoolFlag("open", "", false, "op").
+		SetHandler(func(ctx *orpheus.Context) error {
+			gotTerm = c.wantsBrowser(ctx, true)
+			gotNonTerm = c.wantsBrowser(ctx, false)
+			return nil
+		}))
+	if err := app.Run([]string{"serve", "--open", "--no-browser"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotTerm || gotNonTerm {
+		t.Fatalf("wantsBrowser ignored --no-browser when --open was set (%v, %v)", gotTerm, gotNonTerm)
+	}
+}
+
+// Audit 27/11: the link goes to serve's own loopback, ::1 too.
+func TestLocalOfKeepsTheLoopback(t *testing.T) {
+	for in, want := range map[string]string{"[::1]:9": "[::1]:9", "127.0.0.2:9": "127.0.0.2:9", "[::]:9": "[::1]:9",
+		"0.0.0.0:9": "127.0.0.1:9", ":9": "127.0.0.1:9", "localhost:9": "127.0.0.1:9", "[::ffff:127.0.0.1]:9": "127.0.0.1:9"} {
+		if got := localOf(in); got != want {
+			t.Errorf("%s: %s, want %s", in, got, want)
+		}
+	}
+}
+
+// Audit 27/11: a start that fails once serve listens leaves the port free.
+func TestServeFailedStartFreesThePort(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+	h := newHarness(t, "")
+	writeConfig(t, h.dir, "models: [openai:m]\nserve:\n  listen: "+addr+"\n")
+	writeState(t, filepath.Join(h.dir, "data", "inbox"), "a file, not a folder") // the chats' inbox cannot be made
+	if code := h.run("serve"); code == exitOK || !strings.Contains(h.err.String(), "inbox") {
+		t.Fatalf("serve %d: %s", code, h.err)
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("the port is still taken: %v", err)
+	}
+	_ = l.Close()
 }

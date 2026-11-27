@@ -9,6 +9,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/agilira/go-errors"
@@ -35,6 +36,9 @@ import (
 func (c *cli) startChannels(ctx *orpheus.Context, run context.Context, srv *serve.Server) (func(), error) {
 	res, err := c.resolver(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if c.inboxRoot, err = c.inboxDir(); err != nil {
 		return nil, err
 	}
 	stopTelegram, err := c.startTelegram(ctx, run, res, srv)
@@ -116,8 +120,10 @@ func (c *cli) bridgeConfig(ctx *orpheus.Context, res secrets.Resolver, app strin
 	if err != nil {
 		return channel.Config{}, err
 	}
-	if c.inboxRoot, err = c.inboxDir(); err != nil {
-		return channel.Config{}, err
+	if inbox := c.inboxRoot; inbox == "" {
+		if _, err = c.inboxDir(); err != nil {
+			return channel.Config{}, err
+		}
 	}
 	who := sc.people(c.flagBool(ctx, "no-approvals"))
 	if app == "slack" {
@@ -291,5 +297,11 @@ func (c *cli) stateDir() (string, error) {
 // ringilData is ringil's data directory on this system.
 func ringilData() (string, error) {
 	d, err := dirs.For("ringil")
-	return d.Data, err
+	if err != nil {
+		return "", err
+	}
+	if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
+		return filepath.Join(filepath.Dir(filepath.Dir(d.Data)), "ringil-data"), nil
+	}
+	return d.Data, nil
 }

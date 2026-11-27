@@ -57,7 +57,7 @@ func (c *cli) memory(ctx *orpheus.Context) (agent.Memory, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.closers = append(c.closers, m.Close)
+	c.addCloser(m.Close)
 	return m, nil
 }
 
@@ -147,13 +147,14 @@ func (c *cli) endpointEmbedder(ctx *orpheus.Context, res secrets.Resolver, model
 	case ep.kind != providerOpenAI:
 		return nil, errors.New(ErrUsage, ep.name+" has no embedding models: set embedder kind ollama, or no embed_model")
 	}
+	inputType, hasInputType, _ := secrets.Lookup(ctx.Context(), res, "RINGIL_EMBED_INPUT_TYPE")
 	return c.newEmbedder(openai.Config{
 		BaseURL:   ep.base,
 		Model:     model,
 		KeyFunc:   keyFunc(res, ep.keyName),
 		AllowHTTP: c.flagBool(ctx, "allow-http"),
 		// Asymmetric models (NVIDIA NIM) need input_type.
-		EmbedInputType: c.getenv("RINGIL_EMBED_INPUT_TYPE") == "1" || c.conf().EmbedInputType,
+		EmbedInputType: (hasInputType && strings.TrimSpace(inputType) == "1") || c.conf().EmbedInputType,
 	})
 }
 

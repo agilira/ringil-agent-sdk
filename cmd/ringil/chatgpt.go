@@ -41,11 +41,15 @@ func (c *cli) chatgptSession(base secrets.Resolver) (*chatgpt.Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	owner := c
+	if c.signIns.owner != nil {
+		owner = c.signIns.owner
+	}
 	c.signIns.chatgpt = &chatgpt.Session{
-		Store:  keptLogin{c: c, base: base},
+		Store:  keptLogin{c: owner, base: base},
 		Lock:   chatgpt.FileLock(filepath.Join(dir, "ringil"), "chatgpt.lock"),
 		Issuer: c.chatgptIssuer,
-		Warn:   func(err error) { c.note(describe(err)) },
+		Warn:   func(err error) { owner.note(describe(err)) },
 	}
 	return c.signIns.chatgpt, nil
 }
@@ -96,6 +100,7 @@ func (k keptLogin) Delete(ctx context.Context) error {
 // signIns are the sign-ins of this process, shared with the server's runs.
 type signIns struct {
 	mu      sync.Mutex
+	owner   *cli
 	chatgpt *chatgpt.Session
 }
 

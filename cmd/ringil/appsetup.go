@@ -67,8 +67,13 @@ func (c *cli) setupStatus(octx *orpheus.Context) http.HandlerFunc {
 // instructionsPath is the user's instructions file: ringil.yaml's, else
 // <config>/ringil/instructions.md.
 func (c *cli) instructionsPath() (path string, named bool, err error) {
-	if p := c.conf().Instructions; p != "" {
-		return p, true, nil
+	return c.instructionsPathOf(c.conf())
+}
+
+// instructionsPathOf is instructionsPath for the configuration f.
+func (c *cli) instructionsPathOf(f *config) (path string, named bool, err error) {
+	if f.Instructions != "" {
+		return f.Instructions, true, nil
 	}
 	root, err := c.stateRoot()
 	if err != nil {
@@ -125,8 +130,7 @@ func (c *cli) putInstructions(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", "the instructions are UTF-8 text of at most "+strconv.Itoa(agent.MaxInstructions>>10)+" KiB")
 		return
 	}
-	c.keepMu.Lock()
-	defer c.keepMu.Unlock()
+	defer c.lockKeep()()
 	if c.settings == nil || c.settings.path == "" {
 		fail(w, http.StatusConflict, "SETTINGS_NO_FILE", "serve runs without a configuration directory: there is no ringil.yaml to name the instructions in")
 		return
@@ -140,9 +144,14 @@ func (c *cli) putInstructions(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeInstructions writes the text to the user's file, and the first
-// time names it in ringil.yaml; the caller holds keepMu.
+// time names it in ringil.yaml, as the file on disk has it (the watcher's
+// copy lags behind); the caller holds keepMu.
 func (c *cli) writeInstructions(text string) error {
-	path, named, err := c.instructionsPath()
+	disk, err := c.settings.onDisk(c)
+	if err != nil {
+		return errors.Wrap(err, ErrUsage, "ringil.yaml on disk is not valid, fix it first")
+	}
+	path, named, err := c.instructionsPathOf(disk)
 	if err != nil {
 		return err
 	}
@@ -152,7 +161,18 @@ func (c *cli) writeInstructions(text string) error {
 	if named {
 		return nil
 	}
-	return c.changeLocked(func(next *config) { next.Instructions = path }, func(ed *edit) { ed.set("instructions", path) })
+	return c.changeLocked(func(next *config) { next.Instructions = path }, func(ed *edit) { ed.set("instructions", c.asWritten(path)) })
+}
+
+// asWritten is path as ringil.yaml names it: from the file's folder when
+// within it, as config.from reads it back (an export imported on another
+// machine or in a container still finds it), else as it is.
+func (c *cli) asWritten(path string) string {
+	rel, err := filepath.Rel(filepath.Dir(c.settings.path), path)
+	if err != nil || !filepath.IsLocal(rel) {
+		return path
+	}
+	return filepath.ToSlash(rel)
 }
 
 // changeLocked makes one change to ringil.yaml on the file as it is on
@@ -167,7 +187,7 @@ func (c *cli) changeLocked(mutate func(next *config), apply func(*edit)) error {
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	if err := c.settings.acceptable(next); err != nil {
+	if err := c.settings.acceptable(); err != nil {
 		return err
 	}
 	return writeSettings(c.settings.path, apply)
@@ -215,11 +235,11 @@ func (c *cli) appStore(ctx context.Context, base secrets.Resolver) (secrets.Stor
 		return nil, errors.Wrap(err, ErrUsage, "ringil.yaml on disk is not valid, fix it first")
 	}
 	if cur.Secrets.Store != "" {
-		root, err := c.stateRoot()
+		dir, err := c.configDir()
 		if err != nil {
 			return nil, err
 		}
-		return c.secrets.Store(ctx, cur.Secrets.store(root), base)
+		return c.secrets.Store(ctx, cur.Secrets.store(dir), base)
 	}
 	return c.defaultStore(ctx, base)
 }

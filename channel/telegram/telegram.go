@@ -128,6 +128,23 @@ func (c *Channel) Receive(ctx context.Context) (channel.Message, error) {
 	return m.Message, nil
 }
 
+// Discard drops what is waiting, at Telegram and here: a Receive after
+// it gets only what was sent after it (a pairing hears no /start sent
+// before it began). Telegram forgets every update before the last at an
+// offset of -1; the last is dropped by the offset after it.
+func (c *Channel) Discard(ctx context.Context) error {
+	var updates []update
+	in := updatesIn{Offset: -1, Allowed: []string{"message", "callback_query"}}
+	if err := c.call(ctx, "getUpdates", in, &updates); err != nil {
+		return err
+	}
+	for _, u := range updates {
+		c.offset = max(c.offset, u.ID+1)
+	}
+	c.queue = nil
+	return nil
+}
+
 // Telegram sends an album photo by photo, and a phone uploads them one
 // at a time: Receive waits for more while more come, each time up to
 // albumWait, at most albumRounds times.

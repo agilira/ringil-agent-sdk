@@ -166,6 +166,9 @@ func caller(t *testing.T, url string) func(method, p, body string) (int, string)
 	return func(method, p, body string) (int, string) {
 		req, _ := http.NewRequest(method, url+p, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+settingsToken)
+		if strings.HasPrefix(body, "{") { // a JSON body, as an app sends it (an archive is not one)
+			req.Header.Set("Content-Type", "application/json")
+		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -185,5 +188,52 @@ func checkAppImported(t *testing.T, h *harness, call func(method, p, body string
 	}
 	if code, out := call("GET", "/v1/state/import", ""); code != http.StatusOK || !strings.Contains(out, `"ok":true`) {
 		t.Fatalf("last import %d %s", code, out)
+	}
+}
+
+func TestImportGuardsAndTooBigStatus(t *testing.T) {
+	h := newHarness(t, "")
+	h.c.imports = &importing{}
+	h.c.wfRuns = &wfRuns{}
+	rec := httptest.NewRecorder()
+	h.c.importFromApp(nil)(rec, httptest.NewRequest("POST", "/v1/state/import", strings.NewReader("x")))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("nil stop gave %d", rec.Code)
+	}
+	h.c.imports.stop = func() {}
+	h.c.wfRuns.start("wf-1")
+	rec = httptest.NewRecorder()
+	h.c.importFromApp(nil)(rec, httptest.NewRequest("POST", "/v1/state/import", strings.NewReader("x")))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("active wfRun gave %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	replyImportError(rec, &http.MaxBytesError{Limit: 10})
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("MaxBytesError gave %d", rec.Code)
+	}
+}
+
+// Audit 27/11: an import from the terminal reads ringil.yaml as every
+// command does: the sessions go back to its sessions_dir.
+func TestStateImportFollowsTheConfig(t *testing.T) {
+	h := newHarness(t, "")
+	root := filepath.Join(h.dir, "ringil")
+	writeState(t, filepath.Join(root, "ringil.yaml"), "models: [openai:m]\nsessions_dir: kept\n")
+	session := filepath.Join(root, "kept", "abc.jsonl")
+	writeState(t, session, "hello")
+	archive := filepath.Join(t.TempDir(), "state.tar.gz")
+	if code := h.run("state", "export", archive); code != exitOK {
+		t.Fatalf("export %d: %s", code, h.err)
+	}
+	writeState(t, session, "changed")
+	if code := h.run("state", "import", archive); code != exitOK {
+		t.Fatalf("import %d: %s", code, h.err)
+	}
+	if got := readState(t, session); got != "hello" {
+		t.Fatalf("session %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "sessions")); !os.IsNotExist(err) {
+		t.Fatal("the sessions went to the default folder")
 	}
 }

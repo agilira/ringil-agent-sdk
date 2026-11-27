@@ -203,9 +203,20 @@ func TestObserversShareTheRecorder(t *testing.T) {
 
 func last(obs []agent.Observer) agent.Observer { return obs[len(obs)-1] }
 
-// An endpoint with a query is refused: the exporter would drop it.
+// An endpoint with a query, credentials, fragment, or remote http is refused.
 func TestTraceEndpointQueryRefused(t *testing.T) {
-	if _, err := tracesURL("https://gw.example.com/v1/traces?token=x"); err == nil || !strings.Contains(err.Error(), "query") {
+	if _, err := tracesURL("https://gw.example.com/v1/traces?token=x", false); err == nil || !strings.Contains(err.Error(), "query") {
 		t.Fatalf("%v", err)
+	}
+	for _, bad := range []string{"https://u:p@gw.example.com", "https://gw.example.com#frag", "http://otel.example.com:4318"} {
+		if _, err := tracesURL(bad, false); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	if _, err := tracesURL("http://otel.example.com:4318", true); err != nil {
+		t.Errorf("allowHTTP refused: %v", err)
+	}
+	if _, err := tracesURL("http://127.0.0.1:4318", false); err != nil {
+		t.Errorf("loopback refused: %v", err)
 	}
 }

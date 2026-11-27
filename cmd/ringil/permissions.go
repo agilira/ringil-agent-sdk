@@ -76,8 +76,8 @@ func (c *cli) policy(ctx context.Context) *agent.Policy {
 	rules = append(rules, c.learned[key]...)
 	c.learnedMu.Unlock()
 	mode := c.mode()
-	if c.inTrigger && mode == agent.ModeBypass {
-		mode = agent.ModeDefault // --no-approvals never widens what an automation was allowed
+	if c.inTrigger && (mode == agent.ModeBypass || mode == agent.ModeAcceptEdits) {
+		mode = agent.ModeDefault // --no-approvals or --accept-edits never widens what an automation was allowed
 	}
 	return &agent.Policy{Mode: mode, Rules: rules, Ask: c.askPerson,
 		Remember: func(r agent.Rule, scope agent.Scope) error { return c.remember(key, r, scope) }}
@@ -112,8 +112,7 @@ func (c *cli) remember(key string, r agent.Rule, scope agent.Scope) error {
 // keepRule adds r to ringil.yaml's permissions.allow, through argus's
 // writer: the rest of the file stays as it is.
 func (c *cli) keepRule(r agent.Rule) error {
-	c.keepMu.Lock()
-	defer c.keepMu.Unlock()
+	defer c.lockKeep()()
 	path := c.configName()
 	w, err := argus.NewConfigWriter(path, argus.FormatYAML, nil)
 	if err != nil {

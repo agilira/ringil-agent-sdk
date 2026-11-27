@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,10 +23,12 @@ import (
 	"github.com/agilira/orpheus/pkg/orpheus"
 	agent "github.com/agilira/ringil-agent-sdk"
 
+	"github.com/agilira/ringil-agent-sdk/channel"
 	"github.com/agilira/ringil-agent-sdk/memory/chroma"
 	"github.com/agilira/ringil-agent-sdk/memory/mem0"
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 	"github.com/agilira/ringil-agent-sdk/provider/openai"
+	"github.com/agilira/ringil-agent-sdk/secrets"
 )
 
 const fullConfig = `
@@ -409,7 +412,7 @@ func TestTheExampleIsValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := b.Value()
-	if f.Profiles["support"].Tools == nil || f.MCPServers["crm"].OAuth == nil || f.Serve.Telegram.Owners[0] != "623292473" {
+	if f.Profiles["support"].Tools == nil || f.MCPServers["crm"].OAuth == nil || len(f.Serve.Telegram.Owners) == 0 || f.Serve.Telegram.Owners[0] != "123456789" {
 		t.Errorf("example %+v", f)
 	}
 }
@@ -739,4 +742,93 @@ func keyEnvOf(c *cli, ctx *orpheus.Context) string {
 	res, _ := c.resolver(ctx)
 	ep, _ := c.runEndpoint(ctx, res)
 	return ep.keyName
+}
+
+// Audit 27/11: a run pinned to a revision still records where its keys
+// came from, once per change, in the audit of the settings it came from.
+func TestAPinnedRunRecordsKeySources(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.db")
+	logger, err := argus.NewAuditLogger(argus.AuditConfig{Enabled: true, OutputFile: path, MinLevel: argus.AuditInfo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &settings{audit: logger}
+	s.current.Store(&config{})
+	s.pinned().keySource("OPENAI_API_KEY", "store")
+	s.pinned().pinned().keySource("OPENAI_API_KEY", "store")
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(auditRecords(t, path), "ringil_key_source"); n != 1 {
+		t.Fatalf("%d records of the key's source", n)
+	}
+}
+
+type peopleSpy struct {
+	refuse error
+	set    int
+}
+
+func (p *peopleSpy) CheckPeople(channel.People) error { return p.refuse }
+func (p *peopleSpy) SetPeople(channel.People) error   { p.set++; return p.refuse }
+
+// Audit 27/11: when Slack refuses a revision's people, Telegram keeps its
+// own: the revision is in force on every bridge or on none.
+func TestPeopleAreTakenByAllOrNone(t *testing.T) {
+	tg, sl := &peopleSpy{}, &peopleSpy{refuse: errors.New("no")}
+	if err := takePeople([]peopleFor{{tg, channel.People{}}, {sl, channel.People{}}}); err == nil || tg.set != 0 || sl.set != 0 {
+		t.Fatalf("err %v, telegram set %d, slack set %d", err, tg.set, sl.set)
+	}
+	sl.refuse = nil
+	if err := takePeople([]peopleFor{{tg, channel.People{}}, {sl, channel.People{}}}); err != nil || tg.set != 1 || sl.set != 1 {
+		t.Fatalf("err %v, telegram set %d, slack set %d", err, tg.set, sl.set)
+	}
+}
+
+func TestAuditFilePathResolvedAndChecked(t *testing.T) {
+	if got := (&config{AuditFile: "audit.db"}).from("/tmp/cfg").AuditFile; got != filepath.Join("/tmp/cfg", "audit.db") {
+		t.Fatalf("AuditFile = %q", got)
+	}
+	if err := (&config{AuditFile: "../escape.db"}).Validate(); err == nil {
+		t.Fatal("accepted unsafe audit_file path")
+	}
+}
+
+func TestEndpointEmbedderReadsInputTypeFromResolver(t *testing.T) {
+	h := newHarness(t, "")
+	env(h, map[string]string{})
+	h.c.settings = &settings{}
+	h.c.settings.current.Store(&config{Models: []string{"openai:m"}})
+	var gotCfg openai.Config
+	h.c.newEmbedder = func(cfg openai.Config) (agent.Embedder, error) {
+		gotCfg = cfg
+		return nil, nil
+	}
+	app := orpheus.New("ringil").AddCommand(orpheus.NewCommand("run", "r").SetHandler(func(ctx *orpheus.Context) error {
+		_, err := h.c.endpointEmbedder(ctx, secrets.Map{"RINGIL_EMBED_INPUT_TYPE": "1"}, "embed")
+		return err
+	}))
+	if err := app.Run([]string{"run"}); err != nil {
+		t.Fatal(err)
+	}
+	if !gotCfg.EmbedInputType {
+		t.Fatal("EmbedInputType was not read from resolver")
+	}
+}
+
+func TestExplicitConfigPathIsAbsolute(t *testing.T) {
+	c := newCLI(strings.NewReader(""), nil, nil)
+	var got string
+	var explicit bool
+	app := orpheus.New("ringil").AddGlobalFlag("config", "c", "", "cfg").
+		AddCommand(orpheus.NewCommand("run", "r").SetHandler(func(ctx *orpheus.Context) error {
+			got, explicit = c.configPath(ctx)
+			return nil
+		}))
+	if err := app.Run([]string{"--config", "ringil.yaml", "run"}); err != nil {
+		t.Fatal(err)
+	}
+	if !explicit || !filepath.IsAbs(got) {
+		t.Fatalf("configPath = (%q, %v)", got, explicit)
+	}
 }

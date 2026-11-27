@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -32,9 +33,8 @@ func (c *cli) bashTool(ctx *orpheus.Context, dirs []string) ([]agent.Tool, error
 		Read:    append(bash.ReadDefaults(), dirs[1:]...),
 		Network: bash.Network{Allow: splitList(c.flagString(ctx, "allow-domains")), Ask: c.askDomain},
 		Confirm: c.confirmCommand,
-		// ringil.yaml read-only in the sandbox too, as the file tools
-		// confirm it.
-		Protected: protectedPatterns,
+		// ringil.yaml and active instructions stay read-only in the sandbox too.
+		Protected: bashProtected(dirs[0], c.protectedFiles(ctx)),
 	}
 	if base, err := c.configDir(); err == nil {
 		cfg.Never = []string{filepath.Join(base, "ringil")}
@@ -45,8 +45,23 @@ func (c *cli) bashTool(ctx *orpheus.Context, dirs []string) ([]agent.Tool, error
 	}
 	// Its background commands end with the session or the server's run,
 	// checked (audit 21/11: they outlived both).
-	c.closers = append(c.closers, sh.Close)
+	c.addCloser(sh.Close)
 	return sh.Tools(), nil
+}
+
+func bashProtected(dir string, extra []string) []string {
+	out := slices.Clone(protectedPatterns)
+	base := realPath(dir)
+	for _, p := range extra {
+		target := realPath(p)
+		if !within(base, target) {
+			continue
+		}
+		if rel, err := filepath.Rel(base, target); err == nil && rel != "." {
+			out = append(out, filepath.ToSlash(rel))
+		}
+	}
+	return out
 }
 
 func splitList(s string) []string {
@@ -68,6 +83,10 @@ func (c *cli) confirmCommand(ctx context.Context, req bash.Request) (bool, error
 	if c.unasked() {
 		return true, nil
 	}
+	if checking(ctx) {
+		c.note("a check may not ask to run commands: refused")
+		return false, nil
+	}
 	if c.server != nil {
 		input, err := json.Marshal(map[string]any{"command": req.Command, "reason": req.Reason, "why": req.Why, "explanation": req.Explanation})
 		if err != nil {
@@ -75,8 +94,14 @@ func (c *cli) confirmCommand(ctx context.Context, req bash.Request) (bool, error
 		}
 		return c.server.Ask(ctx, agent.ToolCall{ID: "bash-" + rand.Text()[:8], Name: "bash_" + string(req.Reason), Input: input})
 	}
-	c.holdTerminal(ctx)
+	if !c.holdTerminal(ctx) {
+		return false, ctx.Err()
+	}
 	defer c.askMu.Unlock()
+	return c.confirm(ctx, commandPrompt(ctx, req)+"  Allow? [y/N] ")
+}
+
+func commandPrompt(ctx context.Context, req bash.Request) string {
 	q := "\n  ! " + asker(ctx) + " wants to run:\n      " + clean(req.Command) + "\n"
 	if req.Reason == bash.Unsandboxed {
 		q += "    outside the sandbox, with your rights"
@@ -88,7 +113,7 @@ func (c *cli) confirmCommand(ctx context.Context, req bash.Request) (bool, error
 	for _, w := range req.Why {
 		q += "    " + w + ".\n"
 	}
-	return c.confirm(q + "  Allow? [y/N] ")
+	return q
 }
 
 // askDomain asks whether bash commands may reach a domain, once per run.
@@ -99,6 +124,10 @@ func (c *cli) askDomain(ctx context.Context, host string) (bool, error) {
 	if c.unasked() {
 		return true, nil
 	}
+	if checking(ctx) {
+		c.note("a check may not ask for network access: " + clean(host) + " refused")
+		return false, nil
+	}
 	if c.server != nil {
 		input, err := json.Marshal(map[string]string{"domain": host})
 		if err != nil {
@@ -106,7 +135,9 @@ func (c *cli) askDomain(ctx context.Context, host string) (bool, error) {
 		}
 		return c.server.Ask(ctx, agent.ToolCall{ID: "net-" + rand.Text()[:8], Name: "network_domain", Input: input})
 	}
-	c.holdTerminal(ctx)
+	if !c.holdTerminal(ctx) {
+		return false, ctx.Err()
+	}
 	defer c.askMu.Unlock()
-	return c.confirm("\n  ! A command run by " + strings.ToLower(asker(ctx)) + " wants to reach " + clean(host) + " — allow it for this session? [y/N] ")
+	return c.confirm(ctx, "\n  ! A command run by "+strings.ToLower(asker(ctx))+" wants to reach "+clean(host)+" — allow it for this session? [y/N] ")
 }

@@ -166,6 +166,26 @@ func TestReceive(t *testing.T) {
 	}
 }
 
+// Discard drops what waits: the next receive asks from after the last
+// update, and gets nothing sent before.
+func TestDiscard(t *testing.T) {
+	b, srv := newBotAPI(t)
+	c := open(t, srv.URL)
+	b.set("getUpdates", `{"ok":true,"result":[{"update_id":40,"message":{"chat":{"id":7},"from":{"id":5},"text":"/start"}}]}`,
+		`{"ok":true,"result":[{"update_id":41,"message":{"chat":{"id":7},"from":{"id":5},"text":"after"}}]}`)
+	if err := c.Discard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m, err := c.Receive(context.Background())
+	if err != nil || m.Text != "after" {
+		t.Fatalf("%+v %v", m, err)
+	}
+	ups := b.called("getUpdates")
+	if ups[0]["offset"] != float64(-1) || ups[1]["offset"] != float64(41) {
+		t.Fatalf("offsets %v %v", ups[0]["offset"], ups[1]["offset"])
+	}
+}
+
 func TestReceiveError(t *testing.T) {
 	b, srv := newBotAPI(t)
 	c := open(t, srv.URL)

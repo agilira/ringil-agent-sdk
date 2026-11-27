@@ -247,6 +247,9 @@ func Remove(dir, name string) error {
 		return errors.New(ErrNotFound, "no skill named "+name)
 	}
 	root, err := os.OpenRoot(dir)
+	if stderrors.Is(err, fs.ErrNotExist) {
+		return errors.New(ErrNotFound, "no skill named "+name) // no skills at all yet
+	}
 	if err != nil {
 		return errors.Wrap(err, ErrIO, "cannot open the skills directory")
 	}

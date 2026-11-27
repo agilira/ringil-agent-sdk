@@ -46,7 +46,7 @@ type ConversationInfo struct {
 // store.
 func (s *Server) Conversations(ctx context.Context) ([]ConversationInfo, error) {
 	if s.cfg.Store == nil {
-		return nil, nil
+		return []ConversationInfo{}, nil
 	}
 	infos, err := s.cfg.Store.List(ctx)
 	if err != nil {
@@ -195,6 +195,11 @@ func (s *Server) ChangeConversation(ctx context.Context, id string, c Conversati
 	if err := c.check(); err != nil {
 		return err
 	}
+	if c.Project != nil {
+		if err := s.checkProject(ctx, *c.Project); err != nil {
+			return err
+		}
+	}
 	ls, ok := s.cfg.Store.(agent.LabelStore)
 	if !ok {
 		return fail(ErrNotFound, "the server keeps no conversation labels")
@@ -303,8 +308,8 @@ func (s *Server) labelRun(ctx context.Context, id, profile, project string, conv
 // projectOf is the project of a run: the one asked, which must be the
 // conversation's when it has one; else the conversation's.
 func (s *Server) projectOf(ctx context.Context, conversation, asked string) (string, error) {
-	if asked != "" && (agent.Labels{Project: asked}).Check() != nil {
-		return "", fail(ErrInput, "bad project name")
+	if err := s.checkProject(ctx, asked); err != nil {
+		return "", err
 	}
 	if conversation == "" || s.cfg.Store == nil {
 		return asked, nil
@@ -314,11 +319,34 @@ func (s *Server) projectOf(ctx context.Context, conversation, asked string) (str
 	case err != nil:
 		return "", err
 	case asked == "":
-		return has, nil
+		return s.checkedProject(ctx, has)
 	case has != "" && has != asked:
 		return "", fail(ErrInput, "the conversation belongs to another project")
 	}
 	return asked, nil
+}
+
+func (s *Server) checkedProject(ctx context.Context, id string) (string, error) {
+	if err := s.checkProject(ctx, id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// checkProject: a project named is a name, and the host takes it.
+func (s *Server) checkProject(ctx context.Context, project string) error {
+	if project == "" {
+		return nil
+	}
+	if (agent.Labels{Project: project}).Check() != nil {
+		return fail(ErrInput, "bad project name")
+	}
+	if s.cfg.CheckProject != nil {
+		if err := s.cfg.CheckProject(ctx, project); err != nil {
+			return fail(ErrInput, userMessage(err))
+		}
+	}
+	return nil
 }
 
 // conversationProject is the project a stored conversation is on, "" for

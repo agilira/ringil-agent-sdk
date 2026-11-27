@@ -62,7 +62,7 @@ func (c *cli) scratchDir(ctx *orpheus.Context, root string) (string, error) {
 	}
 	clearStale(scratch)
 	dir := filepath.Join(scratch, "run-"+strings.ToLower(rand.Text()[:12]))
-	c.closers = append(c.closers, func() error { return os.RemoveAll(dir) })
+	c.addCloser(func() error { return os.RemoveAll(dir) })
 	return dir, nil
 }
 

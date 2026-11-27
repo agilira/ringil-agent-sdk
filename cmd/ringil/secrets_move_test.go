@@ -365,3 +365,13 @@ func TestWithAStoreTheEnvironmentPicksNoProviderNorToken(t *testing.T) {
 		t.Fatalf("the command line's provider: exit %d: %s", code, h.err)
 	}
 }
+
+// Slack tokens are migrated alongside Telegram and serve tokens.
+func TestSecretNamesIncludeSlack(t *testing.T) {
+	names := (&config{}).secretNames()
+	for _, want := range []string{"RINGIL_TELEGRAM_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("secretNames missing %s", want)
+		}
+	}
+}

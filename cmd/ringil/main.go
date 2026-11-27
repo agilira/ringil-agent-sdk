@@ -38,7 +38,7 @@ func run(ctx context.Context, args []string, c *cli) int {
 	defer func() { _ = c.secrets.Close() }() // #nosec G104 -- the stores opened; nothing to report at exit
 	defer c.flushTraces()
 	err := c.app().RunContext(ctx, args)
-	if c.pendingImport() || restarting.Load() { // serve stopped for an import, or a restart, from the app: it starts again
+	if c.pendingImport() || restarting.Swap(false) { // serve stopped for an import, or a restart, from the app: it starts again
 		c.flushTraces()
 		_ = c.secrets.Close() // #nosec G104 -- as above
 		c.restart()

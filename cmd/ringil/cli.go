@@ -85,7 +85,8 @@ type cli struct {
 	// newEmbedder builds the embedding model; tests may replace it.
 	newEmbedder func(openai.Config) (agent.Embedder, error)
 	// closers stop the MCP servers started for the current command.
-	closers []func() error
+	closersMu sync.Mutex
+	closers   []func() error
 	// notes are the session's notebooks, when there are any.
 	notes *notes.Notes
 	// crew runs the agent's sub-agents, background ones included.
@@ -127,6 +128,7 @@ type cli struct {
 	learned   map[string][]agent.Rule
 	learnedMu sync.Mutex
 	keepMu    sync.Mutex // one "p" answer writes ringil.yaml at a time
+	keepLock  *sync.Mutex
 	// newSandbox returns the platform sandbox; tests may replace it.
 	newSandbox func() (sandbox.Sandbox, error)
 	// cwd is where the CLI was started, home the user's home; tests
@@ -135,6 +137,7 @@ type cli struct {
 	home func() (string, error)
 	// scanner reads the terminal; see readLine.
 	scanner *bufio.Scanner
+	scanErr error
 	// server, under `ringil serve`, decides the calls the chat would ask
 	// about, through its API; there is no terminal.
 	server *serve.Server
@@ -234,12 +237,13 @@ type cli struct {
 }
 
 func newCLI(in io.Reader, out, errOut io.Writer) *cli {
-	return &cli{
+	c := &cli{
 		in: in, out: out, errOut: errOut, getenv: os.Getenv, newEmbedder: func(cfg openai.Config) (agent.Embedder, error) { return openai.NewEmbedder(cfg) },
 		newProvider:  openai.New,
 		newAnthropic: anthropic.New,
 		signIns:      &signIns{},
 		imports:      &importing{},
+		keepLock:     &sync.Mutex{},
 		restart:      restart,
 		inImage:      inImage,
 		openURL:      openBrowser,
@@ -266,6 +270,23 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		traces:      &tracing{},
 		traceWarned: &atomic.Bool{},
 	}
+	c.signIns.owner = c
+	return c
+}
+
+func (c *cli) addCloser(fn func() error) {
+	c.closersMu.Lock()
+	c.closers = append(c.closers, fn)
+	c.closersMu.Unlock()
+}
+
+func (c *cli) lockKeep() func() {
+	mu := c.keepLock
+	if mu == nil {
+		mu = &c.keepMu
+	}
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (c *cli) app() *orpheus.App {
@@ -332,7 +353,7 @@ func (c *cli) app() *orpheus.App {
 	app.AddCommand(orpheus.NewCommand("state", "Export the agent's state, check an archive, import one").SetHandler(c.cmdStateHelp).
 		AddSubcommand(orpheus.NewCommand("export", "Save the agent's state to a new archive").SetHandler(c.withConfig(c.cmdStateExport)).SetUsage("state export <file.tar.gz>")).
 		AddSubcommand(orpheus.NewCommand("verify", "Check an archive without extracting it").SetHandler(c.cmdStateVerify).SetUsage("state verify <file.tar.gz>")).
-		AddSubcommand(orpheus.NewCommand("import", "Replace the state with an archive's, keeping a copy of it before").SetHandler(c.cmdStateImport).SetUsage("state import <file.tar.gz>")))
+		AddSubcommand(orpheus.NewCommand("import", "Replace the state with an archive's, keeping a copy of it before").SetHandler(c.configThenAlone(c.cmdStateImport)).SetUsage("state import <file.tar.gz>")))
 	app.AddCommand(withWorkspace(orpheus.NewCommand("automate", "Make something happen by itself from now on: a trigger, shown before it is made").SetHandler(c.withConfig(c.cmdAutomate)).
 		SetUsage("automate <what, e.g. every weekday at 8 summarize my mail>")))
 	app.AddCommand(orpheus.NewCommand("trigger", "List the triggers `ringil serve` runs: on a time, a change, a message, a webhook").SetHandler(c.withConfig(c.cmdTrigger)).
@@ -476,7 +497,7 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 	if err != nil {
 		return nil, err
 	}
-	ws, err := files.New(files.Config{Dirs: dirs, Ask: c.askAccess, ConfirmProtected: c.confirmProtected, Exclude: ownStateExcluded,
+	ws, err := files.New(files.Config{Dirs: dirs, Own: c.ownDirs(), Ask: c.askAccess, ConfirmProtected: c.confirmProtected, Exclude: ownStateExcluded,
 		Protected: protectedPatterns, ProtectedFiles: c.protectedFiles(ctx)})
 	if err != nil {
 		return nil, err
@@ -489,6 +510,14 @@ func (c *cli) tools(ctx *orpheus.Context, mem agent.Memory, cat *skills.Catalog)
 	return reg.With(append(append(c.readTools, ws.WriteTools()...), sh...)...)
 }
 
+func (c *cli) ownDirs() []string {
+	base, err := c.configDir()
+	if err != nil {
+		return nil
+	}
+	return []string{filepath.Join(base, "ringil")}
+}
+
 // protectedPatterns are the SDK's protected paths and ringil's own
 // configuration, wherever a project keeps one.
 var protectedPatterns = append(append([]string(nil), files.DefaultProtected...), "ringil.yaml")
@@ -497,7 +526,7 @@ var protectedPatterns = append(append([]string(nil), files.DefaultProtected...),
 // --workspace, or the default ones, and under serve the documents of the
 // run's chat.
 func (c *cli) workspaceDirs(ctx *orpheus.Context) ([]string, error) {
-	dirs := ctx.GetFlagStringSlice("workspace")
+	dirs := slices.Clone(ctx.GetFlagStringSlice("workspace"))
 	if len(dirs) == 0 {
 		var err error
 		if dirs, err = c.defaultDirs(); err != nil {
@@ -713,12 +742,18 @@ func (c *cli) defaultDirs() ([]string, error) {
 // askAccess asks in the terminal whether the agent may use dir. No answer
 // (end of input) is a no.
 func (c *cli) askAccess(ctx context.Context, dir string) (bool, error) {
+	if checking(ctx) {
+		c.note("a check may not ask for directory access: " + clean(dir) + " refused")
+		return false, nil
+	}
 	if c.server != nil {
 		return false, nil // no terminal to ask: only the granted directories
 	}
-	c.holdTerminal(ctx)
+	if !c.holdTerminal(ctx) {
+		return false, ctx.Err()
+	}
 	defer c.askMu.Unlock()
-	return c.confirm("\n  ? " + asker(ctx) + " wants to access " + clean(dir) + " — allow? [y/N] ")
+	return c.confirm(ctx, "\n  ? "+asker(ctx)+" wants to access "+clean(dir)+" — allow? [y/N] ")
 }
 
 // decide is approve as the agent's approval hook.
@@ -753,14 +788,20 @@ func (c *cli) triggerDecision(p *agent.Policy, call agent.ToolCall, spec agent.T
 	return agent.Deny("This automation was not allowed this call when it was set up, and no one can be asked now."), true
 }
 
-// notesReadInPlan: plan mode reads, and the notes tool's calls that change
-// nothing (a view, the session's scratchpad) are reading; a deny or ask
-// rule on them still holds.
-func (c *cli) notesReadInPlan(ctx context.Context, p *agent.Policy, call agent.ToolCall, spec agent.ToolSpec) bool {
-	if call.Name != notes.DefaultName || c.mode() != agent.ModePlan || c.notesMustAsk(ctx, call) || p.AskedByRule(call, spec) {
+// notesReadInPlan: plan mode reads, so only notes views run there; a deny
+// or ask rule on them still holds. Triggers never bypass triggerDecision.
+func (c *cli) notesReadInPlan(_ context.Context, p *agent.Policy, call agent.ToolCall, spec agent.ToolSpec) bool {
+	if c.inTrigger || call.Name != notes.DefaultName || c.mode() != agent.ModePlan || !isNotesView(call.Input) || p.AskedByRule(call, spec) {
 		return false
 	}
 	return (&agent.Policy{Rules: p.Rules}).Effect(call, spec) != agent.EffectDeny // the rules alone, without the mode
+}
+
+func isNotesView(input json.RawMessage) bool {
+	var in struct {
+		Command string `json:"command"`
+	}
+	return json.Unmarshal(input, &in) == nil && in.Command == "view"
 }
 
 func (c *cli) notesFree(ctx context.Context, p *agent.Policy, call agent.ToolCall, spec agent.ToolSpec) bool {
@@ -780,7 +821,9 @@ func (c *cli) askPerson(ctx context.Context, call agent.ToolCall, spec agent.Too
 // askTerminal asks in the terminal: yes, no, always for this session, or
 // always, kept in ringil.yaml.
 func (c *cli) askTerminal(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (agent.Answer, error) {
-	c.holdTerminal(ctx)
+	if !c.holdTerminal(ctx) {
+		return agent.Answer{}, ctx.Err()
+	}
 	defer c.askMu.Unlock()
 	if checking(ctx) { // the user may be typing: a line meant for the chat must not answer it
 		c.note("a check may not ask in the terminal: " + call.Name + " refused")
@@ -791,7 +834,7 @@ func (c *cli) askTerminal(ctx context.Context, call agent.ToolCall, spec agent.T
 	if rule, ok := agent.RuleFor(call, spec); ok {
 		options = "[y/N/a=always " + rule.String() + " this session/p=always, kept in ringil.yaml]"
 	}
-	answer, err := c.ask("\n  ? " + asker(ctx) + " wants to run " + call.Name + " " + short(string(call.Input)) + " — allow? " + options + " ")
+	answer, err := c.ask(ctx, "\n  ? "+asker(ctx)+" wants to run "+call.Name+" "+short(string(call.Input))+" — allow? "+options+" ")
 	return answered(answer), err
 }
 
@@ -808,14 +851,23 @@ func answered(answer string) agent.Answer {
 
 // holdTerminal takes the terminal for a question; when the chat prompt
 // holds it, the user is told a question is waiting for their next message.
-func (c *cli) holdTerminal(ctx context.Context) {
+func (c *cli) holdTerminal(ctx context.Context) bool {
 	if c.askMu.TryLock() {
-		return
+		if ctx.Err() != nil {
+			c.askMu.Unlock()
+			return false
+		}
+		return true
 	}
 	if _, worker := delegate.Current(ctx); worker {
 		c.note(asker(ctx) + " is waiting for your approval: it will ask after your next message")
 	}
 	c.askMu.Lock()
+	if ctx.Err() != nil {
+		c.askMu.Unlock()
+		return false
+	}
+	return true
 }
 
 // asker names who is asking: the agent, or one of its workers.
@@ -836,6 +888,10 @@ func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
 	if c.unasked() {
 		return true, nil
 	}
+	if checking(ctx) {
+		c.note("a check may not ask to change protected files: " + clean(path) + " refused")
+		return false, nil
+	}
 	if c.server != nil {
 		input, err := json.Marshal(map[string]string{"path": path})
 		if err != nil {
@@ -843,9 +899,11 @@ func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
 		}
 		return c.server.Ask(ctx, agent.ToolCall{ID: "protected-" + rand.Text()[:8], Name: "write_protected_file", Input: input})
 	}
-	c.holdTerminal(ctx)
+	if !c.holdTerminal(ctx) {
+		return false, ctx.Err()
+	}
 	defer c.askMu.Unlock()
-	return c.confirm("\n  ! " + asker(ctx) + " wants to change " + clean(path) + ", which holds your own rules or settings — allow this change? [y/N] ")
+	return c.confirm(ctx, "\n  ! "+asker(ctx)+" wants to change "+clean(path)+", which holds your own rules or settings — allow this change? [y/N] ")
 }
 
 // unasked: --no-approvals, and not in a chat's run, whose Bridge decides
@@ -856,7 +914,7 @@ func (c *cli) unasked() bool {
 
 // chats are the channels serve bridges: their runs' approvals are the
 // Bridge's to decide, and they talk in chat style.
-var chats = []string{"telegram"}
+var chats = []string{"telegram", "slack"}
 
 // chatRun: this run continues a chat's conversation.
 func (c *cli) chatRun() bool {
@@ -887,7 +945,13 @@ func (c *cli) notesMustAsk(ctx context.Context, call agent.ToolCall) bool {
 // only through their tools and commands, which ask.
 var ownStateExcluded = append(slices.Clone(files.DefaultExclude),
 	"ringil/triggers", "ringil/skills", "ringil/ringil.yaml", "ringil/serve-token",
-	"ringil/telegram-phones.json", "ringil/telegram-sessions.json", "ringil/instructions.md", "ringil/secrets")
+	"ringil/telegram-phones.json", "ringil/telegram-sessions.json",
+	"ringil/slack-phones.json", "ringil/slack-sessions.json",
+	"ringil/instructions.md", "ringil/secrets", "ringil/secrets.enc",
+	"ringil/audit.db", "ringil/audit.db-wal", "ringil/audit.db-shm",
+	"ringil/sessions", "ringil/memory", "ringil/artifacts", "ringil/app-artifacts",
+	"ringil/projects", "ringil/workflows", "ringil/saved-workflows",
+	"ringil/app-sessions.json", "ringil/oauth")
 
 // showCall shows, before asking, what a call would do in full when a
 // line cannot: a workflow's plan, a skill's instructions.
@@ -903,20 +967,20 @@ func (c *cli) showCall(call agent.ToolCall) {
 }
 
 // confirm asks a yes/no question; no answer is a no.
-func (c *cli) confirm(question string) (bool, error) {
-	answer, err := c.ask(question)
+func (c *cli) confirm(ctx context.Context, question string) (bool, error) {
+	answer, err := c.ask(ctx, question)
 	return yes(answer), err
 }
 
 // ask prints a question and returns the lower-cased answer; empty at the
 // end of input.
-func (c *cli) ask(question string) (string, error) {
+func (c *cli) ask(ctx context.Context, question string) (string, error) {
 	if err := c.line(question); err != nil {
 		return "", err
 	}
-	answer, ok := c.readLine()
+	answer, ok := c.readLine(ctx)
 	if !ok {
-		return "", nil
+		return "", ctx.Err()
 	}
 	return strings.ToLower(strings.TrimSpace(answer)), nil
 }
@@ -933,9 +997,13 @@ func yes(answer string) bool {
 // the access questions so neither steals the other's input.
 // The lines come from one goroutine, so that the chat's prompt can also
 // wait for a check come due (lines) while it waits for the user.
-func (c *cli) readLine() (string, bool) {
-	line, ok := <-c.lines()
-	return line, ok
+func (c *cli) readLine(ctx context.Context) (string, bool) {
+	select {
+	case line, ok := <-c.lines():
+		return line, ok
+	case <-ctx.Done():
+		return "", false
+	}
 }
 
 // lines starts reading the terminal, once; the channel closes at the end
@@ -946,10 +1014,11 @@ func (c *cli) lines() <-chan string {
 		c.scanner = bufio.NewScanner(c.in)
 		c.scanner.Buffer(make([]byte, 0, 4096), maxLine)
 		go func() {
-			defer close(c.input)
 			for c.scanner.Scan() {
 				c.input <- c.scanner.Text()
 			}
+			c.scanErr = c.scanner.Err()
+			close(c.input)
 		}()
 	})
 	return c.input

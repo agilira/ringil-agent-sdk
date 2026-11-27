@@ -553,6 +553,15 @@ func TestConversationOf(t *testing.T) {
 	}
 }
 
+// noneListsEmpty: a server without a store lists [], never null.
+func noneListsEmpty(t *testing.T) {
+	t.Helper()
+	none := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
+	if ids, err := none.srv.Conversations(context.Background()); ids == nil || len(ids) != 0 || err != nil {
+		t.Fatalf("without a store: %v %v", ids, err)
+	}
+}
+
 func TestConversationsListsTheStore(t *testing.T) {
 	store, err := file.New(t.TempDir())
 	if err != nil {
@@ -570,10 +579,7 @@ func TestConversationsListsTheStore(t *testing.T) {
 	if err != nil || len(ids) != 1 || ids[0] != (ConversationInfo{ID: "telegram-5", Title: "hi", Profile: "default", Updated: ids[0].Updated, Size: ids[0].Size}) {
 		t.Fatalf("%v %v", ids, err)
 	}
-	none := newAPI(t, Config{Profiles: []Profile{profile(t, "default", agent.Config{Provider: fake.New()})}})
-	if ids, err := none.srv.Conversations(context.Background()); ids != nil || err != nil {
-		t.Fatalf("without a store: %v %v", ids, err)
-	}
+	noneListsEmpty(t)
 }
 
 func TestSourceOf(t *testing.T) {

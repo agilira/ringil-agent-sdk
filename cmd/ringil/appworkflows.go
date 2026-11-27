@@ -9,6 +9,7 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -110,50 +111,106 @@ func (c *cli) agentRunner(octx *orpheus.Context, source string) (*workflow.Runne
 // ran ended: the journal keeps the steps, this the error.
 type wfRuns struct {
 	mu      sync.Mutex
-	running map[string]bool
+	running map[string]uint64
 	failed  map[string]string
+	next    uint64
+	wg      sync.WaitGroup
+	closed  bool // wait began: no more launches
 }
 
-func (w *wfRuns) start(id string) {
+func (w *wfRuns) start(id string) uint64 {
 	if w == nil {
-		return
+		return 0
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.running == nil {
-		w.running, w.failed = map[string]bool{}, map[string]string{}
+		w.running, w.failed = map[string]uint64{}, map[string]string{}
 	}
-	w.running[id] = true
+	w.next++
+	w.running[id] = w.next
 	delete(w.failed, id)
+	return w.next
 }
 
 // claim marks id going unless it already is.
-func (w *wfRuns) claim(id string) bool {
+func (w *wfRuns) claim(id string) (uint64, bool) {
 	if w == nil {
-		return true
+		return 0, true
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.running[id] {
-		return false
+	if w.running[id] != 0 {
+		return 0, false
 	}
 	if w.running == nil {
-		w.running, w.failed = map[string]bool{}, map[string]string{}
+		w.running, w.failed = map[string]uint64{}, map[string]string{}
 	}
-	w.running[id] = true
+	w.next++
+	w.running[id] = w.next
 	delete(w.failed, id)
-	return true
+	return w.next, true
 }
 
-func (w *wfRuns) end(id string, err error) {
+func (w *wfRuns) endToken(id string, tok uint64, err error) {
 	if w == nil {
 		return
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	delete(w.running, id)
-	if err != nil && w.failed != nil {
-		w.failed[id] = oneLine(describe(err), 500)
+	if tok == 0 || w.running[id] == tok {
+		delete(w.running, id)
+	}
+	if w.failed != nil {
+		if err != nil {
+			w.failed[id] = oneLine(describe(err), 500)
+		} else {
+			delete(w.failed, id)
+		}
+	}
+}
+
+func (w *wfRuns) launch(id string, run func() error) {
+	tok := w.start(id)
+	w.launchClaimed(id, tok, run)
+}
+
+func (w *wfRuns) launchClaimed(id string, tok uint64, run func() error) {
+	if w == nil {
+		go func() { _ = run() }()
+		return
+	}
+	w.mu.Lock()
+	if w.closed { // shutting down: an Add now would race Wait
+		w.mu.Unlock()
+		w.endToken(id, tok, errors.New(ErrUsage, "ringil is shutting down: the workflow did not start"))
+		return
+	}
+	w.wg.Add(1)
+	w.mu.Unlock()
+	go func() {
+		defer w.wg.Done()
+		w.endToken(id, tok, run())
+	}()
+}
+
+func (w *wfRuns) forget(id string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.running[id] == 0 {
+		delete(w.failed, id)
+	}
+}
+
+func (w *wfRuns) wait() {
+	if w != nil {
+		w.mu.Lock()
+		w.closed = true
+		w.mu.Unlock()
+		w.wg.Wait()
 	}
 }
 
@@ -173,7 +230,7 @@ func (w *wfRuns) state(id string) (running bool, failure string) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.running[id], w.failed[id]
+	return w.running[id] != 0, w.failed[id]
 }
 
 // The workflows' API, mounted with the settings:
@@ -191,7 +248,11 @@ func (w *wfRuns) state(id string) (running bool, failure string) {
 //	DELETE /v1/workflow-runs/{id}              forget a run that is not going
 func (c *cli) mountWorkflows(octx *orpheus.Context, srv *serve.Server) {
 	life, cancel := context.WithCancel(context.Background())
-	c.closers = append(c.closers, func() error { cancel(); return nil })
+	c.addCloser(func() error {
+		cancel()
+		c.wfRuns.wait()
+		return nil
+	})
 	c.workflowLife = life
 	routes := map[string]http.HandlerFunc{
 		"GET /v1/workflows":                                c.listSaved,
@@ -350,11 +411,10 @@ func (c *cli) runSaved(octx *orpheus.Context, life context.Context) http.Handler
 			return
 		}
 		id := workflow.NewRunID(s.Name)
-		c.wfRuns.start(id) // listed as going at once, before its journal exists
-		go func() {
+		c.wfRuns.launch(id, func() error {
 			_, err := runner.RunSaved(life, id, s, in.Input)
-			c.wfRuns.end(id, err) // a run its hooks refused too
-		}()
+			return err
+		})
 		writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
 	}
 }
@@ -425,13 +485,26 @@ func (c *cli) listWorkflowRuns(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+var validWorkflowRunID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+func validRunID(w http.ResponseWriter, id string) bool {
+	if !validWorkflowRunID.MatchString(id) {
+		fail(w, http.StatusBadRequest, "WORKFLOW", "workflow ids are 1-64 letters, digits, . _ -")
+		return false
+	}
+	return true
+}
+
 func (c *cli) getWorkflowRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validRunID(w, id) {
+		return
+	}
 	j, err := c.journal()
 	if err != nil {
 		workflowFail(w, err)
 		return
 	}
-	id := r.PathValue("id")
 	st, err := j.Load(r.Context(), id)
 	switch {
 	case err != nil:
@@ -451,14 +524,18 @@ func (c *cli) getWorkflowRun(w http.ResponseWriter, r *http.Request) {
 func (c *cli) resumeWorkflowRun(octx *orpheus.Context, life context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if !c.wfRuns.claim(id) {
+		if !validRunID(w, id) {
+			return
+		}
+		tok, ok := c.wfRuns.claim(id)
+		if !ok {
 			fail(w, http.StatusConflict, "WORKFLOW", "workflow run "+id+" is going")
 			return
 		}
 		started := false
 		defer func() {
 			if !started {
-				c.wfRuns.end(id, nil)
+				c.wfRuns.endToken(id, tok, nil)
 			}
 		}()
 		runner, err := c.agentRunner(octx, "")
@@ -482,10 +559,10 @@ func (c *cli) resumeWorkflowRun(octx *orpheus.Context, life context.Context) htt
 			}
 		}
 		started = true
-		go func() {
+		c.wfRuns.launchClaimed(id, tok, func() error {
 			_, err := runner.Run(life, id, st.Plan, st.Brief, true)
-			c.wfRuns.end(id, err)
-		}()
+			return err
+		})
 		w.WriteHeader(http.StatusAccepted)
 	}
 }
@@ -511,6 +588,9 @@ func (c *cli) resolveStep(w http.ResponseWriter, r *http.Request) {
 // changeStep records what the user decided of a step left started.
 func (c *cli) changeStep(w http.ResponseWriter, r *http.Request, change func(workflow.Journal, string, string) error) {
 	id := r.PathValue("id")
+	if !validRunID(w, id) {
+		return
+	}
 	if running, _ := c.wfRuns.state(id); running {
 		fail(w, http.StatusConflict, "WORKFLOW", "workflow run "+id+" is going")
 		return
@@ -528,18 +608,32 @@ func (c *cli) changeStep(w http.ResponseWriter, r *http.Request, change func(wor
 
 func (c *cli) deleteWorkflowRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !validRunID(w, id) {
+		return
+	}
 	if running, _ := c.wfRuns.state(id); running {
 		fail(w, http.StatusConflict, "WORKFLOW", "workflow run "+id+" is going")
 		return
 	}
 	j, err := c.journal()
-	if err == nil {
-		err = j.Remove(r.Context(), id)
-	}
 	if err != nil {
 		workflowFail(w, err)
 		return
 	}
+	st, err := j.Load(r.Context(), id)
+	if err != nil {
+		workflowFail(w, err)
+		return
+	}
+	if st == nil {
+		fail(w, http.StatusNotFound, "WORKFLOW", "no workflow run "+id)
+		return
+	}
+	if err := j.Remove(r.Context(), id); err != nil {
+		workflowFail(w, err)
+		return
+	}
+	c.wfRuns.forget(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -554,7 +648,7 @@ func (c *cli) workflowTools() []agent.Tool {
 	if err != nil {
 		return nil
 	}
-	c.closers = append(c.closers, lib.Close)
+	c.addCloser(lib.Close)
 	c.library = lib
 	runner, err := c.agentRunner(c.serveCtx, "")
 	if err != nil {
@@ -585,11 +679,10 @@ func (c *cli) runSavedTool(runner *workflow.Runner, lib *workflow.Library) agent
 				return "", agent.ToolError(workflow.ErrNotFound, agent.ModelMessage(err))
 			}
 			id := workflow.NewRunID(s.Name)
-			c.wfRuns.start(id)
-			go func() {
+			c.wfRuns.launch(id, func() error {
 				_, err := runner.RunSaved(c.workflowLife, id, s, in.Input)
-				c.wfRuns.end(id, err)
-			}()
+				return err
+			})
 			return "Workflow " + s.Name + " started as " + id + ": it runs in the background, the user sees its steps and its result in the app.", nil
 		}, agent.Destructive())
 }

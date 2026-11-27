@@ -63,7 +63,7 @@ func (c *cli) delegateCrew(ctx *orpheus.Context, p agent.Provider, parentTools a
 		return nil, err
 	}
 	c.crew = crew
-	c.closers = append(c.closers, func() error { crew.Close(); return nil })
+	c.addCloser(func() error { crew.Close(); return nil })
 	return crew, nil
 }
 

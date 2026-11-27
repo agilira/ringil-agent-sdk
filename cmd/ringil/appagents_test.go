@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/agilira/ringil-agent-sdk/provider/fake"
 	"github.com/agilira/ringil-agent-sdk/serve"
+	"github.com/agilira/ringil-agent-sdk/trigger"
 )
 
 // appCall sends a request to the app's API with the token.
@@ -176,3 +178,47 @@ func TestAppAgentRemoved(t *testing.T) {
 }
 
 func onWindows() bool { return filepath.Separator == '\\' }
+
+// no_tools: true returns 400 without panicking when configuring profile tools.
+func TestAppAgentNoToolsNoPanic(t *testing.T) {
+	appAPI(t, "models: [openai:m]\nno_tools: true\n", nil, func(_ *harness, _ *serve.Server, call appCall) {
+		must(t, call, "PUT", "/v1/settings/profiles/w", `{"description":"w","tools":["read_file"]}`, http.StatusBadRequest)
+		must(t, call, "PUT", "/v1/settings/profiles/w", `{"description":"w","tools":[]}`, http.StatusNoContent)
+	})
+}
+
+// Audit 27/11: ringil.yaml names the app's files from its own folder (an
+// export imported elsewhere finds them), and an edit made before the
+// watcher has caught up keeps the instructions written a moment ago.
+func TestAppPathsRelativeAndFromDisk(t *testing.T) {
+	appAPI(t, "models: [openai:m]\n", nil, func(h *harness, srv *serve.Server, call appCall) {
+		must(t, call, "PUT", "/v1/settings/instructions", `{"text":"Be brief."}`, http.StatusNoContent)
+		must(t, call, "PUT", "/v1/settings/profiles/writer", `{"description":"a","instructions":"You write.","tools":[]}`, http.StatusNoContent)
+		must(t, call, "PUT", "/v1/settings/profiles/writer", `{"description":"b","tools":[]}`, http.StatusNoContent) // at once: the watcher lags
+		path := filepath.Join(h.dir, "ringil", "ringil.yaml")
+		fileHas(t, path, "instructions.md", "profiles/writer.md", "b")
+		if b, _ := os.ReadFile(path); strings.Contains(string(b), filepath.ToSlash(h.dir)) || strings.Contains(string(b), h.dir) {
+			t.Fatalf("an absolute path in ringil.yaml:\n%s", b)
+		}
+		waitFor(t, func() bool { return hasProfile(srv, "writer") && h.c.conf().Profiles["writer"].Description == "b" })
+		var list []ProfileOut
+		if err := json.Unmarshal([]byte(must(t, call, "GET", "/v1/settings/profiles", "", http.StatusOK)), &list); err != nil || len(list) != 1 || list[0].Instructions != "You write." {
+			t.Fatalf("%+v %v", list, err)
+		}
+		if got := h.c.conf().Instructions; got != filepath.Join(h.dir, "ringil", "instructions.md") {
+			t.Fatalf("read back as %q", got)
+		}
+	})
+}
+
+func TestDependencyChecksFailClosed(t *testing.T) {
+	c := newCLI(strings.NewReader(""), io.Discard, io.Discard)
+	c.configDir = func() (string, error) { return "", errors.New("boom") }
+	c.dataDir = func() (string, error) { return "", errors.New("boom") }
+	if users := c.triggersOf(func(trigger.Trigger) bool { return false }); len(users) == 0 {
+		t.Fatal("triggersOf failed open on triggerStore error")
+	}
+	if users := c.workflowsWith("writer"); len(users) == 0 {
+		t.Fatal("workflowsWith failed open on savedWorkflows error")
+	}
+}

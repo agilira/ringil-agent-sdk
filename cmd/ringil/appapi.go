@@ -6,12 +6,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"io"
 	"maps"
+	"mime"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/agilira/argus"
@@ -280,17 +284,36 @@ func (c *cli) providerModels(octx *orpheus.Context) http.HandlerFunc {
 			fail(w, http.StatusInternalServerError, "SETTINGS_SECRETS", describe(err))
 			return
 		}
-		s := &setup{c: c, ctx: r.Context(), endpoint: ep}
-		if ep.keyName != "" {
-			s.key, _ = keyFunc(res, ep.keyName)(r.Context())
+		s := &setup{c: c, ctx: r.Context(), endpoint: ep, allowHTTP: c.flagBool(octx, "allow-http")}
+		if err := c.resolveModelsAuth(r.Context(), s, res, ep); err != nil {
+			fail(w, http.StatusBadRequest, "SETTINGS_SECRETS", describe(err))
+			return
 		}
 		ids, err := s.models()
 		if err != nil {
 			fail(w, http.StatusBadGateway, "SETTINGS_PROVIDER", describe(err))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string][]string{"models": chatModels(ids)})
+		writeJSON(w, http.StatusOK, map[string][]string{"models": nonNil(chatModels(ids))})
 	}
+}
+
+func (c *cli) resolveModelsAuth(ctx context.Context, s *setup, res secrets.Resolver, ep endpoint) error {
+	if ep.kind == providerChatGPT {
+		sess, err := c.chatgptSession(res)
+		if err != nil {
+			return err
+		}
+		s.session = sess
+	}
+	if ep.keyName != "" {
+		k, err := keyFunc(res, ep.keyName)(ctx)
+		if err != nil {
+			return err
+		}
+		s.key = k
+	}
+	return nil
 }
 
 type secretIn struct {
@@ -349,9 +372,9 @@ func (c *cli) secretStoreNamed(w http.ResponseWriter, r *http.Request, octx *orp
 		fail(w, http.StatusInternalServerError, "SETTINGS_SECRETS", describe(err))
 		return nil, "", false
 	}
-	c.keepMu.Lock() // one store, even for two first keys at once
+	unlock := c.lockKeep() // one store, even for two first keys at once
 	st, err := c.appStore(r.Context(), base)
-	c.keepMu.Unlock()
+	unlock()
 	switch {
 	case err != nil:
 		fail(w, http.StatusInternalServerError, "SETTINGS_SECRETS", "no secrets store could be opened or set up: "+describe(err))
@@ -371,6 +394,10 @@ func (c *cli) postMCP(octx *orpheus.Context) http.HandlerFunc {
 		}
 		if err := e.Check(); err != nil {
 			fail(w, http.StatusBadRequest, "SETTINGS_INPUT", describe(err))
+			return
+		}
+		if c.settings == nil || c.settings.path == "" {
+			fail(w, http.StatusConflict, "SETTINGS_NO_FILE", "serve runs without a configuration directory: there is no ringil.yaml to change")
 			return
 		}
 		added, err := c.addMCP(r.Context(), e, func() (secrets.Resolver, error) { return c.resolver(octx) })
@@ -427,7 +454,11 @@ func (c *cli) deleteSkill(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = skills.Remove(dir, r.PathValue("name"))
 	}
-	if err != nil {
+	switch {
+	case errors.HasCode(err, skills.ErrNotFound):
+		fail(w, http.StatusNotFound, "SETTINGS_NOT_FOUND", describe(err))
+		return
+	case err != nil:
 		fail(w, http.StatusBadRequest, "SETTINGS_SKILLS", describe(err))
 		return
 	}
@@ -452,8 +483,7 @@ func notFound(what string) *refusal {
 // makes the change on a copy, which must pass every check a revision
 // passes; then apply writes it, and the watcher is woken.
 func (c *cli) change(w http.ResponseWriter, mutate func(next *config) *refusal, apply func(*edit)) {
-	c.keepMu.Lock()
-	defer c.keepMu.Unlock()
+	defer c.lockKeep()()
 	path := ""
 	if c.settings != nil {
 		path = c.settings.path
@@ -474,7 +504,7 @@ func (c *cli) change(w http.ResponseWriter, mutate func(next *config) *refusal, 
 	}
 	err = next.Validate()
 	if err == nil {
-		err = c.settings.acceptable(next)
+		err = c.settings.acceptable()
 	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", describe(err))
@@ -524,15 +554,43 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return decodeJSONLimit(w, r, v, 64<<10)
 }
 
-// decodeJSONLimit is decodeJSON for a body of at most limit bytes.
+// decodeJSONLimit is decodeJSON for a body of at most limit bytes, sent
+// as application/json, as the API's own routes take it.
 func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, limit))
+	data, ok := jsonBody(w, r, limit)
+	if !ok {
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil || dec.More() {
 		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", "the body is not one JSON object of the expected fields")
 		return false
 	}
 	return true
+}
+
+// jsonBody is the body, of at most limit bytes, sent as application/json.
+func jsonBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
+	if media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || media != "application/json" {
+		fail(w, http.StatusUnsupportedMediaType, "SETTINGS_INPUT", "send application/json")
+		return nil, false
+	}
+	return readBody(w, r, limit)
+}
+
+func readBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err == nil {
+		return data, true
+	}
+	var tooBig *http.MaxBytesError
+	if stderrors.As(err, &tooBig) {
+		fail(w, http.StatusRequestEntityTooLarge, "SETTINGS_INPUT", "the body is larger than "+strconv.FormatInt(limit>>10, 10)+" KiB")
+		return nil, false
+	}
+	fail(w, http.StatusBadRequest, "SETTINGS_INPUT", "cannot read the request body")
+	return nil, false
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

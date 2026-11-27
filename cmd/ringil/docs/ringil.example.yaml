@@ -211,7 +211,7 @@ serve:
   # public_profile: support    # anyone else too: a public bot
   max_per_hour: 30             # messages a member or the public has answered; negative none
   telegram:                    # the token: RINGIL_TELEGRAM_TOKEN
-    owners: ["623292473"]
+    owners: ["123456789"]      # replace with your Telegram user ID
     members: []
     # company_group: "-1001234567890"
     member_phones: ["+39 333 1234567"]

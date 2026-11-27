@@ -19,7 +19,7 @@ FROM ${GO_IMAGE} AS build
 WORKDIR /src
 COPY . .
 WORKDIR /src/cmd/ringil
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ringil . && mkdir -p /out/data
+RUN CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /out/ringil . && mkdir -p /out/data
 
 FROM ${RUN_IMAGE}
 # A shell and the usual tools: the agent's bash tool works in here.

@@ -34,7 +34,14 @@ const toEnv = "env"
 // credentials (headers, an OAuth secret). Never what opens a store (a
 // passphrase, a Vault token), nor a reference too long to be a name.
 func (f *config) secretNames() []string {
-	names := map[string]bool{"RINGIL_TELEGRAM_TOKEN": true, serveTokenName: true, chatgptLogin: true, chatgptLogin + "_ACCESS": true}
+	names := map[string]bool{
+		"RINGIL_TELEGRAM_TOKEN":  true,
+		"SLACK_BOT_TOKEN":        true,
+		"SLACK_APP_TOKEN":        true,
+		serveTokenName:           true,
+		chatgptLogin:             true,
+		chatgptLogin + "_ACCESS": true,
+	}
 	for name := range builtinProviders {
 		names[builtinProviders[name].KeyEnv] = true
 	}

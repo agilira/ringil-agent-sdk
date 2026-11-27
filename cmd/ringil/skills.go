@@ -45,22 +45,24 @@ func (c *cli) skillCatalog(ctx *orpheus.Context) (*skills.Catalog, error) {
 }
 
 // skillOptions: scripts run in the sandbox when this platform has one,
-// never seeing the agent's own configuration. The start directory is
-// visible read-only, with the secrets the file tools refuse hidden, unless
-// it is the home or a system directory.
+// never seeing the agent's own configuration; without one they are
+// refused (audit 27/11: the SDK's fallback could run them otherwise). The
+// start directory is visible read-only, with the secrets the file tools
+// refuse hidden, unless it is the home or a system directory.
 func (c *cli) skillOptions() skills.Options {
 	sb, err := c.newSandbox()
 	if err != nil {
-		return skills.Options{}
+		return skills.Options{NoScripts: true}
 	}
 	opts := skills.Options{Sandbox: sb}
-	base, berr := c.configDir()
-	if berr == nil {
-		opts.Protected = []string{filepath.Join(base, "ringil")}
+	own := ""
+	if base, err := c.configDir(); err == nil {
+		own = filepath.Join(base, "ringil")
+		opts.Protected = []string{own}
 	}
 	home := c.realHome()
 	opts.MountsFunc = func() []sandbox.Mount {
-		if m, ok := c.startMount(home, base); ok {
+		if m, ok := c.startMount(home, own); ok {
 			return []sandbox.Mount{m}
 		}
 		return nil
@@ -187,19 +189,30 @@ func withEnv(env map[string]string, k, v string) map[string]string {
 }
 
 // startMount is the start directory for scripts, read-only with secrets
-// hidden, unless it is the home, a system directory or holds the agent's
-// configuration. Computed before every script, so secrets created during
-// the session are hidden too.
+// hidden, unless it is the home, a system directory, or holds or is in
+// the agent's configuration (<config>/ringil, which the sandbox protects:
+// a skill's directory there made every script fail, audit 27/11).
+// Computed before every script, so secrets created during the session
+// are hidden too.
 func (c *cli) startMount(home, config string) (sandbox.Mount, bool) {
 	given, err := c.cwd()
 	if err != nil || sandbox.Reserved(filepath.ToSlash(given)) {
 		return sandbox.Mount{}, false
 	}
 	cwd := resolved(given)
-	if cwd == home || (home != "" && inside(home, cwd)) || sandbox.Reserved(filepath.ToSlash(cwd)) || (config != "" && inside(resolved(config), cwd)) {
+	if cwd == home || (home != "" && inside(home, cwd)) || sandbox.Reserved(filepath.ToSlash(cwd)) || overlaps(config, cwd) {
 		return sandbox.Mount{}, false
 	}
 	return maskedMount(cwd)
+}
+
+// overlaps: config is dir, or one holds the other; never with no config.
+func overlaps(config, dir string) bool {
+	if config == "" {
+		return false
+	}
+	config = resolved(config)
+	return inside(config, dir) || inside(dir, config)
 }
 
 // resolved is p with links resolved, as far as it exists: comparisons

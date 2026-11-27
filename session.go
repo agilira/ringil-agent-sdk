@@ -91,10 +91,10 @@ type Labels struct {
 // Check validates labels as a store keeps them.
 func (l Labels) Check() error {
 	if !validProfile.MatchString(l.Profile) {
-		return errors.New(ErrSessionInput, "a session's profile is 0-64 letters, digits, - and _")
+		return inputError("a session's profile is 0-64 letters, digits, - and _")
 	}
 	if !validProject.MatchString(l.Project) {
-		return errors.New(ErrSessionInput, "a session's project is 1-80 letters, digits, . _ -, from a letter or digit, or none")
+		return inputError("a session's project is 1-80 letters, digits, . _ -, from a letter or digit, or none")
 	}
 	return nil
 }
@@ -161,11 +161,15 @@ const (
 
 var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// inputError is a refusal of what the caller sent: its message is for
+// them (an API answers it as it is).
+func inputError(msg string) error { return errors.New(ErrSessionInput, msg).WithUserMessage(msg) }
+
 // ValidateSessionID accepts 1-64 letters, digits, '_' and '-'. IDs become
 // file names, so nothing that could leave the store's directory is allowed.
 func ValidateSessionID(id string) error {
 	if !sessionID.MatchString(id) {
-		return errors.New(ErrSessionInput, "session ID must be 1-64 letters, digits, _ or -")
+		return inputError("session ID must be 1-64 letters, digits, _ or -")
 	}
 	return nil
 }

@@ -205,15 +205,13 @@ func TestProjectsRefuse(t *testing.T) {
 		must(t, call, "POST", "/v1/projects/"+p.ID+"/cards", `{"title":"x","agent":"guest"}`, http.StatusBadRequest)
 		must(t, call, "PATCH", "/v1/projects/"+p.ID, `{"archived":true}`, http.StatusOK)
 		must(t, call, "POST", "/v1/projects/"+p.ID+"/cards", `{"title":"x"}`, http.StatusBadRequest)
-		for _, id := range []string{p.ID, "not-there"} {
-			snap, err := srv.StartFrom(serve.Request{Profile: "default", Project: id, Input: agent.UserText("x")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if end, _ := srv.Wait(t.Context(), snap.ID); end.State != serve.Failed {
-				t.Fatalf("a run on %s: %+v", id, end)
+		for _, id := range []string{p.ID, "not-there"} { // refused at once, as a bad request
+			must(t, call, "POST", "/v1/runs", `{"profile":"default","project":"`+id+`","input":"x"}`, http.StatusBadRequest)
+			if _, err := srv.StartFrom(serve.Request{Profile: "default", Project: id, Input: agent.UserText("x")}); err == nil {
+				t.Fatalf("a run on %s started", id)
 			}
 		}
+		must(t, call, "PATCH", "/v1/conversations/c1", `{"project":"not-there"}`, http.StatusBadRequest)
 	})
 }
 

@@ -96,7 +96,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle(pattern, h)
 	}
 	s.mu.Unlock()
-	guarded := s.Guard(mux)
+	guarded := s.Guard(jsonMuxErrors(mux))
 	if s.cfg.App == nil {
 		return s.fromPeers(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/health" {
@@ -222,6 +222,48 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// jsonMuxErrors has the mux's own 404 and 405 (plain text) said in the
+// API's JSON, their status and Allow kept: a client reads one shape of
+// error (found 27/11).
+func jsonMuxErrors(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		rec := &muxError{ResponseWriter: w}
+		mux.ServeHTTP(rec, r)
+	})
+}
+
+// muxError turns the mux's plain-text answer into the JSON error.
+type muxError struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (m *muxError) WriteHeader(code int) {
+	if m.wrote {
+		return
+	}
+	m.wrote = true
+	h := m.ResponseWriter.Header()
+	h.Del("Content-Type")
+	h.Del("X-Content-Type-Options")
+	msg := "no such route"
+	if code == http.StatusMethodNotAllowed {
+		msg = "this route does not take this method (Allow says which)"
+	}
+	failure(m.ResponseWriter, code, fail(map[bool]errors.ErrorCode{true: ErrNotFound, false: "SERVE_METHOD"}[code == http.StatusNotFound], msg))
+}
+
+func (m *muxError) Write(p []byte) (int, error) {
+	if !m.wrote {
+		m.WriteHeader(http.StatusNotFound)
+	}
+	return len(p), nil // the mux's text: replaced by the JSON
+}
+
 func (s *Server) bearerOK(r *http.Request) bool {
 	want := []byte("Bearer " + s.cfg.Token)
 	return subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) == 1
@@ -239,6 +281,11 @@ func (s *Server) Guard(next http.Handler) http.Handler {
 		case s.signedIn(r): // the app's own page, signed in
 			w.Header().Set("Cache-Control", "no-store")
 			next.ServeHTTP(w, r)
+		case r.Header.Get("Origin") == "" && s.bearerOK(r): // the token's holder, not a page: as ever
+			w.Header().Set("Cache-Control", "no-store")
+			next.ServeHTTP(w, r)
+		case s.cfg.App != nil && sameOrigin(r): // the app's own page, its session gone: one answer, whatever the method
+			failure(w, http.StatusUnauthorized, fail(ErrSignedOut, "signed out: open a new sign-in link (ringil serve link)"))
 		case r.Header.Get("Origin") != "":
 			failure(w, http.StatusForbidden, fail("SERVE_ORIGIN", "requests from web pages are refused"))
 		case !s.bearerOK(r):

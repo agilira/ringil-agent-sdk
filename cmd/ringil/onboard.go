@@ -86,10 +86,8 @@ func (s *setup) done() error {
 		return getenv(k)
 	}
 	msg := "ringil is set up: run `ringil` to start."
-	for _, name := range []string{"RINGIL_SECRETS_PASSPHRASE", "VAULT_TOKEN"} {
-		if _, ok := s.base[name]; ok {
-			msg = "ringil is set up. Before starting it, set " + name + " in your environment (or an --env-file of mode 600): ringil never writes it down."
-		}
+	for name := range s.base { // one at most: the passphrase or the token
+		msg = "ringil is set up. Before starting it, set " + name + " in your environment (or an --env-file of mode 600): ringil never writes it down."
 	}
 	s.c.shadowed = s.inEnvironment()
 	if len(s.c.shadowed) > 0 {
@@ -217,9 +215,8 @@ func (s *setup) chooseStore() error {
 	if err != nil {
 		return err
 	}
+	s.secrets = s.keptSecrets([]string{store.Keyring, store.File, store.Vault}[i])
 	switch i {
-	case 0:
-		s.secrets = secretsConfig{Store: store.Keyring}
 	case 1:
 		err = s.fileStore()
 	case 2:
@@ -229,6 +226,25 @@ func (s *setup) chooseStore() error {
 		return err
 	}
 	return s.openStore()
+}
+
+// keptSecrets is the store of kind with what ringil.yaml sets for it
+// already (a file, its passphrase's variable, a keyring service, Vault's
+// mount): the keys go where the next run looks. Of another kind, nothing
+// of the old one stays (audit 27/11: the keys went to the default file,
+// ringil.yaml still naming another).
+func (s *setup) keptSecrets(kind string) secretsConfig {
+	c := secretsConfig{Store: kind}
+	w, err := argus.NewConfigWriter(s.path, argus.FormatYAML, nil)
+	if err != nil || stringOf(w.GetValue("secrets.store")) != kind {
+		return c // a file that does not read is refused when written
+	}
+	get := func(k string) string { return stringOf(w.GetValue("secrets." + k)) }
+	c.Service, c.File, c.PassphraseEnv = get("keyring_service"), get("file"), get("passphrase_env")
+	c.Vault = vaultConfig{Mount: get("vault.mount"), TokenEnv: get("vault.token_env"), Namespace: get("vault.namespace"),
+		URL: get("vault.url"), Path: get("vault.path")}
+	c.Vault.AllowHTTP, _ = w.GetValue("secrets.vault.allow_http").(bool)
+	return c
 }
 
 func (s *setup) fileStore() error {
@@ -248,32 +264,34 @@ func (s *setup) fileStore() error {
 	if again != pass {
 		return errors.New(ErrUsage, "the two passphrases differ")
 	}
-	s.secrets = secretsConfig{Store: store.File}
-	s.base["RINGIL_SECRETS_PASSPHRASE"] = pass
-	return s.c.line("  ringil reads the passphrase from RINGIL_SECRETS_PASSPHRASE: set it in your environment (or an --env-file) before starting it.")
+	env := s.secrets.store("").PassphraseEnv
+	s.base[env] = pass
+	return s.c.line("  ringil reads the passphrase from " + env + ": set it in your environment (or an --env-file) before starting it.")
 }
 
 func (s *setup) vaultStore() error {
-	url, err := s.ask("Vault's address", "https://", func(v string) error {
-		_, err := store.Open(s.ctx, store.Config{Kind: store.Vault, VaultURL: v, VaultPath: "x"}, secrets.Map{})
+	v := &s.secrets.Vault
+	url, err := s.ask("Vault's address", cmpOr(v.URL, "https://"), func(u string) error {
+		_, err := store.Open(s.ctx, store.Config{Kind: store.Vault, VaultURL: u, VaultPath: "x", AllowHTTP: v.AllowHTTP}, secrets.Map{})
 		return err
 	})
 	if err != nil {
 		return err
 	}
-	path, err := s.ask("The path of ringil's secrets in it", "ringil", func(v string) error {
-		return store.Config{Kind: store.Vault, VaultURL: url, VaultPath: v}.Check()
+	path, err := s.ask("The path of ringil's secrets in it", cmpOr(v.Path, "ringil"), func(p string) error {
+		return store.Config{Kind: store.Vault, VaultURL: url, VaultPath: p, AllowHTTP: v.AllowHTTP}.Check()
 	})
 	if err != nil {
 		return err
 	}
-	s.secrets = secretsConfig{Store: store.Vault, Vault: vaultConfig{URL: url, Path: path}}
-	if s.c.getenv("VAULT_TOKEN") == "" {
-		t, err := s.p.AskSecret("A Vault token for this setup (ringil reads VAULT_TOKEN from your environment afterwards)")
+	v.URL, v.Path = url, path
+	env := cmpOr(v.TokenEnv, "VAULT_TOKEN")
+	if s.c.getenv(env) == "" {
+		t, err := s.p.AskSecret("A Vault token for this setup (ringil reads " + env + " from your environment afterwards)")
 		if err != nil {
 			return err
 		}
-		s.base["VAULT_TOKEN"] = t
+		s.base[env] = t
 	}
 	return nil
 }

@@ -113,7 +113,7 @@ func checkAcceptedConfig(t *testing.T, cfg *config) {
 		}
 	}
 	for name, m := range cfg.MCPServers {
-		if m.check() != nil {
+		if m.check(name) != nil {
 			t.Fatalf("bad mcp_server %q accepted: %+v", name, m)
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/agilira/go-errors"
 	"golang.org/x/net/http/httpproxy"
@@ -69,15 +70,18 @@ func (c *cli) ownProxy() {
 	}
 }
 
-// proxiedClient is a client on a transport of its own with ringil.yaml's
-// proxy, for libraries that would otherwise use a copy of Go's default
-// transport made before main set it (the MCP SDK's OAuth discovery,
-// audit 23/11).
+// proxiedClient returns an HTTP client using ringil.yaml's proxy with
+// DialContext left nil so MCP OAuth discovery keeps its SSRF dial guard.
 func (c *cli) proxiedClient() *http.Client {
-	if def, ok := http.DefaultTransport.(*http.Transport); ok {
-		t := def.Clone()
-		t.Proxy = c.proxyFor
-		return &http.Client{Transport: t}
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy:                 c.proxyFor,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 	}
-	return &http.Client{Transport: &http.Transport{Proxy: c.proxyFor}}
 }

@@ -6,6 +6,8 @@
 package main
 
 import (
+	"cmp"
+	"crypto/rand"
 	"fmt"
 	"maps"
 	"os"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/agilira/argus"
 	"github.com/agilira/go-errors"
+
+	"github.com/agilira/ringil-agent-sdk/secrets/store"
 )
 
 // write sets the setup's answers in ringil.yaml through argus's writer,
@@ -164,11 +168,8 @@ func (s *setup) settings() []keyValue {
 // were replaced whole). An answer of no embedder at Ollama removes that
 // section: it would win over the answer.
 func (s *setup) mergeSections(e *edit) {
-	e.merge("memory_store", "kind", s.memory.Kind, "url", s.memory.URL)
-	e.merge("secrets", "store", s.secrets.Store)
-	if s.secrets.Store == "vault" {
-		e.merge("secrets.vault", "url", s.secrets.Vault.URL, "path", s.secrets.Vault.Path)
-	}
+	s.memorySection(e)
+	s.secretsSection(e)
 	if s.embedder.Kind == "" {
 		e.set("embedder", nil)
 	} else {
@@ -182,9 +183,37 @@ func (s *setup) mergeSections(e *edit) {
 	}
 }
 
+// memorySection sets the memory chosen. Of the same kind, what else the
+// section holds stays; of another, it goes (audit 27/11: mem0's raw left
+// with SQLite, a file the next start refused).
+func (s *setup) memorySection(e *edit) {
+	if cmp.Or(stringOf(e.w.GetValue("memory_store.kind")), "sqlite") != s.memory.Kind {
+		for _, k := range []string{"tenant", "database", "collection_prefix", "headers", "raw"} {
+			e.set("memory_store."+k, nil)
+		}
+	}
+	e.merge("memory_store", "kind", s.memory.Kind, "url", s.memory.URL)
+}
+
+// secretsSection sets the store the setup opened, all of it: ringil.yaml
+// then opens the same (keptSecrets has what the file set for that kind).
+func (s *setup) secretsSection(e *edit) {
+	c := s.secrets
+	e.merge("secrets", "store", c.Store, "keyring_service", c.Service, "file", c.File, "passphrase_env", c.PassphraseEnv)
+	if c.Store != store.Vault {
+		e.set("secrets.vault", nil)
+		return
+	}
+	v := c.Vault
+	e.merge("secrets.vault", "url", v.URL, "path", v.Path, "mount", v.Mount, "token_env", v.TokenEnv, "namespace", v.Namespace)
+	e.set("secrets.vault.allow_http", map[bool]interface{}{true: true}[v.AllowHTTP])
+}
+
 // keepBackup copies the file, if any, beside it: a backup of its own for
 // every run, so the first, hand-written file is never overwritten (audit
-// 22/11).
+// 22/11). Its name has a random part, and it is made new (O_EXCL, 0600):
+// a file already there, or a link planted under the name, is never
+// written through (audit 27/11).
 func keepBackup(path string) error {
 	old, err := os.ReadFile(path) // #nosec G304 -- the user's own configuration (--config or the default)
 	if os.IsNotExist(err) {
@@ -193,11 +222,33 @@ func keepBackup(path string) error {
 	if err != nil {
 		return errors.Wrap(err, ErrUsage, "cannot read "+path)
 	}
-	backup := path + ".bak-" + time.Now().Format("20060102-150405")
-	if err := os.WriteFile(backup, old, 0o600); err != nil { // #nosec G703 -- as above
+	f, err := newBackup(path)
+	if err != nil {
+		return errors.Wrap(err, ErrUsage, "cannot keep the old "+path)
+	}
+	_, err = f.Write(old)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return errors.Wrap(err, ErrUsage, "cannot keep the old "+path)
 	}
 	return nil
+}
+
+// newBackup makes path.bak-<date>-<time>-<random>, new.
+func newBackup(path string) (*os.File, error) {
+	var err error
+	for range 3 {
+		var f *os.File
+		if f, err = os.OpenFile(path+".bak-"+time.Now().Format("20060102-150405")+"-"+rand.Text()[:8], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err == nil { // #nosec G304 -- beside the user's own configuration
+			return f, nil
+		}
+		if !os.IsExist(err) {
+			return nil, err
+		}
+	}
+	return nil, err
 }
 
 // stringsOf is a list of strings as the writer gives it; numbers are

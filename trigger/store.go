@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -128,6 +129,38 @@ func (s *Store) Put(trigger Trigger) error {
 			return nil, errors.New(ErrConfig, "the triggers holds at most 256 triggers")
 		}
 		return append(triggers, trigger), nil
+	})
+}
+
+// Edit puts the trigger change makes of the one named so, as the store
+// holds it now (zero and false when there is none), under the store's
+// lock: what an edit keeps of the old (paused, a secret) is not lost to
+// a change made meanwhile.
+func (s *Store) Edit(name string, change func(old Trigger, found bool) (Trigger, error)) error {
+	return s.editTriggers(func(triggers []Trigger) ([]Trigger, error) {
+		i := slices.IndexFunc(triggers, func(t Trigger) bool { return t.Name == name })
+		var old Trigger
+		if i >= 0 {
+			old = triggers[i]
+		}
+		next, err := change(old, i >= 0)
+		if err != nil {
+			return nil, err
+		}
+		if next.Name != name {
+			return nil, errors.New(ErrConfig, "an edit keeps the trigger's name")
+		}
+		if _, err := next.Check(); err != nil {
+			return nil, err
+		}
+		if i >= 0 {
+			triggers[i] = next
+			return triggers, nil
+		}
+		if len(triggers) >= MaxTriggers {
+			return nil, errors.New(ErrConfig, "the triggers holds at most 256 triggers")
+		}
+		return append(triggers, next), nil
 	})
 }
 

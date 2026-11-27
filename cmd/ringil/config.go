@@ -257,20 +257,32 @@ func (s serveConfig) newAfter() string {
 	return s.NewAfter
 }
 
-// checkPaths refuses an instructions path that would read as a pattern.
+// checkPaths refuses an instructions or audit path that would read as a pattern or escape.
 func (f *config) checkPaths() error {
+	if f.AuditFile != "" {
+		if err := argus.ValidateSecurePath(f.AuditFile); err != nil {
+			return errors.New(ErrUsage, "audit_file is not a path ringil writes: "+f.AuditFile)
+		}
+	}
 	paths := []string{f.Instructions}
 	for _, name := range names(f.Profiles) {
 		paths = append(paths, f.Profiles[name].Instructions)
 	}
 	for _, p := range paths {
-		if strings.ContainsAny(p, "*?[") {
-			return errors.New(ErrUsage, "an instructions file's path cannot hold * ? or [: "+p)
+		if err := checkInstructionsPath(p); err != nil {
+			return err
 		}
-		if p != "" {
-			if err := argus.ValidateSecurePath(p); err != nil {
-				return errors.New(ErrUsage, "an instructions file's path is not one ringil reads: "+p)
-			}
+	}
+	return nil
+}
+
+func checkInstructionsPath(p string) error {
+	if strings.ContainsAny(p, "*?[") {
+		return errors.New(ErrUsage, "an instructions file's path cannot hold * ? or [: "+p)
+	}
+	if p != "" {
+		if err := argus.ValidateSecurePath(p); err != nil {
+			return errors.New(ErrUsage, "an instructions file's path is not one ringil reads: "+p)
 		}
 	}
 	return nil
@@ -333,7 +345,7 @@ func (f *config) checkProfiles() error {
 
 func (f *config) checkMCP() error {
 	for _, name := range sortedKeys(f.MCPServers) {
-		if err := f.MCPServers[name].check(); err != nil {
+		if err := f.MCPServers[name].check(name); err != nil {
 			return errors.New(ErrUsage, "mcp_servers."+name+": "+err.Error())
 		}
 	}
@@ -359,6 +371,7 @@ func (s serveConfig) check() error {
 func (f config) from(dir string) *config {
 	f.Instructions = fromDir(dir, f.Instructions)
 	f.SessionsDir = fromDir(dir, f.SessionsDir)
+	f.AuditFile = fromDir(dir, f.AuditFile)
 	f.Serve.App = fromDir(dir, f.Serve.App)
 	profiles := make(map[string]profile, len(f.Profiles))
 	for name, p := range f.Profiles {

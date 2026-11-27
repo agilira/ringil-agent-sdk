@@ -93,3 +93,19 @@ func TestAppComposioRemoteRestart(t *testing.T) {
 		must(t, call, "POST", "/v1/restart", "", http.StatusConflict) // a test's serve cannot start itself again
 	})
 }
+
+func TestChannelsSlackStoreOnlyAndValidation(t *testing.T) {
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-env")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-env")
+	appAPI(t, "models: [openai:m]\nprofiles:\n  team: {}\n", nil, func(_ *harness, _ *serve.Server, call appCall) {
+		var ch ChannelsIO
+		if err := json.Unmarshal([]byte(must(t, call, "GET", "/v1/settings/channels", "", http.StatusOK)), &ch); err != nil {
+			t.Fatal(err)
+		}
+		if ch.Slack.TokenSet {
+			t.Fatal("reported Slack token_set from environment")
+		}
+		must(t, call, "PUT", "/v1/settings/channels", `{"telegram":{"owners":[],"members":["222"]}}`, http.StatusBadRequest)
+		must(t, call, "PUT", "/v1/settings/channels", `{"telegram":{"owners":[],"member_phones":["12345"]},"member_profile":"team"}`, http.StatusBadRequest)
+	})
+}
