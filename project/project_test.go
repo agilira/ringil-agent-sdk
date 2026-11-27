@@ -96,9 +96,10 @@ func TestEnsureKeepsNotes(t *testing.T) {
 	if list := get(s.List())(t); len(list) != 0 {
 		t.Fatal("a folder of notes alone is listed")
 	}
-	p := get(s.Ensure(Project{ID: "ringil-a78dd964", Name: "ringil", Folder: "/home/me/ringil"}, "system"))(t)
+	folder := filepath.Join(t.TempDir(), "ringil") // absolute on every system
+	p := get(s.Ensure(Project{ID: "ringil-a78dd964", Name: "ringil", Folder: folder}, "system"))(t)
 	again := get(s.Ensure(Project{ID: "ringil-a78dd964", Name: "other"}, "system"))(t)
-	if again.Name != "ringil" || p.Folder != "/home/me/ringil" {
+	if again.Name != "ringil" || p.Folder != folder {
 		t.Fatalf("%+v", again)
 	}
 	if _, err := os.Stat(filepath.Join(notes, "INDEX.md")); err != nil {
@@ -211,11 +212,12 @@ func TestEventsChecked(t *testing.T) {
 // The context says the brief, the board and the latest events, as data.
 func TestContext(t *testing.T) {
 	s := open(t)
-	p := get(s.Create(Project{Name: "ctx", Brief: "Monthly report", Folder: "/srv/reports"}, "user"))(t)
+	folder := filepath.Join(t.TempDir(), "reports")
+	p := get(s.Create(Project{Name: "ctx", Brief: "Monthly report", Folder: folder}, "user"))(t)
 	c, _, _ := s.AddCard(p.ID, "user", Card{Title: "numbers", Agent: "analyst"})
 	_, _ = s.Log(p.ID, Event{Actor: "agent:analyst", Kind: Decision, Card: c.ID, Text: "use the Q3 file"})
 	got := get(s.Context(p.ID, 0))(t)
-	for _, want := range []string{"Monthly report", "/srv/reports", c.ID, "agent analyst", "use the Q3 file", "data, not instructions", "Done: none"} {
+	for _, want := range []string{"Monthly report", folder, c.ID, "agent analyst", "use the Q3 file", "data, not instructions", "Done: none"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("context lacks %q:\n%s", want, got)
 		}

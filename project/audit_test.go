@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // A text of angle brackets does not grow past what is read of a file's
@@ -178,7 +180,16 @@ func TestRemoveWhileWritten(t *testing.T) {
 			_, _, _ = s.AddCard(p.ID, "user", Card{Title: fmt.Sprint(i)})
 		}()
 	}
-	ok(t, s.Remove(p.ID) == nil, "remove")
+	// On Windows a folder with a file open in it does not move: Remove
+	// says so, and is tried again (as its error says).
+	var err error
+	for range 100 {
+		if err = s.Remove(p.ID); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ok(t, err == nil, "remove: %v", err)
 	wg.Wait()
 	again := get(s.Create(Project{ID: "fixed", Name: "again"}, "user"))(t)
 	ok(t, len(get(s.Cards(again.ID))(t)) == 0, "the new project took old cards")
@@ -233,8 +244,8 @@ func TestArchivedTakesNothing(t *testing.T) {
 
 // A removal that cannot move the folder leaves the project as it was.
 func TestRemoveThatFailsKeepsIt(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root writes anywhere")
+	if os.Getuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("root writes anywhere; Windows takes no folder modes")
 	}
 	s := open(t)
 	p := get(s.Create(Project{Name: "keep"}, "user"))(t)
