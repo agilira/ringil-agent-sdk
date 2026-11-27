@@ -86,8 +86,9 @@ func parseMounts(specs []string) ([]sandbox.Mount, error) {
 }
 
 func parseMount(s string) (sandbox.Mount, error) {
-	src, dest, writable := splitMount(s, runtime.GOOS == "windows")
-	if src == "" || strings.Contains(dest, ":") {
+	windows := runtime.GOOS == "windows"
+	src, dest, writable := splitMount(s, windows)
+	if src == "" || strings.Contains(dest, ":") || (windows && strings.Contains(src[driveOf(src, windows):], ":")) {
 		return sandbox.Mount{}, errors.New(ErrUsage, "--mount takes DIR[:/dest][:rw]")
 	}
 	abs, err := filepath.Abs(src)
@@ -102,14 +103,20 @@ func parseMount(s string) (sandbox.Mount, error) {
 // is a source; splitting at its colon made it C at /data, audit 27/11).
 func splitMount(s string, windows bool) (src, dest string, writable bool) {
 	src, writable = strings.CutSuffix(s, ":rw")
-	drive := 0
-	if windows && len(src) >= 2 && src[1] == ':' && ('a' <= src[0]|0x20 && src[0]|0x20 <= 'z') {
-		drive = 2
-	}
+	drive := driveOf(src, windows)
 	if i := strings.LastIndex(src[drive:], ":/"); i >= 0 {
 		src, dest = src[:drive+i], src[drive+i+1:]
 	}
 	return src, dest, writable
+}
+
+// driveOf is the length of s's drive ("C:"), on Windows: 2, else 0. On
+// Windows a colon past it is no path's: a:/b:ro is refused there too.
+func driveOf(s string, windows bool) int {
+	if windows && len(s) >= 2 && s[1] == ':' && ('a' <= s[0]|0x20 && s[0]|0x20 <= 'z') {
+		return 2
+	}
+	return 0
 }
 
 // exitStatus reports a non-zero exit of the sandboxed command as such.
