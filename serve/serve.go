@@ -60,7 +60,9 @@ const (
 // as the host builds it.
 type Profile struct {
 	// Name is how requests choose it: 1-64 letters, digits, - and _.
-	Name        string
+	Name string
+	// Title is the name people read, free text; empty, Name.
+	Title       string
 	Description string
 	// New makes the agent for one run. A run gets its own: its workers,
 	// their background tasks and anything else with state are never
@@ -253,6 +255,7 @@ func positiveDur(v, def time.Duration) time.Duration {
 // ProfileInfo describes a profile to the API.
 type ProfileInfo struct {
 	Name        string `json:"name"`
+	Title       string `json:"title,omitzero"`
 	Description string `json:"description,omitzero"`
 }
 
@@ -283,7 +286,7 @@ func (s *Server) Profiles() []ProfileInfo {
 	defer s.profileMu.RUnlock()
 	out := make([]ProfileInfo, 0, len(s.profiles))
 	for _, p := range s.profiles {
-		out = append(out, ProfileInfo{p.Name, p.Description})
+		out = append(out, ProfileInfo{p.Name, p.Title, p.Description})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

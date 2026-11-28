@@ -460,8 +460,7 @@ func (c *cli) addComposio(ctx context.Context, octx *orpheus.Context) error {
 	if err != nil && !errors.HasCode(err, mcp.ErrConnect) && !errors.HasCode(err, errMCPNextSession) {
 		return err
 	}
-	c.settings.signal()
-	return nil
+	return c.settings.settle(settleWait)
 }
 
 // deleteComposio removes the server at Composio Connect and the key.

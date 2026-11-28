@@ -130,17 +130,23 @@ func (c *cli) putInstructions(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", "the instructions are UTF-8 text of at most "+strconv.Itoa(agent.MaxInstructions>>10)+" KiB")
 		return
 	}
+	if !c.writeInstructionsLocked(w, in.Text) {
+		return
+	}
+	c.answerInForce(w)
+}
+
+func (c *cli) writeInstructionsLocked(w http.ResponseWriter, text string) bool {
 	defer c.lockKeep()()
 	if c.settings == nil || c.settings.path == "" {
 		fail(w, http.StatusConflict, "SETTINGS_NO_FILE", "serve runs without a configuration directory: there is no ringil.yaml to name the instructions in")
-		return
+		return false
 	}
-	if err := c.writeInstructions(in.Text); err != nil {
+	if err := c.writeInstructions(text); err != nil {
 		fail(w, http.StatusInternalServerError, "SETTINGS_INSTRUCTIONS", describe(err))
-		return
+		return false
 	}
-	c.settings.signal()
-	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // writeInstructions writes the text to the user's file, and the first
@@ -226,20 +232,22 @@ const (
 // appStore is the secrets store for a key from the app, under keepMu:
 // the one ringil.yaml on disk names (the watcher's copy lags a moment
 // behind a first key), else one set up for it (defaultStore).
-func (c *cli) appStore(ctx context.Context, base secrets.Resolver) (secrets.Store, error) {
+func (c *cli) appStore(ctx context.Context, base secrets.Resolver) (secrets.Store, bool, error) {
 	if c.settings == nil || c.settings.path == "" {
-		return c.keyStore(ctx, base)
+		st, err := c.keyStore(ctx, base)
+		return st, false, err
 	}
 	cur, err := c.settings.onDisk(c)
 	if err != nil {
-		return nil, errors.Wrap(err, ErrUsage, "ringil.yaml on disk is not valid, fix it first")
+		return nil, false, errors.Wrap(err, ErrUsage, "ringil.yaml on disk is not valid, fix it first")
 	}
 	if cur.Secrets.Store != "" {
 		dir, err := c.configDir()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return c.secrets.Store(ctx, cur.Secrets.store(dir), base)
+		st, err := c.secrets.Store(ctx, cur.Secrets.store(dir), base)
+		return st, false, err
 	}
 	return c.defaultStore(ctx, base)
 }
@@ -247,25 +255,24 @@ func (c *cli) appStore(ctx context.Context, base secrets.Resolver) (secrets.Stor
 // defaultStore sets up a secrets store for the app's first key: the
 // system's keyring when it works, else the encrypted file with a
 // passphrase of its own; ringil.yaml then names it, checked as every
-// change is. The caller holds keepMu.
-func (c *cli) defaultStore(ctx context.Context, base secrets.Resolver) (secrets.Store, error) {
+// change is. The caller holds keepMu and settles once unlocked.
+func (c *cli) defaultStore(ctx context.Context, base secrets.Resolver) (secrets.Store, bool, error) {
 	root, err := c.stateRoot()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	st, section, err := c.keyringStore(ctx, root, base)
 	if err != nil {
 		st, section, err = c.fileStore(ctx, root, base)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	err = c.changeLocked(func(next *config) { next.Secrets = section }, func(ed *edit) { ed.set("secrets", section.yaml()) })
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	c.settings.signal()
-	return st, nil
+	return st, true, nil
 }
 
 // keyringStore is the system's keyring, when it works.

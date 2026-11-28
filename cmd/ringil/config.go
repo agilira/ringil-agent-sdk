@@ -81,6 +81,9 @@ type config struct {
 	texts  map[string]string
 	digest string
 
+	// Agent is the main agent's own: its title, description and
+	// instructions (only those: the rest of its settings are above).
+	Agent      profile                `argus:"agent"`
 	Profiles   map[string]profile     `argus:"profiles"`
 	MCPServers map[string]mcpEntry    `argus:"mcp_servers"`
 	Agents     map[string]remoteEntry `argus:"agents"`
@@ -264,7 +267,7 @@ func (f *config) checkPaths() error {
 			return errors.New(ErrUsage, "audit_file is not a path ringil writes: "+f.AuditFile)
 		}
 	}
-	paths := []string{f.Instructions}
+	paths := []string{f.Instructions, f.Agent.Instructions}
 	for _, name := range names(f.Profiles) {
 		paths = append(paths, f.Profiles[name].Instructions)
 	}
@@ -330,6 +333,9 @@ func (f *config) Validate() error {
 }
 
 func (f *config) checkProfiles() error {
+	if err := f.Agent.checkMain(); err != nil {
+		return err
+	}
 	for _, name := range names(f.Profiles) {
 		if err := f.Profiles[name].check(name); err != nil {
 			return err
@@ -373,6 +379,7 @@ func (f config) from(dir string) *config {
 	f.SessionsDir = fromDir(dir, f.SessionsDir)
 	f.AuditFile = fromDir(dir, f.AuditFile)
 	f.Serve.App = fromDir(dir, f.Serve.App)
+	f.Agent = f.Agent.from(dir)
 	profiles := make(map[string]profile, len(f.Profiles))
 	for name, p := range f.Profiles {
 		profiles[name] = p.from(dir)
@@ -468,7 +475,7 @@ func (f *config) intOf(name string) int {
 // agent does not rewrite its own rules unasked.
 func (c *cli) protectedFiles(ctx *orpheus.Context) []string {
 	f := c.conf()
-	paths := []string{c.configName(), c.flagString(ctx, "instructions")}
+	paths := []string{c.configName(), c.flagString(ctx, "instructions"), f.Agent.Instructions}
 	for _, name := range names(f.Profiles) {
 		paths = append(paths, f.Profiles[name].Instructions)
 	}

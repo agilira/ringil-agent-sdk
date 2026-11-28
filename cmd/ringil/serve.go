@@ -6,6 +6,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -166,9 +167,11 @@ func (c *cli) checkProfileFlag(ctx *orpheus.Context) error {
 // profilesFor are the agents serve runs for f: "default" (the flags and
 // environment) and every profile.
 func (c *cli) profilesFor(ctx *orpheus.Context, f *config) []serve.Profile {
-	out := []serve.Profile{{Name: "default", Description: "the agent of ringil run", New: c.runInstance(ctx, "default")}}
+	out := []serve.Profile{{Name: "default", Title: f.Agent.Title, Description: cmp.Or(f.Agent.Description, "the agent of ringil run"),
+		New: c.runInstance(ctx, "default")}}
 	for _, name := range names(f.Profiles) {
-		out = append(out, serve.Profile{Name: name, Description: f.Profiles[name].Description, New: c.runInstance(ctx, name)})
+		p := f.Profiles[name]
+		out = append(out, serve.Profile{Name: name, Title: p.Title, Description: p.Description, New: c.runInstance(ctx, name)})
 	}
 	return out
 }

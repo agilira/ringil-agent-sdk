@@ -252,6 +252,19 @@ FEATURES
     keeps paths relative to its folder (exports move); a trigger cannot
     run a tool an ask rule covers; setup re-runs leave no stale fields;
     prices keys normalised; skills' scripts refused without a sandbox.
+  - serve.Profile.Title and ProfileInfo.Title: the name people read for
+    an agent, free text beside the name requests choose it by. ringil:
+    each profile's title, and agent: in ringil.yaml for the main agent's
+    own title, description and instructions (PUT
+    /v1/settings/profiles/default renames it, never removes it); "default"
+    refused as a profile name in any case; a title is one printable line
+    of at most 64 characters. An edit from the app answers once it is in
+    force (it was read back from the revision before for up to 2s), or
+    409 SETTINGS_NOT_APPLIED with why not; the watcher, which only says
+    when the file may have changed, applies the file as it is then and
+    follows instructions files named or removed meanwhile (one removed
+    with its agent stopped every reload); the audit records the hash of
+    each instructions file in force.
   - ringil lives in this repository, at cmd/ringil, a module of its own
     with its history: the SDK and the CLI change in one commit, the CI
     tests both.

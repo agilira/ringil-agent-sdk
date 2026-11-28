@@ -11,7 +11,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/agilira/go-errors"
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -25,6 +28,9 @@ import (
 // profile is a role: what it overrides of the command line's settings.
 // Empty fields keep the flag or environment value.
 type profile struct {
+	// Title is the agent's name as people read it, free text; the key in
+	// ringil.yaml stays the name requests choose it by.
+	Title       string `argus:"title"`
 	Description string `argus:"description"`
 	// Models are the role's own, provider:model in order (models.go);
 	// none, the main ones. A role with its own uses no other.
@@ -76,12 +82,57 @@ func rooted(path string) bool {
 
 func (p profile) check(name string) error {
 	switch {
-	case !profileName.MatchString(name) || name == "default":
-		return errors.New(ErrUsage, "profile names are 1-64 letters, digits, - _, and not \"default\": "+name)
+	case !profileName.MatchString(name) || strings.EqualFold(name, "default"):
+		return errors.New(ErrUsage, "profile names are 1-64 letters, digits, - _, and not \"default\" in any case: "+name)
+	case checkTitle(p.Title) != "":
+		return errors.New(ErrUsage, "profile "+name+": "+checkTitle(p.Title))
 	case len(p.Models) == 0 && p.EmbedModel != "":
 		return errors.New(ErrUsage, "profile "+name+": embed_model needs the role's own models")
 	}
 	return p.checkLimits(name)
+}
+
+// maxTitle is the longest title of an agent, in characters.
+const maxTitle = 64
+
+// checkTitle says what is wrong with an agent's title, "" for nothing:
+// one line of at most maxTitle printable characters (no control, format
+// or line-separator ones, which could break the line or turn the text).
+func checkTitle(title string) string {
+	if utf8.RuneCountInString(title) > maxTitle || !utf8.ValidString(title) ||
+		strings.ContainsFunc(title, func(r rune) bool { return !unicode.IsPrint(r) }) || title != strings.TrimSpace(title) {
+		return "a title is one line of at most " + strconv.Itoa(maxTitle) + " characters, without spaces at the ends"
+	}
+	return ""
+}
+
+// checkMain refuses in agent: what is not the main agent's own. Its
+// models, tools, memory and limits are the settings at the top of the
+// file, which every run without a profile takes.
+func (p profile) checkMain() error {
+	if msg := checkTitle(p.Title); msg != "" {
+		return errors.New(ErrUsage, "agent: "+msg)
+	}
+	if p.hasNonMainSettings() {
+		return errors.New(ErrUsage, "agent holds the main agent's title, description and instructions; its models, tools, memory and limits are the settings at the top of the file")
+	}
+	return nil
+}
+
+func (p profile) hasNonMainSettings() bool {
+	return p.hasOwnModels() || p.hasOwnLimits() || p.hasLegacySettings()
+}
+
+func (p profile) hasOwnModels() bool {
+	return len(p.Models) > 0 || p.EmbedModel != "" || p.Images
+}
+
+func (p profile) hasOwnLimits() bool {
+	return p.MaxTurns != 0 || p.Tools != nil || p.Memory != ""
+}
+
+func (p profile) hasLegacySettings() bool {
+	return p.OldModel != "" || p.OldProvider != "" || p.OldBase != "" || p.OldKeyEnv != ""
 }
 
 func (p profile) checkLimits(name string) error {
@@ -230,9 +281,11 @@ func (c *cli) instructions() (string, error) {
 	return text, nil
 }
 
+// roleInstructions is the file of the run's own instructions: its
+// profile's, or the main agent's (agent.instructions) for a run without.
 func (c *cli) roleInstructions() string {
 	if c.role == nil {
-		return ""
+		return c.conf().Agent.Instructions
 	}
 	return c.role.Instructions
 }

@@ -31,13 +31,14 @@ const profilesDir = "profiles"
 // The agents' API, mounted with the settings: each agent is a profile of
 // ringil.yaml, with its own models, instructions, tools and memory.
 //
-//	GET    /v1/settings/profiles         every agent, with its instructions
-//	PUT    /v1/settings/profiles/{name}  {"description","models"?,"instructions"?,"tools"?,"memory"?,"max_turns"?,"images"?,"embed_model"?} make or replace one
+//	GET    /v1/settings/profiles         every agent, the main one first, with its instructions
+//	PUT    /v1/settings/profiles/{name}  {"title"?,"description","models"?,"instructions"?,"tools"?,"memory"?,"max_turns"?,"images"?,"embed_model"?} make or replace one
 //	DELETE /v1/settings/profiles/{name}  remove one no trigger or chat uses
 //
 // serve takes a change at once: a new agent answers its next run, one
-// removed takes none. "default" is the main agent, set by the other
-// settings.
+// removed takes none. "default" is the main agent: its title, description
+// and instructions are its own (agent: in ringil.yaml), the rest are the
+// other settings; it is renamed, never removed.
 func (c *cli) mountProfiles(octx *orpheus.Context, srv *serve.Server) {
 	srv.Mount("GET /v1/settings/profiles", http.HandlerFunc(c.getProfiles))
 	srv.Mount("PUT /v1/settings/profiles/{name}", c.putProfile(octx))
@@ -46,7 +47,11 @@ func (c *cli) mountProfiles(octx *orpheus.Context, srv *serve.Server) {
 
 // ProfileOut is an agent as the app shows it.
 type ProfileOut struct {
-	Name        string   `json:"name"`
+	Name string `json:"name"`
+	// Main: the main agent, "default"; only its title, description and
+	// instructions are its own.
+	Main        bool     `json:"main,omitzero"`
+	Title       string   `json:"title,omitzero"`
 	Description string   `json:"description,omitzero"`
 	Models      []string `json:"models"`
 	// Instructions is the text of its instructions file; InstructionsPath
@@ -63,27 +68,42 @@ type ProfileOut struct {
 
 func (c *cli) getProfiles(w http.ResponseWriter, _ *http.Request) {
 	f := c.conf()
-	out := make([]ProfileOut, 0, len(f.Profiles))
+	text, ok := agentInstructions(w, "default", f.Agent.Instructions)
+	if !ok {
+		return
+	}
+	out := make([]ProfileOut, 0, 1+len(f.Profiles))
+	out = append(out, ProfileOut{Name: "default", Main: true, Title: f.Agent.Title, Description: f.Agent.Description,
+		Models: nonNil(f.Models), Instructions: text, InstructionsPath: f.Agent.Instructions})
 	for _, name := range names(f.Profiles) {
 		p := f.Profiles[name]
-		text := ""
-		if p.Instructions != "" {
-			data, err := readPrivate(p.Instructions)
-			if err != nil && !os.IsNotExist(err) {
-				fail(w, http.StatusInternalServerError, "SETTINGS_INSTRUCTIONS", "the instructions of "+name+": "+describe(err))
-				return
-			}
-			text = string(data)
+		if text, ok = agentInstructions(w, name, p.Instructions); !ok {
+			return
 		}
-		out = append(out, ProfileOut{Name: name, Description: p.Description, Models: nonNil(p.Models), Instructions: text,
+		out = append(out, ProfileOut{Name: name, Title: p.Title, Description: p.Description, Models: nonNil(p.Models), Instructions: text,
 			InstructionsPath: p.Instructions, Tools: p.Tools, Memory: p.Memory, MaxTurns: p.MaxTurns, Images: p.Images, EmbedModel: p.EmbedModel})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
+// agentInstructions is the text of agent name's instructions file at
+// path, "" for none; false when it failed, said on w.
+func agentInstructions(w http.ResponseWriter, name, path string) (string, bool) {
+	if path == "" {
+		return "", true
+	}
+	data, err := readPrivate(path)
+	if err != nil && !os.IsNotExist(err) {
+		fail(w, http.StatusInternalServerError, "SETTINGS_INSTRUCTIONS", "the instructions of "+name+": "+describe(err))
+		return "", false
+	}
+	return string(data), true
+}
+
 // profileIn is an agent as the app sends it; Instructions nil keeps the
 // file the agent has.
 type profileIn struct {
+	Title        string    `json:"title"`
 	Description  string    `json:"description"`
 	Models       []string  `json:"models,omitempty"`
 	Instructions *string   `json:"instructions,omitempty"`
@@ -105,31 +125,96 @@ func (c *cli) putProfile(octx *orpheus.Context) http.HandlerFunc {
 			fail(w, http.StatusBadRequest, "SETTINGS_INPUT", msg)
 			return
 		}
-		defer c.lockKeep()()
-		if c.settings == nil || c.settings.path == "" {
-			fail(w, http.StatusConflict, "SETTINGS_NO_FILE", "serve runs without a configuration directory: there is no ringil.yaml for the agents")
-			return
+		wrote := false
+		if name == "default" {
+			wrote = c.writeMain(w, in)
+		} else {
+			wrote = c.writeProfile(w, name, in)
 		}
-		c.writeProfile(w, name, in)
+		if wrote {
+			c.answerInForce(w)
+		}
 	}
 }
 
 // checkProfileIn says what is wrong with an agent the app sends, "" for
 // nothing: its name, its description, its instructions, its tools.
 func (c *cli) checkProfileIn(octx *orpheus.Context, name string, in profileIn) string {
-	switch {
-	case !profileName.MatchString(name) || name == "default":
+	if name == "default" {
+		return checkMainIn(in)
+	}
+	if !profileName.MatchString(name) || strings.EqualFold(name, "default") {
 		return "an agent's name is 1-64 letters, digits, - and _, and not default"
+	}
+	if msg := checkProfileCommon(in); msg != "" {
+		return msg
+	}
+	if twin := caseTwin(c.conf().Profiles, name); twin != "" {
+		return "agent " + twin + " differs only in case: its instructions file would be the same on some systems"
+	}
+	if in.Tools != nil {
+		return c.unknownTools(octx, *in.Tools, in.Memory != "off")
+	}
+	return ""
+}
+
+func checkProfileCommon(in profileIn) string {
+	switch {
+	case checkTitle(in.Title) != "":
+		return checkTitle(in.Title)
 	case len(in.Description) > 1024:
 		return "the description is at most 1 KiB"
 	case in.Instructions != nil && (len(*in.Instructions) > agent.MaxInstructions || !utf8.ValidString(*in.Instructions)):
 		return "the instructions are UTF-8 text of at most " + strconv.Itoa(agent.MaxInstructions>>10) + " KiB"
-	case caseTwin(c.conf().Profiles, name) != "":
-		return "agent " + caseTwin(c.conf().Profiles, name) + " differs only in case: its instructions file would be the same on some systems"
-	case in.Tools != nil:
-		return c.unknownTools(octx, *in.Tools, in.Memory != "off")
 	}
 	return ""
+}
+
+// checkMainIn says what is wrong with the main agent the app sends: its
+// title, description and instructions are all it has of its own.
+func checkMainIn(in profileIn) string {
+	if msg := checkProfileCommon(in); msg != "" {
+		return msg
+	}
+	if len(in.Models) > 0 || in.Tools != nil || in.Memory != "" || in.MaxTurns != 0 || in.Images || in.EmbedModel != "" {
+		return "the main agent's models, tools, memory and limits are in the settings"
+	}
+	return ""
+}
+
+// writeMain writes the main agent's own: its instructions file
+// (<config>/ringil/profiles/default.md: no profile is named default), then
+// agent: in ringil.yaml; as writeProfile.
+func (c *cli) writeMain(w http.ResponseWriter, in profileIn) bool {
+	defer c.lockKeep()()
+	if c.settings == nil || c.settings.path == "" {
+		fail(w, http.StatusConflict, "SETTINGS_NO_FILE", "serve runs without a configuration directory: there is no ringil.yaml for the agents")
+		return false
+	}
+	p := profile{Title: in.Title, Description: in.Description}
+	own, undo := "", func() {}
+	if in.Instructions != nil {
+		own = filepath.Join(filepath.Dir(c.settings.path), profilesDir, "default.md")
+		var err error
+		if undo, err = replaceFile(own, []byte(*in.Instructions)); err != nil {
+			fail(w, http.StatusInternalServerError, "SETTINGS_INSTRUCTIONS", describe(err))
+			return false
+		}
+	}
+	if err := c.changeLocked(func(next *config) {
+		p.Instructions = cmp.Or(own, next.Agent.Instructions)
+		next.Agent = p
+	}, func(ed *edit) {
+		ed.set("agent", map[string]interface{}{})
+		ed.set("agent.title", p.Title)
+		ed.set("agent.description", p.Description)
+		ed.set("agent.instructions", c.asWritten(p.Instructions))
+	}); err != nil {
+		undo()
+		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", describe(err))
+		return false
+	}
+	return true
 }
 
 // caseTwin is a profile whose name differs from name only in case.
@@ -147,8 +232,13 @@ func caseTwin(all map[string]profile, name string) string {
 // written a moment ago keeps its instructions); the caller holds keepMu.
 // A file written for an entry that is then refused is put back as it was.
 // Paths are written from ringil.yaml's folder (asWritten).
-func (c *cli) writeProfile(w http.ResponseWriter, name string, in profileIn) {
-	p := profile{Description: in.Description, Models: in.Models, Tools: in.Tools,
+func (c *cli) writeProfile(w http.ResponseWriter, name string, in profileIn) bool {
+	defer c.lockKeep()()
+	if c.settings == nil || c.settings.path == "" {
+		fail(w, http.StatusConflict, "SETTINGS_NO_FILE", "serve runs without a configuration directory: there is no ringil.yaml for the agents")
+		return false
+	}
+	p := profile{Title: in.Title, Description: in.Description, Models: in.Models, Tools: in.Tools,
 		Memory: in.Memory, MaxTurns: in.MaxTurns, Images: in.Images, EmbedModel: in.EmbedModel}
 	own, undo := "", func() {}
 	if in.Instructions != nil {
@@ -156,7 +246,7 @@ func (c *cli) writeProfile(w http.ResponseWriter, name string, in profileIn) {
 		var err error
 		if undo, err = replaceFile(own, []byte(*in.Instructions)); err != nil {
 			fail(w, http.StatusInternalServerError, "SETTINGS_INSTRUCTIONS", describe(err))
-			return
+			return false
 		}
 	}
 	if err := c.changeLocked(func(next *config) {
@@ -168,15 +258,15 @@ func (c *cli) writeProfile(w http.ResponseWriter, name string, in profileIn) {
 	}, func(ed *edit) { setProfile(ed, "profiles."+name, p, c.asWritten(p.Instructions)) }); err != nil {
 		undo()
 		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", describe(err))
-		return
+		return false
 	}
-	c.settings.signal()
-	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // setProfile writes p at at, its instructions as instructions.
 func setProfile(ed *edit, at string, p profile, instructions string) {
 	ed.set(at, map[string]interface{}{})
+	ed.set(at+".title", p.Title)
 	ed.set(at+".description", p.Description)
 	ed.set(at+".models", listOrNil(p.Models))
 	ed.set(at+".instructions", instructions)
@@ -239,7 +329,10 @@ func (c *cli) removeIfUnnamedOnDisk(name, path string) {
 	if err != nil {
 		return // left: a file too many is harmless, one too few stops the watcher
 	}
-	if _, named := disk.Profiles[name]; !named {
+	// Kept while anything still names it: another agent, the main one or
+	// the user's instructions may have been pointed at it by hand (audit
+	// 28/11: removed, it failed every revision until written again).
+	if _, named := disk.Profiles[name]; !named && !slices.Contains(c.settings.pathsOf(disk), path) {
 		_ = os.Remove(path) // #nosec G703 -- the app's own file for the agent, its name checked by profileName
 	}
 }

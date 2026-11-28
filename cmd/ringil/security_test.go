@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agilira/argus"
 	"github.com/agilira/orpheus/pkg/orpheus"
@@ -281,6 +282,23 @@ func FuzzServerName(f *testing.F) {
 		}
 		if _, builtin := builtinProviders[name]; builtin {
 			t.Fatalf("%q named as the built-in %s", base, name)
+		}
+	})
+}
+
+// A title the check accepts is one line of at most maxTitle characters,
+// valid UTF-8, without spaces at the ends: what the app and the chat show.
+func FuzzCheckTitle(f *testing.F) {
+	for _, s := range []string{"", "Assistente Vendite", "a\nb", " x", "x y", "\x00", "\xff", strings.Repeat("è", maxTitle+1)} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, title string) {
+		if checkTitle(title) != "" {
+			return
+		}
+		if !utf8.ValidString(title) || utf8.RuneCountInString(title) > maxTitle || strings.ContainsAny(title, "\r\n\t\x00\u2028\u2029\u202e\u200b") ||
+			title != strings.TrimSpace(title) {
+			t.Fatalf("accepted %q", title)
 		}
 	})
 }

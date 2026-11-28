@@ -373,7 +373,7 @@ func (c *cli) secretStoreNamed(w http.ResponseWriter, r *http.Request, octx *orp
 		return nil, "", false
 	}
 	unlock := c.lockKeep() // one store, even for two first keys at once
-	st, err := c.appStore(r.Context(), base)
+	st, created, err := c.appStore(r.Context(), base)
 	unlock()
 	switch {
 	case err != nil:
@@ -382,6 +382,12 @@ func (c *cli) secretStoreNamed(w http.ResponseWriter, r *http.Request, octx *orp
 	case st == nil:
 		fail(w, http.StatusConflict, "SETTINGS_NO_STORE", "serve runs without a configuration directory: no secrets store can be set up")
 		return nil, "", false
+	}
+	if created {
+		if err := c.settings.settle(settleWait); err != nil {
+			fail(w, http.StatusConflict, "SETTINGS_NOT_APPLIED", "saved in ringil.yaml, but not in force: "+describe(err))
+			return nil, "", false
+		}
 	}
 	return st, name, true
 }
@@ -401,18 +407,28 @@ func (c *cli) postMCP(octx *orpheus.Context) http.HandlerFunc {
 			return
 		}
 		added, err := c.addMCP(r.Context(), e, func() (secrets.Resolver, error) { return c.resolver(octx) })
-		switch {
-		case errors.HasCode(err, mcp.ErrConnect), errors.HasCode(err, errMCPNextSession): // saved, but not started now
-			c.settings.signal()
-			writeJSON(w, http.StatusCreated, map[string]any{"tools": []string{}, "missing": []string{}, "warning": agent.ModelMessage(err)})
-		case errors.HasCode(err, errMCPExists):
-			fail(w, http.StatusConflict, "SETTINGS_EXISTS", agent.ModelMessage(err))
-		case err != nil:
-			fail(w, http.StatusBadRequest, "SETTINGS_MCP", describe(err))
-		default:
-			c.settings.signal()
-			writeJSON(w, http.StatusCreated, map[string]any{"tools": nonNil(added.Tools), "missing": nonNil(added.Missing)})
+		c.answerMCPAdded(w, added, err)
+	}
+}
+
+func (c *cli) answerMCPAdded(w http.ResponseWriter, added mcp.Added, err error) {
+	switch {
+	case errors.HasCode(err, mcp.ErrConnect), errors.HasCode(err, errMCPNextSession): // saved, but not started now
+		if serr := c.settings.settle(settleWait); serr != nil {
+			fail(w, http.StatusConflict, "SETTINGS_NOT_APPLIED", "saved in ringil.yaml, but not in force: "+describe(serr))
+			return
 		}
+		writeJSON(w, http.StatusCreated, map[string]any{"tools": []string{}, "missing": []string{}, "warning": agent.ModelMessage(err)})
+	case errors.HasCode(err, errMCPExists):
+		fail(w, http.StatusConflict, "SETTINGS_EXISTS", agent.ModelMessage(err))
+	case err != nil:
+		fail(w, http.StatusBadRequest, "SETTINGS_MCP", describe(err))
+	default:
+		if serr := c.settings.settle(settleWait); serr != nil {
+			fail(w, http.StatusConflict, "SETTINGS_NOT_APPLIED", "saved in ringil.yaml, but not in force: "+describe(serr))
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"tools": nonNil(added.Tools), "missing": nonNil(added.Missing)})
 	}
 }
 
@@ -483,6 +499,12 @@ func notFound(what string) *refusal {
 // makes the change on a copy, which must pass every check a revision
 // passes; then apply writes it, and the watcher is woken.
 func (c *cli) change(w http.ResponseWriter, mutate func(next *config) *refusal, apply func(*edit)) {
+	if c.writeChangeLocked(w, mutate, apply) {
+		c.answerInForce(w)
+	}
+}
+
+func (c *cli) writeChangeLocked(w http.ResponseWriter, mutate func(next *config) *refusal, apply func(*edit)) bool {
 	defer c.lockKeep()()
 	path := ""
 	if c.settings != nil {
@@ -490,17 +512,17 @@ func (c *cli) change(w http.ResponseWriter, mutate func(next *config) *refusal, 
 	}
 	if path == "" {
 		fail(w, http.StatusConflict, "SETTINGS_NO_FILE", "serve runs without a configuration directory: there is no ringil.yaml to change")
-		return
+		return false
 	}
 	cur, err := c.settings.onDisk(c)
 	if err != nil {
 		fail(w, http.StatusConflict, "SETTINGS_FILE", "ringil.yaml on disk is not valid, fix it first: "+describe(err))
-		return
+		return false
 	}
 	next := cur.clone()
 	if r := mutate(next); r != nil {
 		fail(w, r.status, r.code, r.what)
-		return
+		return false
 	}
 	err = next.Validate()
 	if err == nil {
@@ -508,13 +530,23 @@ func (c *cli) change(w http.ResponseWriter, mutate func(next *config) *refusal, 
 	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, "SETTINGS_INPUT", describe(err))
-		return
+		return false
 	}
 	if err := writeSettings(path, apply); err != nil {
 		fail(w, http.StatusInternalServerError, "SETTINGS_WRITE", describe(err))
+		return false
+	}
+	return true
+}
+
+// answerInForce answers an edit written to ringil.yaml once it is in
+// force (settle), or with why it is not: saved, but the last good
+// revision stays.
+func (c *cli) answerInForce(w http.ResponseWriter) {
+	if err := c.settings.settle(settleWait); err != nil {
+		fail(w, http.StatusConflict, "SETTINGS_NOT_APPLIED", "saved in ringil.yaml, but not in force: "+describe(err))
 		return
 	}
-	c.settings.signal()
 	w.WriteHeader(http.StatusNoContent)
 }
 

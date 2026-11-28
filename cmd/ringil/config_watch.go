@@ -7,6 +7,8 @@ package main
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	stderrors "errors"
 	"os"
 	"path/filepath"
@@ -62,6 +64,10 @@ type settings struct {
 	stop     chan struct{}
 	done     chan struct{}
 	once     sync.Once
+
+	// push are settle's asks for the loop to put what is on disk in
+	// force, each answered with how it went.
+	push chan chan error
 }
 
 // watch is one Argus setup: the file and the instructions files it named
@@ -166,7 +172,8 @@ func (c *cli) newSettings(ctx *orpheus.Context, path string) (*settings, error) 
 			return ctx.GetGlobalFlagBool("no-approvals")
 		}
 		return f.NoApprovals
-	}, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
+	}, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
+		push: make(chan chan error)}
 	if p := ctx.GetGlobalFlagString("instructions"); p != "" {
 		abs, err := filepath.Abs(p)
 		if err != nil {
@@ -236,7 +243,7 @@ func (s *settings) startAudit(c *cli, f *config) bool {
 
 // pathsOf are the instructions files f and --instructions name, sorted.
 func (s *settings) pathsOf(f *config) []string {
-	paths := []string{s.instructions, f.Instructions}
+	paths := []string{s.instructions, f.Instructions, f.Agent.Instructions}
 	for _, p := range f.Profiles {
 		paths = append(paths, p.Instructions)
 	}
@@ -361,8 +368,19 @@ func instructionsText(watched *argus.Settings, path string) (string, error) {
 	return strings.TrimSpace(text), nil
 }
 
+func (s *settings) root() *settings {
+	if s != nil && s.origin != nil {
+		return s.origin
+	}
+	return s
+}
+
 // signal wakes the loop: Argus published a revision.
 func (s *settings) signal() {
+	s = s.root()
+	if s == nil || s.wake == nil {
+		return
+	}
 	select {
 	case s.wake <- struct{}{}:
 	default:
@@ -377,10 +395,49 @@ func (s *settings) loop(c *cli) {
 		select {
 		case <-s.stop:
 			return
+		case done := <-s.push:
+			done <- s.take(c, false)
 		case <-s.wake:
+			s.step(c)
 		case <-tick.C:
+			s.step(c)
 		}
-		s.step(c)
+	}
+}
+
+// settleWait is how long an edit from the app waits to be in force.
+const settleWait = 3 * time.Second
+
+// settle puts what is on disk in force before the caller answers, so
+// that an edit from the app is in force when it answers and what the app
+// reads next has it (found 28/11: the app read the revision before, and
+// showed an agent it had just removed). The loop reads the file and
+// applies it as any revision: the watcher would see the write only within
+// its staleness budget (2s). The error is why the revision on disk is not
+// in force; nil also when the loop is busy past d (the watcher applies it
+// next) or runs not (the next command reads the file).
+func (s *settings) settle(d time.Duration) error {
+	s = s.root()
+	if s == nil || !s.running {
+		return nil
+	}
+	timeout := time.NewTimer(d)
+	defer timeout.Stop()
+	done := make(chan error, 1)
+	select {
+	case s.push <- done:
+	case <-timeout.C:
+		return nil
+	case <-s.stop:
+		return nil
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-timeout.C:
+		return nil
+	case <-s.stop:
+		return nil
 	}
 }
 
@@ -421,26 +478,38 @@ func (s *settings) onDisk(c *cli) (*config, error) {
 	return nil, errors.New(ErrUsage, s.path+" kept changing while it was read")
 }
 
-// step brings the configuration in force to the revision on disk, or
-// tells, once, why it cannot.
-func (s *settings) step(c *cli) {
-	next, err := s.read(s.watching)
-	if stderrors.Is(err, errMoved) {
-		if err = s.move(c, next); err == nil {
-			next, err = s.read(s.watching)
-		}
+// take puts in force the revision on disk, read now, for step and
+// settle. The watcher is set up again when it names other instructions
+// files (one removed would fail its every reload) or, with reopen, when
+// its read failed: argus does not retry a reload that failed.
+func (s *settings) take(c *cli, reopen bool) error {
+	f, err := s.onDisk(c)
+	if err == nil && (reopen || !slices.Equal(s.watching.paths, s.pathsOf(f))) {
+		err = s.move(c, f)
 	}
-	if err == nil && next.digest == s.applied {
-		return
-	}
-	if err == nil {
-		err = c.applyConfig(s, next)
+	if err == nil && f.digest != s.applied {
+		err = c.applyConfig(s, f)
 	}
 	if err != nil {
 		s.refuse(c, err)
+		return err
+	}
+	s.applied, s.told = f.digest, ""
+	return nil
+}
+
+// step brings the configuration in force to the revision on disk, or
+// tells, once, why it cannot. The watcher says when the file may have
+// changed; what is applied is the file as it is now (take): the watcher
+// can show a revision already passed (one settle put in force before it
+// saw the write) or one caught half-written, and is not gone back to.
+func (s *settings) step(c *cli) {
+	next, err := s.read(s.watching)
+	if err == nil && next.digest == s.applied {
+		s.told = "" // the file is the one in force: a refusal again is told again
 		return
 	}
-	s.applied, s.told = next.digest, ""
+	_ = s.take(c, err != nil) // refused, it is told
 }
 
 // move replaces the setup with one following the instructions f names;
@@ -511,6 +580,18 @@ func (s *settings) close() {
 	})
 }
 
+// documentHashes are the SHA-256 of the revision's instructions files, by
+// path: the audit has what each revision in force held, also one the
+// watcher never published (put in force by settle).
+func documentHashes(f *config) map[string]string {
+	out := make(map[string]string, len(f.texts))
+	for path, text := range f.texts {
+		sum := sha256.Sum256([]byte(text))
+		out[path] = hex.EncodeToString(sum[:])
+	}
+	return out
+}
+
 // applyConfig puts a revision in force, if the file is still a private
 // file of the user's and the chats' people take it.
 func (c *cli) applyConfig(s *settings, next *config) error {
@@ -531,7 +612,7 @@ func (c *cli) applyConfig(s *settings, next *config) error {
 	c.note(cmp.Or(s.path, "the configuration") + " applied (config " + next.shortDigest() + ")")
 	if s.audit != nil {
 		s.audit.Log(argus.AuditInfo, "ringil_applied", "ringil.config", s.path, nil, nil,
-			map[string]interface{}{"digest": next.digest})
+			map[string]interface{}{"digest": next.digest, "documents": documentHashes(next)})
 	}
 	return nil
 }
