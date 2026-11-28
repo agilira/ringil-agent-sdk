@@ -117,7 +117,7 @@ func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
 		return nil, "", err
 	}
 	c.wfRuns = &wfRuns{}
-	c.log = slog.New(slog.NewTextHandler(c.errOut, nil))
+	c.log = slog.New(slog.NewTextHandler(errLines{c}, nil)) // whole lines among the notes: one lock for both
 	c.events = []agent.Observer{eventlog.Slog(c.log)}
 	c.metrics = metrics.New()
 	if err := c.checkProfileFlag(ctx); err != nil {

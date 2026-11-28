@@ -229,6 +229,16 @@ func (c *cli) line(s string) error {
 	return err
 }
 
+// errLines writes to the CLI's error output under outMu, as line does:
+// serve's log and its notes come from several goroutines at once.
+type errLines struct{ c *cli }
+
+func (w errLines) Write(p []byte) (int, error) {
+	w.c.outMu.Lock()
+	defer w.c.outMu.Unlock()
+	return w.c.errOut.Write(p)
+}
+
 // note prints a status line; a failed write leaves nothing better to do.
 func (c *cli) note(s string) {
 	if err := c.line("  " + s); err != nil {
