@@ -33,7 +33,7 @@ type Compaction struct {
 	// Disabled sends the full conversation every time.
 	Disabled bool
 	// Threshold is the fraction of the context window that starts
-	// compaction; values outside (0, 1] mean 0.8.
+	// compaction; values outside (0, 1] mean 0.75.
 	Threshold float64
 	// KeepResults is how many recent tool results stay whole; zero means 4.
 	KeepResults int
@@ -51,7 +51,7 @@ type Compaction struct {
 }
 
 const (
-	defaultThreshold   = 0.8
+	defaultThreshold   = 0.75
 	defaultKeepResults = 4
 	defaultSummaryMax  = 1024
 	// stubMinBytes: results shorter than this are kept, a stub would not

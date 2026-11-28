@@ -41,9 +41,18 @@ func appAPI(t *testing.T, body string, steps []fake.Step, fn func(h *harness, sr
 // appAPIWith is appAPI with more flags.
 func appAPIWith(t *testing.T, args []string, body string, steps []fake.Step, fn func(h *harness, srv *serve.Server, call appCall)) {
 	t.Helper()
+	appAPIFlags(t, append([]string{"--no-approvals"}, args...), body, steps, fn)
+}
+
+// appAPIFlags is appAPI with exactly these flags (approvals asked, without
+// --no-approvals).
+func appAPIFlags(t *testing.T, flags []string, body string, steps []fake.Step, fn func(h *harness, srv *serve.Server, call appCall)) {
+	t.Helper()
 	h := newHarness(t, "", steps...)
+	work := t.TempDir()
+	h.c.cwd = func() (string, error) { return work, nil }
 	writeConfig(t, h.dir, body)
-	loaded(t, h.c, append([]string{"--no-approvals"}, args...), func(ctx *orpheus.Context) error {
+	loaded(t, h.c, flags, func(ctx *orpheus.Context) error {
 		srv, _, err := h.c.newServer(ctx)
 		if err != nil {
 			t.Fatal(err)

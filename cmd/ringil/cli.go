@@ -123,12 +123,14 @@ type cli struct {
 	// whether its failure was said.
 	prices      func(context.Context) (price.Table, error)
 	priceWarned atomic.Bool
-	// learned are the rules the user's "always" added, by asker (the
-	// parent "", a worker by name).
-	learned   map[string][]agent.Rule
-	learnedMu sync.Mutex
-	keepMu    sync.Mutex // one "p" answer writes ringil.yaml at a time
-	keepLock  *sync.Mutex
+	// learned are the rules the user's "always" added, by asker: one for
+	// every run of serve (forRun shares it).
+	learned *learnedRules
+	// labels are serve's conversations' labels, where "yes, in this
+	// conversation" is kept; nil outside serve.
+	labels   agent.LabelStore
+	keepMu   sync.Mutex // one "p" answer writes ringil.yaml at a time
+	keepLock *sync.Mutex
 	// newSandbox returns the platform sandbox; tests may replace it.
 	newSandbox func() (sandbox.Sandbox, error)
 	// cwd is where the CLI was started, home the user's home; tests
@@ -244,6 +246,7 @@ func newCLI(in io.Reader, out, errOut io.Writer) *cli {
 		signIns:      &signIns{},
 		imports:      &importing{},
 		keepLock:     &sync.Mutex{},
+		learned:      &learnedRules{},
 		restart:      restart,
 		inImage:      inImage,
 		openURL:      openBrowser,
@@ -811,9 +814,8 @@ func (c *cli) notesFree(ctx context.Context, p *agent.Policy, call agent.ToolCal
 // askPerson asks whoever decides this run: the API's caller under serve
 // (a chat's owner), else the terminal.
 func (c *cli) askPerson(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (agent.Answer, error) {
-	if c.server != nil {
-		ok, err := c.server.Ask(ctx, call)
-		return agent.Answer{Allow: ok}, err
+	if c.server != nil { // the app's four answers: yes, this conversation, always, no and why
+		return c.server.Ask(ctx, call, spec)
 	}
 	return c.askTerminal(ctx, call, spec)
 }
@@ -897,7 +899,7 @@ func (c *cli) confirmProtected(ctx context.Context, path string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return c.server.Ask(ctx, agent.ToolCall{ID: "protected-" + rand.Text()[:8], Name: "write_protected_file", Input: input})
+		return c.server.Confirm(ctx, agent.ToolCall{ID: "protected-" + rand.Text()[:8], Name: "write_protected_file", Input: input})
 	}
 	if !c.holdTerminal(ctx) {
 		return false, ctx.Err()

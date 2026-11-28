@@ -92,7 +92,7 @@ func (c *cli) confirmCommand(ctx context.Context, req bash.Request) (bool, error
 		if err != nil {
 			return false, err
 		}
-		return c.server.Ask(ctx, agent.ToolCall{ID: "bash-" + rand.Text()[:8], Name: "bash_" + string(req.Reason), Input: input})
+		return c.server.Confirm(ctx, agent.ToolCall{ID: "bash-" + rand.Text()[:8], Name: "bash_" + string(req.Reason), Input: input})
 	}
 	if !c.holdTerminal(ctx) {
 		return false, ctx.Err()
@@ -133,7 +133,7 @@ func (c *cli) askDomain(ctx context.Context, host string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return c.server.Ask(ctx, agent.ToolCall{ID: "net-" + rand.Text()[:8], Name: "network_domain", Input: input})
+		return c.server.Confirm(ctx, agent.ToolCall{ID: "net-" + rand.Text()[:8], Name: "network_domain", Input: input})
 	}
 	if !c.holdTerminal(ctx) {
 		return false, ctx.Err()

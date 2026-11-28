@@ -38,8 +38,10 @@ const (
 	// titleExt is the title file of before the labels: read, and moved
 	// into the labels at their first change.
 	titleExt = ".title"
-	// maxLabels bounds a labels file read.
-	maxLabels = 4 << 10
+	// maxLabels bounds a labels file read: above what Labels.Check lets
+	// one hold (the allowed rules, 16 KiB, JSON-escaped), so a file
+	// written is never read back cut, and lost at the next write.
+	maxLabels = 64 << 10
 	// maxSession bounds the session file read into memory on Open; far above
 	// any real conversation, as memory/local bounds its own store.
 	maxSession = 1 << 30
@@ -434,6 +436,9 @@ func readLabels(root *os.Root, id string) agent.Labels {
 			return agent.Labels{}
 		}
 		l.Title = agent.CleanTitle(l.Title)
+		if l.Check() != nil { // a hand edit: the rules first (the person is asked again), then the rest
+			l.Allowed = nil
+		}
 		if l.Check() != nil {
 			l.Profile, l.Project = "", ""
 		}
@@ -506,7 +511,7 @@ func (s *store) Label(ctx context.Context, id string, change func(*agent.Labels)
 // writeLabels writes l whole beside the history; all zero, it removes
 // the file.
 func writeLabels(root *os.Root, id string, l agent.Labels) error {
-	if l == (agent.Labels{}) {
+	if l.IsZero() {
 		if err := root.Remove(name(id, labelExt)); err != nil && !os.IsNotExist(err) {
 			return ioError(err, "cannot remove the labels")
 		}

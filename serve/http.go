@@ -45,7 +45,7 @@ var writeTimeout = 30 * time.Second
 //	GET    /v1/runs/{id}                         a run
 //	GET    /v1/runs/{id}/events                  its events, as Server-Sent Events (Last-Event-ID or ?after= to resume)
 //	POST   /v1/runs/{id}/cancel                  stop it
-//	POST   /v1/runs/{id}/approvals/{approval}    {"allow": true|false} decide a waiting tool call
+//	POST   /v1/runs/{id}/approvals/{approval}    {"allow", "remember"?, "message"?} answer a waiting tool call
 //	DELETE /v1/runs/{id}                         forget a finished run
 //	GET    /v1/conversations                     the conversations kept: the pinned first, each part the latest first (?project= those of a project)
 //	GET    /v1/conversations/{id}/messages       a page of its messages (?from=&limit=; the last 200 by default)
@@ -417,7 +417,13 @@ func (s *Server) forget(w http.ResponseWriter, r *http.Request) {
 
 type decideIn struct {
 	Allow *bool `json:"allow"`
+	// Remember, with a yes: "session" (this conversation) or "always".
+	Remember string `json:"remember"`
+	// Message, with a no: what the agent should do instead.
+	Message string `json:"message"`
 }
+
+var rememberScope = map[string]agent.Scope{"": agent.RememberNone, "session": agent.RememberSession, "always": agent.RememberProject}
 
 func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
 	var in decideIn
@@ -428,7 +434,12 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
 		failure(w, http.StatusBadRequest, fail(ErrInput, `"allow" is required`))
 		return
 	}
-	if err := s.Decide(r.PathValue("id"), r.PathValue("approval"), *in.Allow); err != nil {
+	scope, ok := rememberScope[in.Remember]
+	if !ok {
+		failure(w, http.StatusBadRequest, fail(ErrInput, `"remember" is "session" or "always"`))
+		return
+	}
+	if err := s.Decide(r.PathValue("id"), r.PathValue("approval"), agent.Answer{Allow: *in.Allow, Remember: scope, Message: in.Message}); err != nil {
 		failure(w, status(err), err)
 		return
 	}

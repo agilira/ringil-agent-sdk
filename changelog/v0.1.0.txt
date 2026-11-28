@@ -265,6 +265,16 @@ FEATURES
     follows instructions files named or removed meanwhile (one removed
     with its agent stopped every reload); the audit records the hash of
     each instructions file in force.
+  - serve: the four answers to a tool call, as people know them: yes;
+    yes in this conversation (kept with it in agent.Labels.Allowed:
+    restarts, deletes, exports and imports go with it, a new
+    conversation of an old id starts with none, a trigger never takes
+    them); yes always (ringil.yaml permissions.allow, revoked by editing
+    it); no, with what the agent should do instead. Server.Ask is a
+    Policy's Ask, Server.Confirm a tool's own yes or no; Approval.Rule,
+    Session, Explain say which answers apply. agent.RuleFor learns no
+    rule from a path holding a pattern.
+  - Compaction starts at 75% of the context window by default (was 80%).
   - ringil lives in this repository, at cmd/ringil, a module of its own
     with its history: the SDK and the CLI change in one commit, the CI
     tests both.

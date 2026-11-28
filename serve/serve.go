@@ -500,8 +500,15 @@ func (s *Server) work(ctx context.Context, j *job, p Profile, input agent.Messag
 		return err
 	}
 	defer closeConv()
-	s.labelRun(ctx, j.conversation, p.Name, j.project, conv, input)
-	err = turn(ctx, j, inst.Agent, conv, input)
+	if err := s.labelRun(ctx, j.conversation, p.Name, j.project, conv, input); err != nil {
+		return err
+	}
+	return turns(ctx, j, inst, conv, input)
+}
+
+// turns runs the agent on input, then on each report of its workers.
+func turns(ctx context.Context, j *job, inst Instance, conv agent.Conversation, input agent.Message) error {
+	err := turn(ctx, j, inst.Agent, conv, input)
 	for err == nil && inst.Crew != nil {
 		f, ok := inst.Crew.Next(ctx)
 		if !ok {

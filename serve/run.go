@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agilira/go-errors"
 
@@ -73,6 +74,16 @@ type Approval struct {
 	// Worker, when a worker of the agent asks, is its name and task, as
 	// "researcher 2".
 	Worker string `json:"worker,omitzero"`
+	// Rule, when there is one, is the allow rule a "yes, this session" or
+	// "yes, always" keeps (as bash(git status*)); without it the answer
+	// is this call's only.
+	Rule string `json:"rule,omitzero"`
+	// Session: "yes, in this conversation" applies (a rule, and a run in a
+	// conversation: a one-off run has none to hold it).
+	Session bool `json:"session,omitzero"`
+	// Explain: a refusal's message reaches the agent (a tool call's; a
+	// tool's own question, as a sandbox's, takes yes or no).
+	Explain bool `json:"explain,omitzero"`
 }
 
 type jobKey struct{}
@@ -112,7 +123,7 @@ type entry struct {
 
 type pending struct {
 	approval Approval
-	decide   chan bool // buffered: the decision never blocks the API
+	decide   chan agent.Answer // buffered: the decision never blocks the API
 	decided  bool
 }
 
@@ -292,34 +303,53 @@ func (j *job) since(id int) (out []entry, changed <-chan struct{}, missed int, o
 	return out, j.changed, missed, !j.ended.IsZero()
 }
 
-// Approve is an approval hook for agent.Config.Approve: Ask decides.
+// Approve is an approval hook for agent.Config.Approve: the caller says
+// yes or no, and why not (no rule is kept: that is a Policy's, see Ask).
 func (s *Server) Approve(ctx context.Context, call agent.ToolCall, _ agent.ToolSpec) (agent.Decision, error) {
-	ok, err := s.Ask(ctx, call)
-	return agent.Decision{Allow: ok}, err
+	a, err := s.ask(ctx, call, "", true)
+	return agent.Decision{Allow: a.Allow, Message: a.Message}, err
 }
 
-// Ask asks the API caller about call: it waits until the caller decides
-// (POST /v1/runs/{id}/approvals/{call}), the run ends, or ApprovalTimeout
-// passes, which refuses it. Outside a run of this server it refuses. The
-// host asks it also what a tool asks (a command outside the sandbox).
-func (s *Server) Ask(ctx context.Context, call agent.ToolCall) (bool, error) {
+// Ask is a Policy's Ask (agent.Policy.Ask): the API caller answers a
+// tool call as people answer the coding agents: yes, yes for this
+// conversation, yes always (Remember: the Policy keeps the rule, its host
+// where the next session reads it), or no with what the agent should do
+// instead. It waits until the caller decides (POST
+// /v1/runs/{id}/approvals/{approval}), the run ends, or ApprovalTimeout
+// passes, which refuses it. Outside a run of this server it refuses.
+func (s *Server) Ask(ctx context.Context, call agent.ToolCall, spec agent.ToolSpec) (agent.Answer, error) {
+	rule := ""
+	if r, ok := agent.RuleFor(call, spec); ok && spec.Name != "" {
+		rule = r.String()
+	}
+	return s.ask(ctx, call, rule, true)
+}
+
+// Confirm asks the API caller a tool's own question about call (a command
+// outside the sandbox, a domain): yes or no, nothing kept.
+func (s *Server) Confirm(ctx context.Context, call agent.ToolCall) (bool, error) {
+	a, err := s.ask(ctx, call, "", false)
+	return a.Allow, err
+}
+
+func (s *Server) ask(ctx context.Context, call agent.ToolCall, rule string, explain bool) (agent.Answer, error) {
 	j, ok := ctx.Value(jobKey{}).(*job)
 	if !ok || j.srv != s {
-		return false, fail(ErrInput, "not a run of this server")
+		return agent.Answer{}, fail(ErrInput, "not a run of this server")
 	}
-	p := j.ask(call, worker(ctx))
+	p := j.ask(call, worker(ctx), rule, explain)
 	timer := time.NewTimer(s.approvalTimeout())
 	defer timer.Stop()
-	var allowed bool
+	var answer agent.Answer
 	how := "caller"
 	select {
-	case allowed = <-p.decide:
+	case answer = <-p.decide:
 	case <-timer.C:
 		how = "timeout"
 	case <-ctx.Done():
 		how = "cancelled"
 	}
-	return j.settle(p, allowed, how), nil
+	return j.settle(p, answer, how), nil
 }
 
 // worker names the worker asking, "" for the agent itself.
@@ -331,11 +361,12 @@ func worker(ctx context.Context) string {
 }
 
 // ask records a call waiting for approval.
-func (j *job) ask(call agent.ToolCall, worker string) *pending {
+func (j *job) ask(call agent.ToolCall, worker, rule string, explain bool) *pending {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.asked++
-	p := &pending{approval: Approval{ID: "a" + strconv.Itoa(j.asked), CallID: call.ID, Tool: call.Name, Input: safeJSON(call.Input), Worker: worker}, decide: make(chan bool, 1)}
+	p := &pending{approval: Approval{ID: "a" + strconv.Itoa(j.asked), CallID: call.ID, Tool: call.Name, Input: safeJSON(call.Input), Worker: worker,
+		Rule: rule, Session: rule != "" && j.conversation != "", Explain: explain}, decide: make(chan agent.Answer, 1)}
 	j.waiting[p.approval.ID] = p
 	a := p.approval
 	j.append(wireEvent{Kind: "approval", Approval: &a})
@@ -344,43 +375,79 @@ func (j *job) ask(call agent.ToolCall, worker string) *pending {
 
 // settle closes a call's wait and returns the decision: a caller's
 // decision accepted while the wait was ending still counts.
-func (j *job) settle(p *pending, allowed bool, how string) bool {
+func (j *job) settle(p *pending, answer agent.Answer, how string) agent.Answer {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if how != "caller" && p.decided {
-		allowed, how = <-p.decide, "caller" // buffered: already there
+		answer, how = <-p.decide, "caller" // buffered: already there
 	}
 	p.decided = true // no decision is accepted after this
 	if j.waiting[p.approval.ID] == p {
 		delete(j.waiting, p.approval.ID)
 	}
 	if j.ended.IsZero() {
-		j.append(wireEvent{Kind: "approval_decided", Decision: &Decision{ID: p.approval.ID, CallID: p.approval.CallID, Allowed: allowed, By: how}})
+		j.append(wireEvent{Kind: "approval_decided", Decision: &Decision{ID: p.approval.ID, CallID: p.approval.CallID, Allowed: answer.Allow, By: how,
+			Remember: rememberName[answer.Remember], Message: answer.Message}})
 	}
-	return allowed
+	if !answer.Allow && answer.Message != "" { // the person's words, said as theirs
+		answer.Message = "The user did not approve this call, and said: " + answer.Message
+	}
+	return answer
 }
 
-// decide gives the caller's decision on a waiting call.
-func (j *job) decide(approval string, allow bool) error {
+// MaxExplain bounds what a refusal tells the agent.
+const MaxExplain = 4000
+
+var rememberName = map[agent.Scope]string{agent.RememberSession: "session", agent.RememberProject: "always"}
+
+// decide gives the caller's answer on a waiting call: a rule is kept
+// only of a call that has one, a message only with a refusal that
+// reaches the agent.
+func (j *job) decide(approval string, a agent.Answer) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	p, ok := j.waiting[approval]
 	if !ok || p.decided {
 		return fail(ErrNotFound, "no call of this run waits for that decision")
 	}
+	if err := checkAnswer(p.approval, a); err != nil {
+		return err
+	}
 	p.decided = true
-	p.decide <- allow
+	p.decide <- a
 	return nil
 }
 
-// Decide approves or refuses a run's waiting tool call, named by its
-// approval ID.
-func (s *Server) Decide(id, approval string, allow bool) error {
+func checkAnswer(ap Approval, a agent.Answer) error {
+	if err := checkRemember(ap, a); err != nil {
+		return err
+	}
+	switch {
+	case a.Message != "" && (a.Allow || !ap.Explain):
+		return fail(ErrInput, "only a no to a tool call says why")
+	case len(a.Message) > MaxExplain || !utf8.ValidString(a.Message):
+		return fail(ErrInput, "what the agent is told is UTF-8 text of at most 4000 bytes")
+	}
+	return nil
+}
+
+func checkRemember(ap Approval, a agent.Answer) error {
+	switch {
+	case a.Remember != agent.RememberNone && (!a.Allow || ap.Rule == ""):
+		return fail(ErrInput, "only a yes to a call with a rule is remembered")
+	case a.Remember == agent.RememberSession && !ap.Session:
+		return fail(ErrInput, "a run with no conversation has no session to remember it in")
+	}
+	return nil
+}
+
+// Decide answers a run's waiting tool call, named by its approval ID.
+func (s *Server) Decide(id, approval string, a agent.Answer) error {
 	j, err := s.job(id)
 	if err != nil {
 		return err
 	}
-	return j.decide(approval, allow)
+	return j.decide(approval, a)
 }
 
 // Decision is how a waiting call was decided: by the caller, a timeout,
@@ -390,6 +457,10 @@ type Decision struct {
 	CallID  string `json:"call_id"`
 	Allowed bool   `json:"allowed"`
 	By      string `json:"by"`
+	// Remember is "session" or "always" when the yes keeps a rule.
+	Remember string `json:"remember,omitzero"`
+	// Message is what the person told the agent with a no.
+	Message string `json:"message,omitzero"`
 }
 
 // artifact records a new version an artifact tool made in the run.

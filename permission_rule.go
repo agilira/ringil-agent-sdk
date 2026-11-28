@@ -227,7 +227,7 @@ var riskyVerbs = map[string]bool{
 }
 
 func learnedFolder(p string) (string, bool) {
-	if strings.HasPrefix(p, "~") {
+	if strings.HasPrefix(p, "~") || strings.ContainsAny(p, "*?[") { // a pattern in the path: the rule would hold far more than the call
 		return "", false
 	}
 	dir := path.Dir(cleanPath(p))

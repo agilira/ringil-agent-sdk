@@ -86,6 +86,25 @@ type Labels struct {
 	// Project is the project it works on, by the host's name: 1-80
 	// letters, digits, . _ -, from a letter or digit; "" for none.
 	Project string `json:"project,omitempty"`
+	// Allowed are the allow rules the person's answers kept for this
+	// session ("yes, in this conversation"), by asker: "" the agent, else
+	// a worker's name. They go with the session: deleted, exported and
+	// imported with it.
+	Allowed map[string][]string `json:"allowed,omitempty"`
+}
+
+// Bounds of Labels.Allowed: at most MaxAllowedRules rules of MaxAllowedRule
+// bytes for each of MaxAllowedAskers, MaxAllowedBytes in all.
+const (
+	MaxAllowedAskers = 16
+	MaxAllowedRules  = 64
+	MaxAllowedRule   = 512
+	MaxAllowedBytes  = 16 << 10
+)
+
+// IsZero: no label at all (a store keeps no file for it).
+func (l Labels) IsZero() bool {
+	return l.Title == "" && !l.Pinned && l.Profile == "" && l.Project == "" && len(l.Allowed) == 0
 }
 
 // Check validates labels as a store keeps them.
@@ -96,12 +115,45 @@ func (l Labels) Check() error {
 	if !validProject.MatchString(l.Project) {
 		return inputError("a session's project is 1-80 letters, digits, . _ -, from a letter or digit, or none")
 	}
+	return checkAllowed(l.Allowed)
+}
+
+func checkAllowed(allowed map[string][]string) error {
+	if len(allowed) > MaxAllowedAskers {
+		return inputError("a session keeps the answers of at most 16 askers")
+	}
+	total := 0
+	for asker, rules := range allowed {
+		if !validAsker.MatchString(asker) || len(rules) > MaxAllowedRules {
+			return inputError("a session's allowed rules are at most 64 for each asker, by a name of 0-64 letters, digits, spaces, _ . -")
+		}
+		n, err := allowedBytes(asker, rules)
+		if err != nil {
+			return err
+		}
+		if total += n; total > MaxAllowedBytes {
+			return inputError("a session's allowed rules are at most 16 KiB in all")
+		}
+	}
 	return nil
+}
+
+// allowedBytes checks an asker's rules and says how much they take.
+func allowedBytes(asker string, rules []string) (int, error) {
+	n := 0
+	for _, r := range rules {
+		if _, err := ParseRule(EffectAllow, r); err != nil || len(r) > MaxAllowedRule {
+			return 0, inputError("a session's allowed rule does not parse: " + r)
+		}
+		n += len(asker) + len(r)
+	}
+	return n, nil
 }
 
 var (
 	validProfile = regexp.MustCompile(`^[A-Za-z0-9_-]{0,64}$`)
 	validProject = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]{0,79})?$`)
+	validAsker   = regexp.MustCompile(`^[A-Za-z0-9 _.-]{0,64}$`)
 )
 
 // LabelStore is a Store that keeps Labels for each session, beside its

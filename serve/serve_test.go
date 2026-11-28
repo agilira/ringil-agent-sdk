@@ -443,7 +443,7 @@ func allowOnce(t *testing.T, s *Server, run string) func(Snapshot) {
 				continue
 			}
 			decided[p.ID] = true
-			if err := s.Decide(run, p.ID, true); err != nil {
+			if err := s.Decide(run, p.ID, agent.Answer{Allow: true}); err != nil {
 				t.Error(err)
 			}
 		}
@@ -499,7 +499,7 @@ func TestWatchEndsWithItsContext(t *testing.T) {
 func TestPendingInTheOrderAsked(t *testing.T) {
 	j := newJob("r", "p", "", &Server{now: time.Now, cfg: Config{}})
 	for range 10 {
-		j.ask(agent.ToolCall{Name: "x"}, "")
+		j.ask(agent.ToolCall{Name: "x"}, "", "", false)
 	}
 	p := j.snapshot().Pending
 	if p[8].ID != "a9" || p[9].ID != "a10" {

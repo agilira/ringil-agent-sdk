@@ -284,17 +284,20 @@ func (s *Server) exists(ctx context.Context, id string) bool {
 
 // labelRun marks a conversation with the profile of the run starting on
 // it, and gives a new one its title from its first message: the words
-// the user wrote, or what they attached.
-func (s *Server) labelRun(ctx context.Context, id, profile, project string, conv agent.Conversation, input agent.Message) {
+// the user wrote, or what they attached. A new one starts with no answer
+// kept (Allowed): labels a conversation of the same id left are not its.
+// Only that is worth failing the run for.
+func (s *Server) labelRun(ctx context.Context, id, profile, project string, conv agent.Conversation, input agent.Message) error {
 	ls, ok := s.cfg.Store.(agent.LabelStore)
 	if !ok || id == "" {
-		return
+		return nil
 	}
+	fresh := len(conv.Messages()) == 0
 	title := ""
-	if len(conv.Messages()) == 0 {
+	if fresh {
 		title = firstTitle(input)
 	}
-	_ = ls.Label(ctx, id, func(l *agent.Labels) { // labels are not worth failing the run
+	err := ls.Label(ctx, id, func(l *agent.Labels) {
 		l.Profile = profile
 		if project != "" {
 			l.Project = project
@@ -302,7 +305,14 @@ func (s *Server) labelRun(ctx context.Context, id, profile, project string, conv
 		if l.Title == "" {
 			l.Title = title
 		}
+		if fresh {
+			l.Allowed = nil
+		}
 	})
+	if err != nil && fresh {
+		return fail(ErrInput, "cannot start the conversation's labels: "+userMessage(err))
+	}
+	return nil
 }
 
 // projectOf is the project of a run: the one asked, which must be the

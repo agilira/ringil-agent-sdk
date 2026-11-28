@@ -148,3 +148,19 @@ func TestHistoryCheckerIsAllOrNothing(t *testing.T) {
 		t.Fatalf("checker kept part of the refused batch: %v", err)
 	}
 }
+
+// Allowed rules are checked as a store keeps them, and count as labels.
+func TestLabelsAllowed(t *testing.T) {
+	ok := Labels{Allowed: map[string][]string{"": {"write_file(notes/**)"}, "researcher": {"bash(git status*)"}}}
+	if ok.Check() != nil || ok.IsZero() {
+		t.Fatalf("%v %v", ok.Check(), ok.IsZero())
+	}
+	for _, bad := range []map[string][]string{{"": {"not a rule ("}}, {"bad\nname": {"read_file"}}} {
+		if (Labels{Allowed: bad}).Check() == nil {
+			t.Errorf("accepted %v", bad)
+		}
+	}
+	if !(Labels{}).IsZero() {
+		t.Fatal("zero labels")
+	}
+}

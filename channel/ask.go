@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	agent "github.com/agilira/ringil-agent-sdk"
 	"github.com/agilira/ringil-agent-sdk/serve"
 )
 
@@ -40,10 +41,10 @@ func (b *Bridge) ask(ctx context.Context, chatID, run string, p serve.Approval) 
 	switch {
 	case (c.role == owner && b.people().noApprovals) || ((c.role == owner || c.group) && b.always[a.conv+"\x00"+a.key]):
 		b.mu.Unlock()
-		_ = b.cfg.Server.Decide(run, p.ID, true)
+		_ = b.cfg.Server.Decide(run, p.ID, agent.Answer{Allow: true})
 		return
 	case c.role != owner && !c.group:
-		_ = b.cfg.Server.Decide(run, p.ID, false) // under b.mu: its note goes out before the run's reply
+		_ = b.cfg.Server.Decide(run, p.ID, agent.Answer{}) // under b.mu: its note goes out before the run's reply
 		b.queue(ctx, chatID, outgoing{out: Out{Text: refusal}})
 		b.mu.Unlock()
 		return
@@ -209,7 +210,7 @@ func (b *Bridge) decide(ctx context.Context, a *ask, allow bool) {
 	// came after the run's reply under load). Decide only signals the run.
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.cfg.Server.Decide(a.run, a.approval, allow); err != nil {
+	if err := b.cfg.Server.Decide(a.run, a.approval, agent.Answer{Allow: allow}); err != nil {
 		reply = closed
 	}
 	b.queue(ctx, a.chat, outgoing{out: Out{Text: reply}})

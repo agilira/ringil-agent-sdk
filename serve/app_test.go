@@ -106,9 +106,7 @@ func TestAppSignIn(t *testing.T) {
 		t.Fatalf("expired %d", resp.StatusCode)
 	}
 	a.srv.now = time.Now
-	if resp := a.raw("GET", "/signin?code=guess"); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("guessed %d", resp.StatusCode)
-	}
+	usedLinkIsAPage(t, a)
 
 	cookie := a.signedIn()
 	if resp := a.raw("GET", "/v1/profiles", "Cookie", cookie, "Sec-Fetch-Site", "same-origin"); resp.StatusCode != http.StatusOK {
@@ -214,4 +212,14 @@ func mustMountedAppServer(t *testing.T) *httptest.Server {
 	srv.Mount("POST /a2a", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	t.Cleanup(srv.Close)
 	return httptest.NewServer(srv.Handler())
+}
+
+// usedLinkIsAPage: a person following a used or guessed link gets a page
+// that says what to do, not JSON.
+func usedLinkIsAPage(t *testing.T, a *api) {
+	t.Helper()
+	resp := a.raw("GET", "/signin?code=guess")
+	if resp.StatusCode != http.StatusForbidden || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") || !strings.Contains(body(resp), "ringil serve link") {
+		t.Fatalf("guessed %d", resp.StatusCode)
+	}
 }

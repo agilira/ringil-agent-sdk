@@ -11,6 +11,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"maps"
 	"net/http"
@@ -193,8 +194,8 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		_ = a.save() // a session not kept is a sign-in again after a restart, nothing more
 	}
 	a.mu.Unlock()
-	if token == "" {
-		failure(w, http.StatusForbidden, fail("SERVE_AUTH", "the sign-in link is used or expired: ask the host for a new one"))
+	if token == "" { // a person followed it: a page, not JSON
+		usedLink(w)
 		return
 	}
 	// #nosec G124 -- loopback over plain HTTP, where Safari refuses a Secure cookie; HttpOnly, SameSite=Strict and the origin check (signedIn) guard it
@@ -343,4 +344,27 @@ func writePrivateFile(path string, data []byte) error {
 	}
 	defer func() { _ = root.Close() }()
 	return atomicfile.Write(root, filepath.Base(path), data)
+}
+
+// usedLinkPage is what a used or expired sign-in link opens: what to do,
+// in the app's colours, with nothing to load.
+const usedLinkPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ringil: sign-in link used</title><style>
+:root{color-scheme:light dark;--bg:#f8faf9;--fg:#1d2522;--muted:#5b6762;--accent:#1f6b50}
+@media (prefers-color-scheme:dark){:root{--bg:#171c1a;--fg:#e6ece9;--muted:#9aa8a2;--accent:#8fd9b6}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+main{max-width:30rem;padding:2rem;text-align:center}h1{font-size:1.5rem;margin:0 0 .75rem}p{color:var(--muted);margin:.5rem 0}
+code{font-size:.95em;color:var(--fg)}a{color:var(--accent);font-weight:600}
+</style></head><body><main><h1>This sign-in link was used or has expired</h1>
+<p>Each link opens Ringil once, within 10 minutes. If you are signed in already, <a href="/">open Ringil</a>.</p>
+<p>Otherwise get a new link where Ringil runs: <code>ringil serve link</code></p>
+</main></body></html>`
+
+func usedLink(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+	h.Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = io.WriteString(w, usedLinkPage)
 }

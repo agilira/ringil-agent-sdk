@@ -138,6 +138,7 @@ func (c *cli) newServer(ctx *orpheus.Context) (*serve.Server, string, error) {
 	}
 	srv, err := serve.New(serve.Config{Token: token, Store: store, MaxRuns: c.conf().Serve.maxRuns(), Profiles: profiles, App: app, Voice: c.voice(ctx), Artifacts: arts, Container: c.inContainer(), Peers: peers,
 		Sessions: c.appSessionsFile(), CheckProject: c.checkProjectFor})
+	c.labels, _ = store.(agent.LabelStore) // the answers "yes, in this conversation" are kept with it
 	if err != nil {
 		return nil, "", err
 	}
@@ -253,7 +254,7 @@ func (c *cli) forRun() *cli {
 		triggers: c.triggers, bridge: c.bridge, slackBridge: c.slackBridge, board: c.board, settings: c.settings, secrets: c.secrets,
 		signIns: c.signIns, chatgptIssuer: c.chatgptIssuer, chatgptBase: c.chatgptBase, prices: c.prices,
 		traces: c.traces, traceWarned: c.traceWarned, wfRuns: c.wfRuns, serveCtx: c.serveCtx, workflowLife: c.workflowLife,
-		keepLock: c.keepLock}
+		keepLock: c.keepLock, learned: &learnedRules{}, labels: c.labels} // a run's own answers: an "always" lasts in ringil.yaml, revoked by editing it
 }
 
 // exposeA2A offers a profile (--profile, else default) to other agents, at /a2a on the
