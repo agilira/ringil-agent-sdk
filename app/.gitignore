@@ -1,0 +1,11 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+*.tsbuildinfo
+
+.e2e-state
+
+# local references and notes, not part of the app
+screens/
+NEEDS.md

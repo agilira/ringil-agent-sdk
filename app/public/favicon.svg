@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <!-- Sfondo: Cerchio nero pieno -->
+  <circle cx="250" cy="250" r="235" fill="#000000" />
+
+  <!-- Stella a 8 punte più larga e spessa -->
+  <g fill="#FFFFFF">
+    <!-- Superiore -->
+    <polygon points="250,55 266,215 250,250 234,215" />
+    <!-- Inferiore -->
+    <polygon points="250,445 266,285 250,250 234,285" />
+    <!-- Sinistro -->
+    <polygon points="55,250 215,234 250,250 215,266" />
+    <!-- Destro -->
+    <polygon points="445,250 285,234 250,250 285,266" />
+
+    <!-- Diagonali -->
+    <polygon points="363,137 278,228 250,250 268,214" />
+    <!-- Inferiore-Destra -->
+    <polygon points="363,363 268,286 250,250 278,272" />
+    <!-- Inferiore-Sinistra -->
+    <polygon points="137,363 222,272 250,250 232,286" />
+    <!-- Superiore-Sinistra -->
+    <polygon points="137,137 232,214 250,250 222,228" />
+
+    <!-- Centro -->
+    <circle cx="250" cy="250" r="6" />
+  </g>
+</svg>
